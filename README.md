@@ -76,6 +76,11 @@ structured run ends to request one normal, human-readable assistant response.
 Workflows without it remain silent after their final structured output, which
 keeps shell-only and machine-consumed workflows model-free.
 
+Project-specific extensions can also start a workflow with structured input
+through the shared `pi-workflows:start` event contract. This supports issue
+pickers and other UI wrappers without duplicating the workflow engine; see
+[Starting from another extension](docs/workflows.md#starting-from-another-extension).
+
 Because the workflow runs in your current conversation, you can have a long
 discussion first and then trigger a workflow that builds on it. The
 `elegant-solution` example does exactly that. It asks the model for the most

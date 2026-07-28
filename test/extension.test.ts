@@ -3,6 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import piWorkflows from "../src/extension/index.js";
+import {
+  WORKFLOW_START_CHANNEL,
+  WORKFLOW_START_RESULT_CHANNEL,
+  type WorkflowStartResult,
+} from "../src/workflows/external-start.js";
 import { makeTempDir } from "./helpers.js";
 
 type RegisteredTool = {
@@ -47,6 +52,7 @@ function makeHarness(options: {
   const statuses: (string | undefined)[] = [];
   const sentMessages: SentMessage[] = [];
   const listeners = new Map<string, ((event?: unknown, ctx?: FakeContext) => void)[]>();
+  const busListeners = new Map<string, ((data: unknown) => void)[]>();
   const shortcuts = new Map<string, (ctx: FakeContext) => void>();
   let command: RegisteredCommand | null = null;
   let tool: RegisteredTool | null = null;
@@ -62,6 +68,22 @@ function makeHarness(options: {
   };
 
   const pi = {
+    events: {
+      emit: (channel: string, data: unknown) => {
+        for (const listener of busListeners.get(channel) ?? []) listener(data);
+      },
+      on: (channel: string, listener: (data: unknown) => void) => {
+        const queue = busListeners.get(channel) ?? [];
+        queue.push(listener);
+        busListeners.set(channel, queue);
+        return () => {
+          busListeners.set(
+            channel,
+            (busListeners.get(channel) ?? []).filter((candidate) => candidate !== listener),
+          );
+        };
+      },
+    },
     registerCommand: (_name: string, spec: RegisteredCommand) => {
       command = spec;
     },
@@ -103,6 +125,10 @@ function makeHarness(options: {
         listener(payload, ctx);
       }
     },
+    emitBus: (channel: string, data: unknown) => {
+      pi.events.emit(channel, data);
+    },
+    onBus: (channel: string, listener: (data: unknown) => void) => pi.events.on(channel, listener),
   };
 }
 
@@ -178,6 +204,64 @@ describe("pi-workflows extension", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it("starts a workflow through the public event bus contract", async () => {
+    const cwd = await makeTempDir("pi-workflows-ext");
+    const runsDir = await makeTempDir("pi-workflows-ext-runs");
+    vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
+    try {
+      await writeEchoWorkflow(cwd);
+      const harness = makeHarness({
+        cwd,
+        respond: (prompt, tool) => {
+          const contract = stepFromPrompt(prompt);
+          if (contract) {
+            void tool.execute("call-1", { ...contract, output: { reply: "external" } });
+          }
+        },
+      });
+      const results: WorkflowStartResult[] = [];
+      harness.onBus(WORKFLOW_START_RESULT_CHANNEL, (data) => {
+        results.push(data as WorkflowStartResult);
+      });
+      harness.emit("session_start", { reason: "startup" });
+
+      harness.emitBus(WORKFLOW_START_CHANNEL, {
+        requestId: "request-1",
+        ref: "mini",
+        input: { task: "external start" },
+      });
+
+      await waitFor(() => results.length === 1);
+      expect(results).toEqual([{ requestId: "request-1", ok: true, workflowName: "mini" }]);
+      await waitFor(() => harness.notifications.some((note) => note.includes("completed")));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("rejects an external start before a session is ready", async () => {
+    const cwd = await makeTempDir("pi-workflows-ext");
+    await writeEchoWorkflow(cwd);
+    const harness = makeHarness({ cwd, respond: () => {} });
+    const results: WorkflowStartResult[] = [];
+    harness.onBus(WORKFLOW_START_RESULT_CHANNEL, (data) => {
+      results.push(data as WorkflowStartResult);
+    });
+
+    harness.emitBus(WORKFLOW_START_CHANNEL, {
+      requestId: "request-before-session",
+      ref: "mini",
+      input: {},
+    });
+
+    await waitFor(() => results.length === 1);
+    expect(results[0]).toEqual({
+      requestId: "request-before-session",
+      ok: false,
+      error: "No pi session is ready to start the workflow.",
+    });
   });
 
   it("queues an opted-in result presentation after completion", async () => {

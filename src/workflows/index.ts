@@ -11,6 +11,13 @@ export { decision, decisionEdge, type DecisionDefinition } from "./decision.js";
 export { WorkflowEngine, appendStepContract } from "./engine.js";
 export { CancelledError, TimeoutError } from "./errors.js";
 export {
+  WORKFLOW_START_CHANNEL,
+  WORKFLOW_START_RESULT_CHANNEL,
+  parseWorkflowStartRequest,
+  type WorkflowStartRequest,
+  type WorkflowStartResult,
+} from "./external-start.js";
+export {
   extractJsonValue,
   parseJsonValue,
   parseStrictJsonValue,

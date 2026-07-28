@@ -56,6 +56,42 @@ Top-level fields:
 fields) and validates the graph (unknown targets, duplicate outgoing edges,
 unreachable nodes) when a run starts.
 
+## Starting from another extension
+
+Another pi extension can start a workflow with the shared event bus. This is
+useful for a picker or project-specific command that gathers structured input
+before handing execution to pi-workflows.
+
+```typescript
+import { randomUUID } from "node:crypto";
+import {
+  WORKFLOW_START_CHANNEL,
+  WORKFLOW_START_RESULT_CHANNEL,
+  type WorkflowStartRequest,
+  type WorkflowStartResult,
+} from "pi-workflows";
+
+const request: WorkflowStartRequest = {
+  requestId: randomUUID(),
+  ref: "/absolute/path/to/review.workflow.ts",
+  input: { issue: 123 },
+};
+
+const stop = pi.events.on(WORKFLOW_START_RESULT_CHANNEL, (value) => {
+  const result = value as WorkflowStartResult;
+  if (result.requestId !== request.requestId) return;
+  stop();
+  ctx.ui.notify(result.ok ? `Started ${result.workflowName}` : result.error);
+});
+pi.events.emit(WORKFLOW_START_CHANNEL, request);
+```
+
+Use a unique `requestId` and subscribe before emitting. The result only
+confirms whether the run started; normal workflow state and completion remain
+in the run bundle. The request is rejected when no session is ready, another
+workflow is active, or the previous result is still being presented. Event-bus
+requests are ephemeral and do not add a new persisted workflow format.
+
 ## Node context
 
 Every node callback receives the same context object:

@@ -6,6 +6,12 @@ import type {
 import { Type } from "typebox";
 import { WorkflowEngine } from "../workflows/engine.js";
 import { errorMessage } from "../workflows/errors.js";
+import {
+  WORKFLOW_START_CHANNEL,
+  WORKFLOW_START_RESULT_CHANNEL,
+  parseWorkflowStartRequest,
+  type WorkflowStartResult,
+} from "../workflows/external-start.js";
 import { discoverWorkflows, loadWorkflowFile, resolveWorkflowRef } from "../workflows/loader.js";
 import { createDefinitionSnapshot } from "../workflows/store.js";
 import type {
@@ -95,6 +101,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
   let runGeneration = 0;
   let presentationAbort: AbortController | null = null;
   let presentationPending: number | null = null;
+  let currentSessionContext: ExtensionContext | null = null;
 
   // UI updates are best-effort: a captured ctx becomes stale after session
   // replacement or shutdown, and pi throws on any access (even `ctx.hasUI`).
@@ -312,18 +319,20 @@ export default function piWorkflows(pi: ExtensionAPI) {
     void presentRun(ctx, run, state);
   };
 
-  const startRun = async (ctx: ExtensionCommandContext, ref: string, input: unknown) => {
+  const startRun = async (
+    ctx: ExtensionContext,
+    ref: string,
+    input: unknown,
+  ): Promise<{ started: true; workflowName: string } | { started: false; error: string }> => {
     if (activeRun) {
-      notify(
-        ctx,
-        `A workflow is already running: ${activeRun.workflowName}. Use /workflow cancel first.`,
-        "error",
-      );
-      return;
+      const error = `A workflow is already running: ${activeRun.workflowName}. Use /workflow cancel first.`;
+      notify(ctx, error, "error");
+      return { started: false, error };
     }
     if (presentationPending !== null) {
-      notify(ctx, "The previous workflow result is still being presented. Wait for it to finish.");
-      return;
+      const error = "The previous workflow result is still being presented. Wait for it to finish.";
+      notify(ctx, error);
+      return { started: false, error };
     }
     supersedePresentation();
     const generation = runGeneration;
@@ -372,7 +381,36 @@ export default function piWorkflows(pi: ExtensionAPI) {
         clearWidget(ctx);
         notify(ctx, `Workflow ${workflow.name} crashed: ${errorMessage(error)}`, "error");
       });
+    return { started: true, workflowName: workflow.name };
   };
+
+  const emitStartResult = (result: WorkflowStartResult): void => {
+    pi.events.emit(WORKFLOW_START_RESULT_CHANNEL, result);
+  };
+
+  const stopListeningForStarts = pi.events.on(WORKFLOW_START_CHANNEL, async (value) => {
+    const request = parseWorkflowStartRequest(value);
+    if (!request) return;
+    const ctx = currentSessionContext;
+    if (!ctx) {
+      emitStartResult({
+        requestId: request.requestId,
+        ok: false,
+        error: "No pi session is ready to start the workflow.",
+      });
+      return;
+    }
+    try {
+      const result = await startRun(ctx, request.ref, request.input);
+      emitStartResult(
+        result.started
+          ? { requestId: request.requestId, ok: true, workflowName: result.workflowName }
+          : { requestId: request.requestId, ok: false, error: result.error },
+      );
+    } catch (error) {
+      emitStartResult({ requestId: request.requestId, ok: false, error: errorMessage(error) });
+    }
+  });
 
   const listWorkflows = async (ctx: ExtensionCommandContext) => {
     const discovered = await discoverWorkflows({ cwd: ctx.cwd });
@@ -515,6 +553,11 @@ export default function piWorkflows(pi: ExtensionAPI) {
     handler: (ctx) => scrollWidget(ctx, WIDGET_SCROLL_STEP),
   });
 
+  pi.on("session_start", (_event, ctx) => {
+    sessionClosed = false;
+    currentSessionContext = ctx;
+  });
+
   pi.on("agent_start", () => {
     if (!activeRun && presentationPending === null && presentationAbort) {
       // A normal user turn started while an async presentation prompt was
@@ -563,6 +606,8 @@ export default function piWorkflows(pi: ExtensionAPI) {
 
   pi.on("session_shutdown", () => {
     sessionClosed = true;
+    currentSessionContext = null;
+    stopListeningForStarts();
     supersedePresentation();
     activeRun?.engine.cancel();
     activeRun = null;

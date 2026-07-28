@@ -88,9 +88,10 @@ pi.events.emit(WORKFLOW_START_CHANNEL, request);
 
 Use a unique `requestId` and subscribe before emitting. The result only
 confirms whether the run started; normal workflow state and completion remain
-in the run bundle. The request is rejected when no session is ready, another
-workflow is active, or the previous result is still being presented. Event-bus
-requests are ephemeral and do not add a new persisted workflow format.
+in the run bundle. A request emitted during startup waits until `session_start`.
+The request is rejected when another workflow is active, the startup queue is
+full, or the previous result is still being presented. Event-bus requests are
+ephemeral and do not add a new persisted workflow format.
 
 ## Node context
 

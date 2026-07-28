@@ -241,7 +241,7 @@ describe("pi-workflows extension", () => {
     }
   });
 
-  it("rejects an external start before a session is ready", async () => {
+  it("queues an external start until the session is ready", async () => {
     const cwd = await makeTempDir("pi-workflows-ext");
     await writeEchoWorkflow(cwd);
     const harness = makeHarness({ cwd, respond: () => {} });
@@ -255,13 +255,17 @@ describe("pi-workflows extension", () => {
       ref: "mini",
       input: {},
     });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(results).toHaveLength(0);
 
+    harness.emit("session_start", { reason: "startup" });
     await waitFor(() => results.length === 1);
     expect(results[0]).toEqual({
       requestId: "request-before-session",
-      ok: false,
-      error: "No pi session is ready to start the workflow.",
+      ok: true,
+      workflowName: "mini",
     });
+    await harness.command.handler("cancel", harness.ctx);
   });
 
   it("queues an opted-in result presentation after completion", async () => {

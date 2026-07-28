@@ -10,6 +10,7 @@ import {
   WORKFLOW_START_CHANNEL,
   WORKFLOW_START_RESULT_CHANNEL,
   parseWorkflowStartRequest,
+  type WorkflowStartRequest,
   type WorkflowStartResult,
 } from "../workflows/external-start.js";
 import { discoverWorkflows, loadWorkflowFile, resolveWorkflowRef } from "../workflows/loader.js";
@@ -29,6 +30,7 @@ const FINAL_WIDGET_TTL_MS = 60_000;
 const WIDGET_SCROLL_STEP = 3;
 const MAX_PRESENTATION_RESULT_CHARS = 50_000;
 const PRESENTATION_TIMEOUT_MS = 30_000;
+const MAX_PENDING_EXTERNAL_STARTS = 10;
 
 class PresentationSupersededError extends Error {}
 class PresentationTimeoutError extends Error {}
@@ -102,6 +104,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
   let presentationAbort: AbortController | null = null;
   let presentationPending: number | null = null;
   let currentSessionContext: ExtensionContext | null = null;
+  const pendingExternalStarts: WorkflowStartRequest[] = [];
 
   // UI updates are best-effort: a captured ctx becomes stale after session
   // replacement or shutdown, and pi throws on any access (even `ctx.hasUI`).
@@ -388,18 +391,10 @@ export default function piWorkflows(pi: ExtensionAPI) {
     pi.events.emit(WORKFLOW_START_RESULT_CHANNEL, result);
   };
 
-  const stopListeningForStarts = pi.events.on(WORKFLOW_START_CHANNEL, async (value) => {
-    const request = parseWorkflowStartRequest(value);
-    if (!request) return;
-    const ctx = currentSessionContext;
-    if (!ctx) {
-      emitStartResult({
-        requestId: request.requestId,
-        ok: false,
-        error: "No pi session is ready to start the workflow.",
-      });
-      return;
-    }
+  const startExternalWorkflow = async (
+    request: WorkflowStartRequest,
+    ctx: ExtensionContext,
+  ): Promise<void> => {
     try {
       const result = await startRun(ctx, request.ref, request.input);
       emitStartResult(
@@ -410,6 +405,25 @@ export default function piWorkflows(pi: ExtensionAPI) {
     } catch (error) {
       emitStartResult({ requestId: request.requestId, ok: false, error: errorMessage(error) });
     }
+  };
+
+  const stopListeningForStarts = pi.events.on(WORKFLOW_START_CHANNEL, (value) => {
+    const request = parseWorkflowStartRequest(value);
+    if (!request) return;
+    const ctx = currentSessionContext;
+    if (ctx) {
+      void startExternalWorkflow(request, ctx);
+      return;
+    }
+    if (pendingExternalStarts.length >= MAX_PENDING_EXTERNAL_STARTS) {
+      emitStartResult({
+        requestId: request.requestId,
+        ok: false,
+        error: "Too many workflows are waiting for the Pi session to start.",
+      });
+      return;
+    }
+    pendingExternalStarts.push(request);
   });
 
   const listWorkflows = async (ctx: ExtensionCommandContext) => {
@@ -556,6 +570,9 @@ export default function piWorkflows(pi: ExtensionAPI) {
   pi.on("session_start", (_event, ctx) => {
     sessionClosed = false;
     currentSessionContext = ctx;
+    for (const request of pendingExternalStarts.splice(0)) {
+      void startExternalWorkflow(request, ctx);
+    }
   });
 
   pi.on("agent_start", () => {
@@ -607,6 +624,13 @@ export default function piWorkflows(pi: ExtensionAPI) {
   pi.on("session_shutdown", () => {
     sessionClosed = true;
     currentSessionContext = null;
+    for (const request of pendingExternalStarts.splice(0)) {
+      emitStartResult({
+        requestId: request.requestId,
+        ok: false,
+        error: "Pi shut down before the workflow could start.",
+      });
+    }
     stopListeningForStarts();
     supersedePresentation();
     activeRun?.engine.cancel();

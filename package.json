@@ -1,6 +1,6 @@
 {
   "name": "@osolmaz/pi-workflows",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Workflow engine, JSON control-flow tool, and live terminal viewer for the pi coding agent",
   "keywords": [
     "pi-package"

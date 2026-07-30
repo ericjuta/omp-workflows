@@ -1,4 +1,4 @@
-import { compute, defineWorkflow, shell } from "pi-workflows";
+import { compute, defineWorkflow, shell } from "@osolmaz/pi-workflows";
 
 type ShellInput = {
   text?: string;

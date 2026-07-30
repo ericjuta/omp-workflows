@@ -41,7 +41,7 @@ export function workflowFileStem(filePath: string): string {
 }
 
 // Alias the package name to this module's own entry so workflow files can
-// `import { agent } from "pi-workflows"` whether the engine runs from src
+// `import { agent } from "@osolmaz/pi-workflows"` whether the engine runs from src
 // (tests, tsx) or from the built dist inside the installed package.
 const SELF_ENTRY = path.join(path.dirname(fileURLToPath(import.meta.url)), "index");
 
@@ -51,7 +51,7 @@ export async function loadWorkflowFile(filePath: string): Promise<WorkflowDefini
   const jiti = createJiti(pathToFileURL(absolutePath).href, {
     interopDefault: true,
     moduleCache: false,
-    alias: { "pi-workflows": SELF_ENTRY },
+    alias: { "@osolmaz/pi-workflows": SELF_ENTRY },
   });
   const loaded = (await jiti.import(absolutePath, { default: true })) as unknown;
   if (!isWorkflowDefinition(loaded)) {

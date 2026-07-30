@@ -1,11 +1,14 @@
 {
-  "name": "pi-workflows",
+  "name": "@osolmaz/pi-workflows",
   "version": "0.1.0",
-  "private": true,
   "description": "Workflow engine, JSON control-flow tool, and live terminal viewer for the pi coding agent",
   "keywords": [
     "pi-package"
   ],
+  "homepage": "https://github.com/osolmaz/pi-workflows#readme",
+  "bugs": {
+    "url": "https://github.com/osolmaz/pi-workflows/issues"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -32,6 +35,10 @@
       "types": "./dist/extension/index.d.ts",
       "default": "./dist/extension/index.js"
     }
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -60,6 +67,7 @@
     "vitest": "^4.1.10"
   },
   "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
   },
   "engines": {

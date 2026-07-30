@@ -1,4 +1,4 @@
-import { agent, checkpoint, decision, decisionEdge, defineWorkflow } from "pi-workflows";
+import { agent, checkpoint, decision, decisionEdge, defineWorkflow } from "@osolmaz/pi-workflows";
 
 type BranchInput = {
   task?: string;

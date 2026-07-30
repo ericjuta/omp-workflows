@@ -12,7 +12,7 @@ const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const PI_BIN = path.join(REPO_ROOT, "node_modules", ".bin", "pi");
 const EXTENSION_PATH = path.join(REPO_ROOT, "src", "extension", "index.ts");
 
-const E2E_WORKFLOW = `import { agent, decision, decisionEdge, defineWorkflow, shell } from "pi-workflows";
+const E2E_WORKFLOW = `import { agent, decision, decisionEdge, defineWorkflow, shell } from "@osolmaz/pi-workflows";
 
 const choices = ["y", "n"] as const;
 

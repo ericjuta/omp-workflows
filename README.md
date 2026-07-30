@@ -14,13 +14,19 @@ structured, validated output to route on.
 ## Install
 
 ```bash
+pi install npm:@osolmaz/pi-workflows
+```
+
+You can also install directly from GitHub:
+
+```bash
 pi install git:github.com/osolmaz/pi-workflows
 ```
 
-Or try it without installing:
+Or try the npm package without installing it:
 
 ```bash
-pi -e git:github.com/osolmaz/pi-workflows
+pi -e npm:@osolmaz/pi-workflows
 ```
 
 The `pi-workflows` viewer binary is part of the same package. To get it on
@@ -34,7 +40,7 @@ Put a workflow file in `.pi/workflows/` (project) or `~/.pi/agent/workflows/`
 
 ```typescript
 // .pi/workflows/echo.workflow.ts
-import { agent, defineWorkflow } from "pi-workflows";
+import { agent, defineWorkflow } from "@osolmaz/pi-workflows";
 
 export default defineWorkflow({
   name: "echo",

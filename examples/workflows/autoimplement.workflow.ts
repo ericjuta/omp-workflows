@@ -1,4 +1,4 @@
-import { agent, compute, decision, decisionEdge, defineWorkflow } from "pi-workflows";
+import { agent, compute, decision, decisionEdge, defineWorkflow } from "@osolmaz/pi-workflows";
 
 type AutoimplementInput = {
   task?: string;

@@ -16,7 +16,7 @@
     "noEmit": true,
     "types": ["node"],
     "paths": {
-      "pi-workflows": ["./src/workflows/index.ts"],
+      "@osolmaz/pi-workflows": ["./src/workflows/index.ts"],
       "pi-workflows/extension": ["./src/extension/index.ts"]
     }
   },

@@ -17,11 +17,11 @@ Files are discovered by suffix (`.workflow.ts`, `.workflow.js`, `.workflow.mts`,
 The workflow's command name is the file stem, so `.pi/workflows/triage.workflow.ts`
 runs as `/workflow triage`. A direct path also works: `/workflow ./somewhere/x.workflow.ts`.
 Files are loaded with [jiti](https://github.com/unjs/jiti), so plain TypeScript
-works without a build step, and `import ... from "pi-workflows"` resolves to
+works without a build step, and `import ... from "@osolmaz/pi-workflows"` resolves to
 the engine that loaded the file.
 
 ```typescript
-import { agent, compute, defineWorkflow } from "pi-workflows";
+import { agent, compute, defineWorkflow } from "@osolmaz/pi-workflows";
 
 export default defineWorkflow({
   name: "example",
@@ -296,7 +296,7 @@ The engine is pi-agnostic. `WorkflowEngine` takes any `AgentStepExecutor`, so
 tests (and other hosts) can script agent steps:
 
 ```typescript
-import { WorkflowEngine, type AgentStepExecutor } from "pi-workflows";
+import { WorkflowEngine, type AgentStepExecutor } from "@osolmaz/pi-workflows";
 
 const executor: AgentStepExecutor = {
   async runAgentStep(request) {

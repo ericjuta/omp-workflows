@@ -3,7 +3,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   resolve: {
     alias: {
-      "pi-workflows": new URL("./src/workflows/index.ts", import.meta.url).pathname,
+      "@osolmaz/pi-workflows": new URL("./src/workflows/index.ts", import.meta.url).pathname,
     },
   },
   test: {

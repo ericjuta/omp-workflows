@@ -111,7 +111,7 @@ async function writeEchoWorkflow(cwd: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(
     path.join(dir, "mini.workflow.ts"),
-    `import { agent, defineWorkflow } from "pi-workflows";
+    `import { agent, defineWorkflow } from "@osolmaz/pi-workflows";
 
 export default defineWorkflow({
   name: "mini",
@@ -189,7 +189,7 @@ describe("pi-workflows extension", () => {
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "present.workflow.ts"),
-        `import { agent, defineWorkflow } from "pi-workflows";
+        `import { agent, defineWorkflow } from "@osolmaz/pi-workflows";
 
 export default defineWorkflow({
   name: "present",
@@ -226,7 +226,7 @@ export default defineWorkflow({
 
       await fs.writeFile(
         path.join(dir, "next.workflow.ts"),
-        `import { compute, defineWorkflow } from "pi-workflows";
+        `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
 export default defineWorkflow({
   name: "next",
   startAt: "finish",
@@ -258,7 +258,7 @@ export default defineWorkflow({
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "present-waiting.workflow.ts"),
-        `import { checkpoint, defineWorkflow } from "pi-workflows";
+        `import { checkpoint, defineWorkflow } from "@osolmaz/pi-workflows";
 
 export default defineWorkflow({
   name: "present-waiting",
@@ -298,7 +298,7 @@ export default defineWorkflow({
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "delayed.workflow.ts"),
-        `import { compute, defineWorkflow } from "pi-workflows";
+        `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
 
 export default defineWorkflow({
   name: "delayed",
@@ -315,7 +315,7 @@ export default defineWorkflow({
       );
       await fs.writeFile(
         path.join(dir, "newer.workflow.ts"),
-        `import { compute, defineWorkflow } from "pi-workflows";
+        `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
 
 export default defineWorkflow({
   name: "newer",
@@ -354,7 +354,7 @@ export default defineWorkflow({
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "delayed-turn.workflow.ts"),
-        `import { compute, defineWorkflow } from "pi-workflows";
+        `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
 
 export default defineWorkflow({
   name: "delayed-turn",
@@ -394,7 +394,7 @@ export default defineWorkflow({
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "bad-presentation.workflow.ts"),
-        `import { compute, defineWorkflow } from "pi-workflows";
+        `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
 
 export default defineWorkflow({
   name: "bad-presentation",
@@ -429,7 +429,7 @@ export default defineWorkflow({
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "cancel-presentation.workflow.ts"),
-        `import { agent, defineWorkflow } from "pi-workflows";
+        `import { agent, defineWorkflow } from "@osolmaz/pi-workflows";
 
 export default defineWorkflow({
   name: "cancel-presentation",
@@ -496,7 +496,7 @@ export default defineWorkflow({
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "parked.workflow.ts"),
-        `import { checkpoint, defineWorkflow } from "pi-workflows";
+        `import { checkpoint, defineWorkflow } from "@osolmaz/pi-workflows";
 
 export default defineWorkflow({
   name: "parked",

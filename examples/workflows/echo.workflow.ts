@@ -1,4 +1,4 @@
-import { agent, defineWorkflow } from "pi-workflows";
+import { agent, defineWorkflow } from "@osolmaz/pi-workflows";
 
 type EchoInput = {
   task?: string;

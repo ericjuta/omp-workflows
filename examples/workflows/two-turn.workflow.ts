@@ -1,4 +1,4 @@
-import { agent, compute, defineWorkflow } from "pi-workflows";
+import { agent, compute, defineWorkflow } from "@osolmaz/pi-workflows";
 
 type TwoTurnInput = {
   topic?: string;

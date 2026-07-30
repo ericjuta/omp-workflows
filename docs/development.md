@@ -93,6 +93,24 @@ It drives `/workflow` over the RPC protocol and asserts on the resulting run
 bundle, then renders the finished run through the viewer CLI. Nothing outside
 the temp directories is touched, and no real model is called.
 
+## Publishing
+
+The npm package is `@osolmaz/pi-workflows`. npm trusted publishing must point
+to the `osolmaz/pi-workflows` repository, `.github/workflows/publish.yml`, and
+the `npm` GitHub environment. The workflow does not use a stored npm token.
+
+To publish a version:
+
+1. Update `version` in `package.json` and `package-lock.json`, then merge that
+   change into the default branch.
+2. Publish a GitHub Release whose tag is `v<version>`, such as `v0.1.0`.
+3. Wait for the **Publish npm package** workflow to finish and verify the new
+   version on npm.
+
+The workflow rejects mismatched tags, commits outside the default branch, and
+versions already present on npm. It runs the full checks and end-to-end tests
+before `npm publish --provenance`.
+
 ## Conventions
 
 - Conventional Commits for commit messages and PR titles.

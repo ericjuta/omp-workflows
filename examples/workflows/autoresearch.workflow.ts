@@ -1,4 +1,4 @@
-import { agent, compute, decision, decisionEdge, defineWorkflow } from "pi-workflows";
+import { agent, compute, decision, decisionEdge, defineWorkflow } from "@osolmaz/pi-workflows";
 
 type AutoresearchInput = {
   /** What to search for, e.g. "a feature separating group A from group B". */

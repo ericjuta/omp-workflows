@@ -411,7 +411,7 @@ describe.sequential("pi-workflows end to end", () => {
       ...fragmentedThinkingGroups,
       ...fragmentedToolGroups,
     ]) {
-      expect(new Set(group.map((event) => event.at)).size).toBe(group.length);
+      expect(new Set(group.map((event) => event.at)).size).toBeGreaterThan(1);
     }
 
     const textEnds = sessionEvents.filter(

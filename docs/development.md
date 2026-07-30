@@ -95,15 +95,23 @@ the temp directories is touched, and no real model is called.
 
 ## Publishing
 
-The npm package is `@osolmaz/pi-workflows`. npm trusted publishing must point
-to the `osolmaz/pi-workflows` repository, `.github/workflows/publish.yml`, and
-the `npm` GitHub environment. The workflow does not use a stored npm token.
+The npm package is `@osolmaz/pi-workflows`. The first version must be published
+locally because npm cannot configure a trusted publisher until the package
+exists:
 
-To publish a version:
+```bash
+npm publish --access public
+```
+
+After that first publish, configure npm trusted publishing for the
+`osolmaz/pi-workflows` repository, `.github/workflows/publish.yml`, and the
+`npm` GitHub environment. The workflow does not use a stored npm token.
+
+For later versions:
 
 1. Update `version` in `package.json` and `package-lock.json`, then merge that
    change into the default branch.
-2. Publish a GitHub Release whose tag is `v<version>`, such as `v0.1.0`.
+2. Publish a GitHub Release whose tag is `v<version>`, such as `v0.2.0`.
 3. Wait for the **Publish npm package** workflow to finish and verify the new
    version on npm.
 

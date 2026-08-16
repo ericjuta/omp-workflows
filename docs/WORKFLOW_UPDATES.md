@@ -389,6 +389,8 @@ Publishing an update does not notify the user. A workflow uses the existing `not
 
 The extension delivers workflow notifications with a custom Pi message and explicit `triggerTurn: false`. The message remains in session history and later model context, but its arrival does not start an assistant response. Workflow reports do not use `sendUserMessage`.
 
+Agent-step instructions use a separate message contract because they must start a model turn. See [WORKFLOW_STEP_MESSAGES.md](WORKFLOW_STEP_MESSAGES.md).
+
 ## Validation and errors
 
 The implementation must test and reject:

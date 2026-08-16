@@ -6,13 +6,15 @@ date: 2026-08-16
 
 # Add durable workflow updates and progress reporting
 
-This plan implements the contracts in [WORKFLOW_UPDATES.md](../WORKFLOW_UPDATES.md) and [MONITOR.md](../MONITOR.md). It follows the [design philosophy](../DESIGN_PHILOSOPHY.md): add one general update capability, keep the node set small, and build progress and monitoring through composition.
+This plan implements the contracts in [WORKFLOW_UPDATES.md](../WORKFLOW_UPDATES.md), [WORKFLOW_STEP_MESSAGES.md](../WORKFLOW_STEP_MESSAGES.md), and [MONITOR.md](../MONITOR.md). It follows the [design philosophy](../DESIGN_PHILOSOPHY.md): add one general update capability, keep the node set small, and build progress, presentation, and monitoring through composition.
 
 ## Outcome
 
 Pi Workflows will let a running agent, function action, shell action, or claimed runner publish durable structured updates without completing a node. Progress will be one optional update type with shared estimation and presentation helpers.
 
 The built-in monitor will report every accepted check, support optional progress tracks, show live timing in the widget, and deliver notifications without starting an assistant turn.
+
+Interactive agent steps will keep their full model prompts while appearing as compact, expandable workflow cards in the conversation.
 
 ## Scope
 
@@ -51,6 +53,9 @@ The built-in monitor will report every accepted check, support optional progress
 - Reuse the current widget ticker for elapsed time and countdowns.
 - Keep observed counters fixed between updates.
 - Deliver workflow notifications with `triggerTurn: false` while retaining them in later model context.
+- Deliver interactive agent steps as `pi-workflows-agent-step` custom messages with `triggerTurn: true`.
+- Show workflow, node, and status details in a compact card and the complete prompt when expanded.
+- Use the same complete model prompt in interactive and RPC execution.
 
 ### Built-in monitor
 
@@ -80,6 +85,10 @@ The built-in monitor will report every accepted check, support optional progress
 - No migration files, fallback formats, or dual writes for run bundles.
 - No claim that a finite workflow is an indefinite controller.
 - No controller-backed indefinite monitor in this release.
+- No new workflow primitive or workflow-file option for step-message presentation.
+- No Pi core change, private Pi API, or separate expansion state.
+- No duplicate `sendUserMessage` fallback for new agent-step messages.
+- No rewrite of existing Pi session entries.
 
 ## Persistent contract impact
 
@@ -93,9 +102,11 @@ Checkpoint continuations begin with an empty update projection. Resume keeps upd
 
 ### Pi sessions
 
-Workflow notifications remain custom Pi messages. They remain in session history and model context. Delivery sets `triggerTurn: false`, so arrival does not start a model turn.
+Workflow notifications remain `pi-workflows-notification` custom messages. They remain in session history and model context. Delivery sets `triggerTurn: false`, so arrival does not start a model turn.
 
-No new Pi session entry type or Pi schema is introduced.
+New interactive agent-step instructions become `pi-workflows-agent-step` custom messages. Their complete prompt remains in session history and model context. Delivery sets `triggerTurn: true`, so each accepted delivery starts the required model turn. The structured message details use `pi-workflows.agent-step-message.v1`.
+
+Existing user-message entries remain readable and are not rewritten. No private Pi entry type, Pi schema change, or separate persistent store is introduced.
 
 ### Controller storage
 
@@ -113,6 +124,8 @@ The release adds:
 - the `workflow` tool action `update`
 - shell update parsing
 - progress validation and estimation exports, including reduction and formatting
+- optional agent-step presentation metadata passed to executors
+- the versioned `WorkflowAgentStepMessageDetails` extension contract
 
 The built-in monitor check output changes incompatibly. Existing `continue_quiet`, `continue_report`, `stop_quiet`, and `stop_report` outputs become invalid. The new values are `continue` and `stop`, and both require `report`.
 
@@ -260,6 +273,45 @@ Verification:
 - renderer output contains no assistant-trigger request
 - replay at every trace position shows the correct update projection
 
+### Agent-step message presentation
+
+Files expected to change:
+
+- `src/workflows/types.ts`
+- `src/workflows/engine.ts`
+- `src/extension/executor.ts`
+- `src/extension/index.ts`
+- `src/extension/` message-renderer module
+- `src/host/rpc-executor.ts`
+- `test/executor.test.ts`
+- `test/extension.test.ts`
+- `test/e2e/workflow.e2e.test.ts`
+
+Work:
+
+1. Keep one pure formatter for the complete model prompt.
+2. Add optional run-title and status-detail presentation data to `AgentStepRequest` without importing Pi into the workflow layer.
+3. Pass the prompt, contract, presentation data, delivery kind, and streaming state through `PromptDelivery`.
+4. Replace interactive `sendUserMessage` delivery with a `pi-workflows-agent-step` custom message.
+5. Set `triggerTurn: true` and select `steer` or `followUp` from the current streaming state.
+6. Register a renderer that reads versioned message details instead of parsing prompt text.
+7. Show a bounded workflow and node summary when collapsed.
+8. Show exact ids, expected output, and the complete prompt when expanded.
+9. Send reminders and repeated resume instructions through the same message type with their delivery kind.
+10. Keep RPC delivery on the same complete prompt and preserve run-bundle prompt recording.
+11. Remove the interactive `sendUserMessage` path without adding a duplicate fallback.
+
+Verification:
+
+- interactive and RPC model prompts match
+- one step delivery starts one model turn
+- collapsed and expanded rendering work at narrow widths
+- reminders and resumed deliveries preserve the active attempt
+- timed-out, cancelled, and stale attempts remain invalid
+- replay restores the custom message and structured details
+- notification delivery still does not start a model turn
+- no duplicate user message appears
+
 ### Built-in monitor contract
 
 Files expected to change:
@@ -306,6 +358,7 @@ Update:
 - `docs/run-bundles.md`
 - `docs/development.md`
 - `docs/WORKFLOW_UPDATES.md`
+- `docs/WORKFLOW_STEP_MESSAGES.md`
 - `docs/MONITOR.md`
 - examples that teach agent, action, shell, notify, or monitor behavior
 
@@ -356,8 +409,11 @@ Use the real installed Pi runtime without a real model or destructive target:
 4. Start a short monitor fixture.
 5. Verify one custom notification per check.
 6. Verify no assistant turn starts from notification delivery.
-7. Cancel during sleep and verify terminal state.
-8. Restart Pi and verify durable display and replay.
+7. Start an interactive agent step and verify one compact custom message and one model turn.
+8. Expand the message and verify the full prompt and exact contract ids.
+9. Compare the provider-facing interactive prompt with the RPC prompt.
+10. Cancel during sleep and verify terminal state.
+11. Restart Pi and verify durable display and replay.
 
 ## Required commands
 
@@ -377,6 +433,7 @@ Run documentation checks:
 npx -y @simpledoc/simpledoc check
 npx oxfmt --check README.md docs
 python3 ~/.pi/agent/skills/kill-ai-smell/check.py docs/WORKFLOW_UPDATES.md
+python3 ~/.pi/agent/skills/kill-ai-smell/check.py docs/WORKFLOW_STEP_MESSAGES.md
 python3 ~/.pi/agent/skills/kill-ai-smell/check.py docs/MONITOR.md
 python3 ~/.pi/agent/skills/kill-ai-smell/check.py docs/plans/2026-08-16-workflow-updates-plan.md
 ```
@@ -394,6 +451,8 @@ Run package and real-Pi checks again after updating OnurPi. Run the tools skill 
 - ETA is source-based or measured from facts and never invented by a model.
 - Widget clocks update without a model call or per-tick write.
 - Notifications remain in context and never start an assistant turn.
+- Agent-step prompts remain complete for the model and appear as compact, expandable workflow cards.
+- Interactive and RPC execution use the same model prompt.
 - The built-in monitor reports every accepted check and has no quiet path.
 - The monitor discloses its finite safety ceiling.
 - TypeScript and Rust viewers agree on replayed progress.
@@ -417,6 +476,10 @@ Updates cannot route, execute, or notify. The graph retains control of completio
 ### Duplicate notifications
 
 Update idempotency and the existing notification occurrence index remain separate. Each monitor check reaches one notify node once.
+
+### Prompt and display drift
+
+The renderer reads structured details, while one formatter produces the complete model prompt for interactive and RPC execution. Tests compare provider-facing content and verify that expansion shows the recorded prompt. The renderer never rebuilds instructions from display fields.
 
 ### Upgrade interruption
 

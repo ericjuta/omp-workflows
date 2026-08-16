@@ -99,6 +99,6 @@ git diff --check
 Run in Tools after deletion:
 
 ```bash
-python3 agents/sync-skills.py monitor
+python3 agents/sync-skills.py
 npx -y @simpledoc/simpledoc check
 ```

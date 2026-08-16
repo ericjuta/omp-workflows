@@ -11,7 +11,9 @@ the model keeps everything it already knows from the discussion. The model
 completes each step by calling a JSON `workflow` tool, which gives the engine
 structured, validated output to route on. See the
 [design philosophy](docs/DESIGN_PHILOSOPHY.md) for the principles behind the
-engine and its public parts.
+engine and its public parts. Accepted future contracts are documented in
+[workflow updates](docs/WORKFLOW_UPDATES.md) and the revised
+[built-in monitor](docs/MONITOR.md).
 
 ## Install
 

@@ -9,7 +9,9 @@ The workflow model is a port of [openclaw/acpx](https://github.com/openclaw/acpx
 flows into pi itself. Agent steps run inside your current pi conversation, so
 the model keeps everything it already knows from the discussion. The model
 completes each step by calling a JSON `workflow` tool, which gives the engine
-structured, validated output to route on.
+structured, validated output to route on. See the
+[design philosophy](docs/DESIGN_PHILOSOPHY.md) for the principles behind the
+engine and its public parts.
 
 ## Install
 

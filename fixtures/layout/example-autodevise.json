@@ -1,0 +1,326 @@
+{
+  "name": "example-autodevise",
+  "snapshot": {
+    "schema": "pi-workflows.definition-snapshot.v1",
+    "name": "autodevise",
+    "startAt": "frame",
+    "nodes": {
+      "frame": {
+        "nodeType": "agent",
+        "statusDetail": "framing the problem",
+        "expectedOutput": "{ \"problem\": \"concise problem statement\", \"success\": [\"observable success criterion\"], \"inScope\": [\"system or change\"], \"outOfScope\": [\"system or change\"], \"constraints\": [\"constraint\"], \"controlBoundary\": \"what can be changed directly\" }"
+      },
+      "propose": {
+        "nodeType": "agent",
+        "statusDetail": "devising a solution",
+        "expectedOutput": "{ \"solution\": \"concrete proposed solution\", \"rationale\": \"why it is the best long-term design\", \"parts\": [\"main part\"], \"tradeoffs\": [\"important trade-off\"] }"
+      },
+      "ideal": {
+        "nodeType": "agent",
+        "statusDetail": "describing the ideal end state",
+        "expectedOutput": "{ \"ideal\": \"ideal end state\", \"outsideDependencies\": [\"dependency outside our authority\"], \"additionalValue\": [\"benefit beyond the proposal\"] }"
+      },
+      "choose": {
+        "nodeType": "agent",
+        "statusDetail": "choosing the practical solution",
+        "expectedOutput": "{ \"status\": \"ready\" | \"blocked\", \"selected\": \"chosen practical solution\", \"why\": \"why this is the right choice\", \"relationshipToIdeal\": \"how it matches or evolves toward the ideal\", \"excluded\": [\"outside-scope requirement not selected\"], \"compromises\": [\"accepted compromise\"] }"
+      },
+      "plan": {
+        "nodeType": "agent",
+        "timeoutMs": 1800000,
+        "statusDetail": "writing the implementation plan",
+        "expectedOutput": "{ \"summary\": \"implementation approach\", \"steps\": [{ \"change\": \"specific change\", \"where\": \"component or file area\", \"verification\": \"evidence that proves it works\" }], \"contracts\": [\"contract impact\"], \"tests\": [\"required test\"], \"risks\": [{ \"risk\": \"risk\", \"mitigation\": \"mitigation\" }], \"boundaries\": [\"work explicitly excluded\"] }"
+      },
+      "blocked": {
+        "nodeType": "compute"
+      },
+      "finalize": {
+        "nodeType": "compute"
+      }
+    },
+    "edges": [
+      {
+        "from": "frame",
+        "to": "propose"
+      },
+      {
+        "from": "propose",
+        "to": "ideal"
+      },
+      {
+        "from": "ideal",
+        "to": "choose"
+      },
+      {
+        "from": "choose",
+        "switch": {
+          "on": "$.status",
+          "cases": {
+            "ready": "plan",
+            "blocked": "blocked"
+          }
+        }
+      },
+      {
+        "from": "plan",
+        "to": "finalize"
+      }
+    ]
+  },
+  "layout": {
+    "ranks": [
+      [
+        {
+          "kind": "node",
+          "nodeId": "frame"
+        }
+      ],
+      [
+        {
+          "kind": "node",
+          "nodeId": "propose"
+        }
+      ],
+      [
+        {
+          "kind": "node",
+          "nodeId": "ideal"
+        }
+      ],
+      [
+        {
+          "kind": "node",
+          "nodeId": "choose"
+        }
+      ],
+      [
+        {
+          "kind": "node",
+          "nodeId": "plan"
+        },
+        {
+          "kind": "virtual",
+          "edgeId": "choose->blocked#3.1"
+        }
+      ],
+      [
+        {
+          "kind": "node",
+          "nodeId": "finalize"
+        },
+        {
+          "kind": "node",
+          "nodeId": "blocked"
+        }
+      ]
+    ],
+    "edges": [
+      {
+        "edgeId": "frame->propose#0.0",
+        "from": "frame",
+        "to": "propose",
+        "isBackEdge": false
+      },
+      {
+        "edgeId": "propose->ideal#1.0",
+        "from": "propose",
+        "to": "ideal",
+        "isBackEdge": false
+      },
+      {
+        "edgeId": "ideal->choose#2.0",
+        "from": "ideal",
+        "to": "choose",
+        "isBackEdge": false
+      },
+      {
+        "edgeId": "choose->plan#3.0",
+        "from": "choose",
+        "to": "plan",
+        "label": "ready",
+        "isBackEdge": false
+      },
+      {
+        "edgeId": "choose->blocked#3.1",
+        "from": "choose",
+        "to": "blocked",
+        "label": "blocked",
+        "isBackEdge": false
+      },
+      {
+        "edgeId": "plan->finalize#4.0",
+        "from": "plan",
+        "to": "finalize",
+        "isBackEdge": false
+      }
+    ],
+    "segments": [
+      {
+        "edgeId": "frame->propose#0.0",
+        "rank": 0,
+        "fromCell": 0,
+        "toCell": 0
+      },
+      {
+        "edgeId": "propose->ideal#1.0",
+        "rank": 1,
+        "fromCell": 0,
+        "toCell": 0
+      },
+      {
+        "edgeId": "ideal->choose#2.0",
+        "rank": 2,
+        "fromCell": 0,
+        "toCell": 0
+      },
+      {
+        "edgeId": "choose->plan#3.0",
+        "rank": 3,
+        "fromCell": 0,
+        "toCell": 0,
+        "label": "ready"
+      },
+      {
+        "edgeId": "choose->blocked#3.1",
+        "rank": 3,
+        "fromCell": 0,
+        "toCell": 1,
+        "label": "blocked"
+      },
+      {
+        "edgeId": "choose->blocked#3.1",
+        "rank": 4,
+        "fromCell": 1,
+        "toCell": 1
+      },
+      {
+        "edgeId": "plan->finalize#4.0",
+        "rank": 4,
+        "fromCell": 0,
+        "toCell": 0
+      }
+    ],
+    "rankOfNode": {
+      "frame": 0,
+      "propose": 1,
+      "ideal": 2,
+      "choose": 3,
+      "plan": 4,
+      "blocked": 5,
+      "finalize": 5
+    }
+  },
+  "state": {
+    "schema": "pi-workflows.run-state.v1",
+    "traceSeq": 1,
+    "runId": "run-autodevise",
+    "workflowName": "autodevise",
+    "startedAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:01:00.000Z",
+    "status": "running",
+    "input": {},
+    "outputs": {},
+    "results": {},
+    "steps": []
+  },
+  "frames": [
+    {
+      "stepIndex": -1,
+      "nodeStyle": "line",
+      "lines": [
+        "                     ▶ · frame [agent] not visited",
+        "                                    │",
+        "                                    ▼",
+        "                      · propose [agent] not visited",
+        "                                    │",
+        "                                    ▼",
+        "                       · ideal [agent] not visited",
+        "                                    │",
+        "                                    ▼",
+        "                      · choose [agent] not visited",
+        "                                  │ └─── blocked ───┐",
+        "                                  │ ready           │",
+        "                                  │                 │",
+        "                                  ▼                 │",
+        "                    · plan [agent] not visited      │",
+        "                  ┌──────────────┘                  └──┐",
+        "                  │                                    │",
+        "                  ▼                                    ▼",
+        "  · finalize [compute] not visited ■    · blocked [compute] not visited ■"
+      ]
+    },
+    {
+      "stepIndex": -1,
+      "nodeStyle": "box",
+      "lines": [
+        "                     ┌──────────────────────────────┐",
+        "                   ▶ │            frame             │",
+        "                     ├──────────────────────────────┤",
+        "                     │ ● agent             · queued │",
+        "                     │ ↻ 0                      ◷ — │",
+        "                     │                              │",
+        "                     │                              │",
+        "                     │ … framing the problem        │",
+        "                     └──────────────────────────────┘",
+        "                                     │",
+        "                                     ▼",
+        "                     ┌──────────────────────────────┐",
+        "                     │           propose            │",
+        "                     ├──────────────────────────────┤",
+        "                     │ ● agent             · queued │",
+        "                     │ ↻ 0                      ◷ — │",
+        "                     │                              │",
+        "                     │                              │",
+        "                     │ … devising a solution        │",
+        "                     └──────────────────────────────┘",
+        "                                     │",
+        "                                     ▼",
+        "                     ┌──────────────────────────────┐",
+        "                     │            ideal             │",
+        "                     ├──────────────────────────────┤",
+        "                     │ ● agent             · queued │",
+        "                     │ ↻ 0                      ◷ — │",
+        "                     │                              │",
+        "                     │                              │",
+        "                     │ … describing the ideal end … │",
+        "                     └──────────────────────────────┘",
+        "                                     │",
+        "                                     ▼",
+        "                     ┌──────────────────────────────┐",
+        "                     │            choose            │",
+        "                     ├──────────────────────────────┤",
+        "                     │ ● agent             · queued │",
+        "                     │ ↻ 0                      ◷ — │",
+        "                     │ ◇ ready                      │",
+        "                     │ ◇ blocked                    │",
+        "                     │ … choosing the practical so… │",
+        "                     └──────────────────────────────┘",
+        "                                 ┌─┘ └──── blocked ────┐",
+        "                                 │ ready               │",
+        "                                 │                     │",
+        "                                 ▼                     │",
+        "                 ┌──────────────────────────────┐      │",
+        "                 │             plan             │      │",
+        "                 ├──────────────────────────────┤      │",
+        "                 │ ● agent             · queued │      │",
+        "                 │ ↻ 0                      ◷ — │      │",
+        "                 │                              │      │",
+        "                 │                              │      │",
+        "                 │ … writing the implementatio… │      │",
+        "                 └──────────────────────────────┘      │",
+        "                  ┌──────────────┘                     │",
+        "                  │                                    │",
+        "                  ▼                                    ▼",
+        "  ┌──────────────────────────────┐      ┌──────────────────────────────┐",
+        "  │           finalize           │ ■    │           blocked            │ ■",
+        "  ├──────────────────────────────┤      ├──────────────────────────────┤",
+        "  │ ƒ compute           · queued │      │ ƒ compute           · queued │",
+        "  │ ↻ 0                      ◷ — │      │ ↻ 0                      ◷ — │",
+        "  │                              │      │                              │",
+        "  │                              │      │                              │",
+        "  │                              │      │                              │",
+        "  └──────────────────────────────┘      └──────────────────────────────┘"
+      ]
+    }
+  ]
+}

@@ -162,13 +162,12 @@ runner resumes it.
 
 Because the workflow runs in your current conversation, you can have a long
 discussion first and then trigger a workflow that builds on it. The
-`elegant-solution` example does exactly that. It asks the model for the most
-elegant long-term production-ready solution to the problem you discussed, then
-for the holy grail, then whether the two are the same (y/n). On `y` it routes
-straight into implementation, and on `n` it asks the model to reconcile the
-gap and pauses at a checkpoint for you to decide. In either case, its
-`presentationPrompt` turns the final structured result into a plain assistant
-response.
+`autodevise` example does exactly that. It frames the problem and scope, devises
+an elegant production-ready solution, and compares it with the holy grail. It
+then selects the best practical in-scope solution without asking the user to
+resolve the gap. The ideal can win when it is feasible, but work outside the
+current authority cannot block a valid practical solution. The workflow ends
+with a detailed implementation plan.
 
 ## Watching a run
 
@@ -302,7 +301,9 @@ example set. Copy any of them into `.pi/workflows/` to use them:
   while they run.
 - `two-turn` chains three agent steps that build on each other's outputs in
   the same conversation.
-- `elegant-solution` is the mid-conversation trigger described above.
+- `autodevise` turns the current problem into a chosen practical solution and
+  a detailed implementation plan, using the ideal end state as guidance rather
+  than an out-of-scope requirement.
 - `autoimplement` runs an implement, verify, review loop where the review
   decision routes `issues_found` back to a fix step until it comes back
   `clean`, bounded by `maxSteps`.

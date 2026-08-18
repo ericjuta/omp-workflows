@@ -8,7 +8,7 @@ compatibility: Requires Pi Workflows and the built-in monitor workflow.
 
 Use the built-in Pi `monitor` workflow as an autopilot for the requested objective. Monitoring is not passive status polling. The agent must maintain nominal operation, repair recoverable failures, resume durable work, and continue until the complete objective is verified or a material blocker makes safe continuation impossible.
 
-A monitor request authorizes routine operational actions that are necessary to preserve and finish the stated objective, subject to the conversation and repository approval boundaries. These actions can include restarting or resuming the same non-paid Job or process, repairing an exact operational configuration or storage-path error, retrying transient infrastructure failures, restoring a verified checkpoint, and replacing a failed physical attempt with the same immutable execution contract. Paid launches, resumes, retries, or replacements require the explicit approval described below. Monitoring does not authorize changing the objective, method, model, data source, production selection, or other consequential contract.
+A monitor request authorizes routine, bounded work needed to preserve and finish the stated objective, subject to the conversation and repository approval boundaries. Apply other skills as safety and operating instructions. Do not turn their normal checks into new approval requests when the monitored objective and an existing approval already cover the action. Monitoring does not authorize changing the objective, method, model, data source, production selection, or other consequential contract.
 
 ## Prepare and start without delay
 
@@ -26,7 +26,7 @@ Do not finish the initiating turn before the workflow start call. If a safe cont
 
 Derive the workflow input from the full conversation:
 
-- `task`: State the complete objective, the exact current target and stable identifiers, authoritative status sources, durable progress and final-output surfaces, approved recovery actions, immutable boundaries, cost and credential rules, and required validation or downstream operations.
+- `task`: State the complete objective, the exact current target and stable identifiers, authoritative status sources, durable progress and final-output surfaces, routine actions authorized by the monitor request, other recorded approvals, immutable boundaries, cost and credential rules, and required validation or downstream operations.
 - `everyMinutes`: Use the user's interval when present. Use `30` when the user gives no interval. The built-in workflow accepts intervals from 1 minute through 24 hours.
 - `stopWhen`: Infer verified completion from the full conversation. Describe completion of the complete objective, not only the end of one physical process. Also name material blockers that require human intervention.
 
@@ -34,11 +34,24 @@ When the conversation gives no clear finish criterion, set `stopWhen` to `Stop o
 
 Do not invent a finite check count. Omit `maxChecks` unless the user explicitly requests one. The workflow host can apply its own safety upper bound. Disclose that bound if it appears.
 
+## Keep routine work moving
+
+While the workflow is active, do routine, bounded work required by the exact objective without asking for another confirmation. This includes:
+
+- downloading, building, and running code pinned by the monitored objective;
+- building and running task containers from a pinned benchmark or repository revision;
+- installing pinned dependencies in the planned isolated environment;
+- running canaries, tests, retries, restarts, and temporary cleanup;
+- repairing configuration or storage-path errors without changing the method; and
+- continuing paid work that already has applicable approval.
+
+Pinned third-party code is part of the objective when the task names its exact repository, revision, lock file, image digest, or benchmark release. Resolve mutable references to immutable revisions when the applicable safety rules require it. Do not ask once per image, package, or task. New unpinned code, unrelated code, or broader privileges remain outside the monitor's authority.
+
 ## Paid infrastructure authority
 
-A monitoring request does not grant spending approval or create a default spending ceiling. Before launching, resuming, retrying, or replacing paid work, load and follow the paid-compute, provider, Job-control, and runtime skills that apply. Present the required estimate and obtain explicit approval when those policies require it.
+A monitoring request does not grant spending approval or create a default spending ceiling. Before launching, resuming, retrying, or replacing paid work, load and follow the paid-compute, provider, Job-control, and runtime skills that apply. Use any applicable approval already recorded in the conversation or repository instructions.
 
-After approval, preserve the exact method, hardware, concurrency, cumulative cost ceiling, and recovery assumptions in the monitor task. Continue only within that approved contract. Stop for a decision before new paid work when there is no applicable approval, when the ceiling would be exceeded, or when evidence invalidates an approved assumption.
+When the paid action remains within the approved method, hardware, concurrency, cumulative cost ceiling, and recovery assumptions, continue without asking again. Stop for a decision before new paid work only when there is no applicable approval, the ceiling would be exceeded, or evidence invalidates an approved assumption.
 
 The monitor may use a credential only when the conversation or repository has already authorized that credential's source, destination, and purpose. It may reuse that authorization for retries and replacement attempts under the same objective. It must not discover unrelated credentials, broaden scopes, copy credentials to a new store, or print secret values.
 

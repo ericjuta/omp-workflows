@@ -19,13 +19,13 @@ The monitor checks a target, sends one status notification after every accepted 
 
 | Field                 | Required | Type    | Default            | Meaning                          |
 | --------------------- | -------- | ------- | ------------------ | -------------------------------- |
-| `task`                | Yes      | string  | None               | Self-contained observation task. |
+| `task`                | Yes      | string  | None               | Self-contained monitor task.     |
 | `everyMinutes`        | No       | integer | `30`               | Minutes between accepted checks. |
 | `stopWhen`            | No       | string  | Explicit user stop | Condition that ends monitoring.  |
 | `maxChecks`           | No       | integer | `1000`             | Run safety limit.                |
 | `checkTimeoutMinutes` | No       | integer | Derived            | Timeout for one agent check.     |
 
-`task` is 1 to 8,000 characters after trimming. It should name the target, stable identifier, source of truth, durable outputs, and observation boundary. It must state any authorized mutations. Monitoring is read-only when the task does not authorize a mutation.
+`task` is 1 to 8,000 characters after trimming. It should name the target, stable identifier, source of truth, durable outputs, authorized routine work, and safety boundary. It must state any authorized mutations. Monitoring is read-only when the task does not authorize a mutation.
 
 `everyMinutes` is from 1 through 1,440. The interval begins after a check report is durably queued. It does not delay the first check.
 
@@ -260,11 +260,11 @@ The monitor skill must disclose a surfaced host limit and must never invent a sm
 
 ## Safety boundaries
 
-Monitoring authorizes observation and scheduled checks. It does not authorize retries, restarts, scaling, deployment, publication, cancellation of the target, or higher spending.
+An observation-only request authorizes only observation and scheduled checks. When the user asks the monitor to keep an objective running or finish it, the monitor skill may record routine, bounded work in `task`, including retries, restarts, pinned task code, tests, configuration repairs, and temporary cleanup. The task must preserve the exact objective and state every mutation boundary.
 
 A progress object is data. It cannot contain a command or grant execution authority. Fixed probes belong in workflow-authored `action` or `shell` nodes.
 
-Paid compute, inference runtime, and other domain policies continue to apply to every check.
+A monitoring request does not create spending approval or a default spending ceiling. Existing approvals can cover paid actions, and the monitor should continue without another prompt while each action stays within them. Paid compute, inference runtime, and other domain policies continue to apply to every check.
 
 ## Validation and acceptance
 

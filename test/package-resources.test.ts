@@ -85,10 +85,12 @@ describe("Pi package resources", () => {
     expect(new Set(names).size).toBe(names.length);
   });
 
-  it("does not grant paid-compute approval through the monitor skill", async () => {
+  it("keeps routine work moving without inventing paid-compute approval", async () => {
     const markdown = await fs.readFile(path.join(skillsRoot, "monitor", "SKILL.md"), "utf8");
 
     expect(markdown).toContain("A monitoring request does not grant spending approval");
+    expect(markdown).toContain("continue without asking again");
+    expect(markdown).toContain("Do not ask once per image, package, or task");
     expect(markdown).not.toContain("grants a default cumulative spending ceiling");
   });
 

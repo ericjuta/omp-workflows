@@ -1096,8 +1096,8 @@ describe("pi-workflows extension", () => {
 
       const second = makeHarness({ cwd, sessionId: "restart-session", respond: () => {} });
       await second.emitAsync("session_start");
-      const { default: Database } = await import("better-sqlite3");
-      const raw = new Database(queueFile);
+      const { openSqliteDatabase } = await import("../src/controllers/sqlite-database.js");
+      const raw = openSqliteDatabase(queueFile);
       raw.prepare("UPDATE workflow_run_queue SET claim_expires_at = 1 WHERE run_id = ?").run(runId);
       raw.close();
       await waitFor(
@@ -2893,8 +2893,8 @@ export default defineWorkflow({
       });
 
       // Another runner takes over: expire and reclaim the row directly.
-      const { default: Database } = await import("better-sqlite3");
-      const raw = new Database(queueFile);
+      const { openSqliteDatabase } = await import("../src/controllers/sqlite-database.js");
+      const raw = openSqliteDatabase(queueFile);
       raw
         .prepare("UPDATE workflow_run_queue SET claim_expires_at = 1 WHERE status = 'running'")
         .run();
@@ -3225,8 +3225,8 @@ export default defineWorkflow({
         const [row] = queue.listWorkflowRuns();
         const runId = row?.runId as string;
         queue.close();
-        const { default: Database } = await import("better-sqlite3");
-        const raw = new Database(queueFile);
+        const { openSqliteDatabase } = await import("../src/controllers/sqlite-database.js");
+        const raw = openSqliteDatabase(queueFile);
         raw
           .prepare(
             "UPDATE workflow_run_queue SET status = 'running', runner_id = 'dead-runner', claim_token = 'stale-token', claim_expires_at = 1 WHERE run_id = ?",

@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import Database from "better-sqlite3";
 import {
   EffectRequestConflictError,
   ResourceConflictError,
@@ -9,6 +8,12 @@ import {
   WorkflowRequestConflictError,
 } from "./errors.js";
 import { canonicalJson, parseStoredJson } from "./json.js";
+import {
+  execSqlitePragma,
+  openSqliteDatabase,
+  runSqliteTransaction,
+  type SqliteDatabase,
+} from "./sqlite-database.js";
 import {
   CONTROLLER_STORE_SCHEMA,
   type ControllerStore,
@@ -263,7 +268,9 @@ type EventRow = {
 
 export class SqliteControllerStore implements ControllerStore {
   readonly filePath: string;
-  private readonly database: Database.Database;
+
+  private readonly database: SqliteDatabase;
+
   private closed = false;
 
   constructor(filePath: string = controllerStorePath(), options: { readOnly?: boolean } = {}) {
@@ -273,10 +280,7 @@ export class SqliteControllerStore implements ControllerStore {
       fs.mkdirSync(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
       fs.chmodSync(path.dirname(this.filePath), 0o700);
     }
-    this.database = new Database(this.filePath, {
-      readonly: readOnly,
-      fileMustExist: readOnly,
-    });
+    this.database = openSqliteDatabase(this.filePath, { readOnly });
     if (!readOnly) {
       fs.chmodSync(this.filePath, 0o600);
     }
@@ -856,11 +860,11 @@ export class SqliteControllerStore implements ControllerStore {
 
   private configure(readOnly: boolean): void {
     if (!readOnly) {
-      this.database.pragma("journal_mode = WAL");
-      this.database.pragma("synchronous = FULL");
-      this.database.pragma("foreign_keys = ON");
+      execSqlitePragma(this.database, "journal_mode = WAL");
+      execSqlitePragma(this.database, "synchronous = FULL");
+      execSqlitePragma(this.database, "foreign_keys = ON");
     }
-    this.database.pragma("busy_timeout = 5000");
+    execSqlitePragma(this.database, "busy_timeout = 5000");
   }
 
   private initializeSchema(readOnly: boolean): void {
@@ -926,7 +930,7 @@ export class SqliteControllerStore implements ControllerStore {
     ]);
     const actual = new Set(
       (
-        this.database.pragma("table_info(workflow_run_queue)") as {
+        execSqlitePragma(this.database, "table_info(workflow_run_queue)") as {
           name: string;
         }[]
       ).map((column) => column.name),
@@ -958,7 +962,7 @@ export class SqliteControllerStore implements ControllerStore {
     ]);
     const intentColumns = new Set(
       (
-        this.database.pragma("table_info(workflow_turn_intents)") as {
+        execSqlitePragma(this.database, "table_info(workflow_turn_intents)") as {
           name: string;
         }[]
       ).map((column) => column.name),
@@ -998,15 +1002,7 @@ export class SqliteControllerStore implements ControllerStore {
   }
 
   private transaction<T>(task: () => T): T {
-    this.database.exec("BEGIN IMMEDIATE");
-    try {
-      const value = task();
-      this.database.exec("COMMIT");
-      return value;
-    } catch (error) {
-      this.database.exec("ROLLBACK");
-      throw error;
-    }
+    return runSqliteTransaction(this.database, task);
   }
 
   private resourceRow(ref: ControllerResourceRef): ResourceRow | undefined {

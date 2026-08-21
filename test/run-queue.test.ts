@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
+import { execSqlitePragma, openSqliteDatabase } from "../src/controllers/sqlite-database.js";
 import { SqliteControllerStore } from "../src/controllers/sqlite.js";
 import { makeTempDir } from "./helpers.js";
 
@@ -39,11 +39,31 @@ function enqueue(store: SqliteControllerStore, runId = "run-1") {
 }
 
 describe("workflow run queue", () => {
+  it("initializes a store when schema_info exists but has no row", async () => {
+    const dir = await makeTempDir("pi-run-queue-empty-schema");
+    const databasePath = path.join(dir, "state", "controller.sqlite");
+    fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+    const raw = openSqliteDatabase(databasePath);
+    raw.exec(`
+      CREATE TABLE schema_info (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        schema_id TEXT NOT NULL
+      );
+    `);
+    raw.close();
+
+    const store = new SqliteControllerStore(databasePath);
+    stores.push(store);
+    const record = enqueue(store);
+    expect(record.runId).toBe("run-1");
+    expect(record.status).toBe("starting");
+  });
+
   it("rejects an incompatible older alpha layout without changing it", async () => {
     const dir = await makeTempDir("pi-run-queue-old-alpha");
     const databasePath = path.join(dir, "state", "controller.sqlite");
     fs.mkdirSync(path.dirname(databasePath), { recursive: true });
-    const raw = new Database(databasePath);
+    const raw = openSqliteDatabase(databasePath);
     raw.exec(`
       CREATE TABLE schema_info (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -66,9 +86,11 @@ describe("workflow run queue", () => {
     expect(() => new SqliteControllerStore(databasePath)).toThrow(
       /incompatible alpha layout.*reset the project controller store/,
     );
-    const unchanged = new Database(databasePath, { readonly: true });
+    const unchanged = openSqliteDatabase(databasePath, { readOnly: true });
     try {
-      const columns = unchanged.pragma("table_info(workflow_run_queue)") as { name: string }[];
+      const columns = execSqlitePragma(unchanged, "table_info(workflow_run_queue)") as {
+        name: string;
+      }[];
       expect(columns.map((column) => column.name)).not.toContain("workflow_source_json");
     } finally {
       unchanged.close();
@@ -464,8 +486,8 @@ describe("workflow run queue", () => {
     const databasePath = path.join(dir, "state", "controller.sqlite");
     const store = new SqliteControllerStore(databasePath);
     store.close();
-    const raw = new Database(databasePath);
-    raw.pragma("ignore_check_constraints = ON");
+    const raw = openSqliteDatabase(databasePath);
+    execSqlitePragma(raw, "ignore_check_constraints = ON");
     raw
       .prepare(
         `INSERT INTO workflow_notifications (
@@ -490,7 +512,7 @@ describe("workflow run queue", () => {
     expect(() => new SqliteControllerStore(databasePath)).toThrow(
       /pending alpha launch-failure notifications.*reset the project controller store/,
     );
-    const unchanged = new Database(databasePath, { readonly: true });
+    const unchanged = openSqliteDatabase(databasePath, { readOnly: true });
     try {
       expect(
         unchanged

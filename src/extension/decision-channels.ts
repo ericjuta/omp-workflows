@@ -5,7 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import Database from "better-sqlite3";
+import {
+  execSqlitePragma,
+  openSqliteDatabase,
+  runSqliteTransaction,
+  type SqliteDatabase,
+} from "../controllers/sqlite-database.js";
 import {
   MAX_PRESENTATION_TRANSPORT_PARTS,
   decisionDocumentSegments,
@@ -367,7 +372,7 @@ type MessagePartRow = {
 type OffsetRow = { next_offset: number };
 
 class TelegramProjection {
-  private readonly db: Database.Database;
+  private readonly db: SqliteDatabase;
 
   constructor(
     filePath: string,
@@ -375,10 +380,10 @@ class TelegramProjection {
     private readonly owner: string,
   ) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-    this.db = new Database(filePath);
+    this.db = openSqliteDatabase(filePath);
     fs.chmodSync(filePath, 0o600);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("busy_timeout = 5000");
+    execSqlitePragma(this.db, "journal_mode = WAL");
+    execSqlitePragma(this.db, "busy_timeout = 5000");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS leases (
         profile TEXT PRIMARY KEY,
@@ -430,7 +435,7 @@ class TelegramProjection {
   }
 
   acquire(now = Date.now()): boolean {
-    const transaction = this.db.transaction(() => {
+    return runSqliteTransaction(this.db, () => {
       const row = this.db
         .prepare("SELECT owner, expires_at FROM leases WHERE profile = ?")
         .get(this.profile) as { owner: string; expires_at: number } | undefined;
@@ -442,7 +447,6 @@ class TelegramProjection {
         .run(this.profile, this.owner, now + LEASE_TTL_MS);
       return true;
     });
-    return transaction();
   }
 
   renew(now = Date.now()): boolean {

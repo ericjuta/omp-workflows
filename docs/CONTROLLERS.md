@@ -132,7 +132,7 @@ The queue contains one row for each controller and resource key. Repeated enqueu
 
 A claim that expires returns to the queue. A successful settled result removes the queue row. A requested delay updates its available time. Consecutive errors increase an internal retry counter used for backoff.
 
-The local implementation uses `better-sqlite3` in WAL mode. Transactions cover resource compare-and-swap writes, queue claims, and effect claims. `ControllerStore` remains an interface so another host can supply a remote implementation. Pi hosts use a store scoped to the canonical project directory, which prevents a same-named controller in another project from claiming its resources. The store limits each resource spec and status value to 1 MiB. Event payloads are limited to 64 KiB.
+The local implementation uses Node `node:sqlite` and Bun `bun:sqlite` in WAL mode. Transactions cover resource compare-and-swap writes, queue claims, and effect claims. `ControllerStore` remains an interface so another host can supply a remote implementation. Pi hosts use a store scoped to the canonical project directory, which prevents a same-named controller in another project from claiming its resources. The store limits each resource spec and status value to 1 MiB. Event payloads are limited to 64 KiB.
 
 The resource store is the source of truth. Queue rows only describe delivery. A repair can rebuild the queue by enqueuing every resource; each reconciler then computes any needed delay again.
 

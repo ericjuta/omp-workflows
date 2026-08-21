@@ -1,5 +1,5 @@
-import { Type, type Static, type TObject, type TProperties, type TSchema } from "typebox";
-import { Parse, ParseError } from "typebox/value";
+import { Type, type Static, type TSchema } from "typebox";
+import { parseToolInput } from "./tool-input-parse.js";
 
 const noExtraProperties = { additionalProperties: false } as const;
 
@@ -92,9 +92,33 @@ type SchemaValue<Schemas extends Record<string, TSchema>> = Schemas[keyof Schema
 export type WorkflowToolInput = Static<SchemaValue<typeof WorkflowActionSchemas>>;
 export type WorkflowSubmissionInput = Static<SchemaValue<typeof WorkflowSubmissionActionSchemas>>;
 
-export const WorkflowToolParameters = providerObjectSchema(Object.values(WorkflowActionSchemas));
-export const WorkflowSubmissionToolParameters = providerObjectSchema(
-  Object.values(WorkflowSubmissionActionSchemas),
+const workflowToolFields = {
+  offset: Type.Optional(offsetSchema),
+  workflow: Type.Optional(workflowSchema),
+  input: Type.Optional(inputSchema),
+  runId: Type.Optional(runIdSchema),
+  step: Type.Optional(stepSchema),
+  attempt: Type.Optional(attemptSchema),
+  update: Type.Optional(updateSchema),
+  output: Type.Optional(outputSchema),
+};
+
+export const WorkflowToolParameters = Type.Object(
+  {
+    action: Type.String({ enum: Object.keys(WorkflowActionSchemas) }),
+    ...workflowToolFields,
+  },
+  noExtraProperties,
+);
+export const WorkflowSubmissionToolParameters = Type.Object(
+  {
+    action: Type.String({ enum: Object.keys(WorkflowSubmissionActionSchemas) }),
+    step: Type.Optional(stepSchema),
+    attempt: Type.Optional(attemptSchema),
+    update: Type.Optional(updateSchema),
+    output: Type.Optional(outputSchema),
+  },
+  noExtraProperties,
 );
 
 type ToolInputParser<Output> = (value: unknown) => Output;
@@ -133,37 +157,6 @@ export function parseWorkflowSubmissionInput(value: unknown): WorkflowSubmission
   );
 }
 
-function providerObjectSchema(variants: readonly TObject[]): TObject {
-  const actions: string[] = [];
-  const properties: TProperties = {};
-
-  for (const variant of variants) {
-    const action = variant.properties.action;
-    if (!isRecord(action) || typeof action.const !== "string") {
-      throw new Error("Workflow action schema must have a string action literal.");
-    }
-    actions.push(action.const);
-
-    for (const [name, schema] of Object.entries(variant.properties)) {
-      if (name === "action") continue;
-      const optionalSchema = Type.Optional(schema);
-      const current = properties[name];
-      if (current !== undefined && JSON.stringify(current) !== JSON.stringify(optionalSchema)) {
-        throw new Error(`Workflow property ${JSON.stringify(name)} has incompatible schemas.`);
-      }
-      properties[name] = optionalSchema;
-    }
-  }
-
-  return Type.Object(
-    {
-      action: Type.String({ enum: actions }),
-      ...properties,
-    },
-    noExtraProperties,
-  );
-}
-
 function parseSelectedAction<Output>(
   parsers: Readonly<Record<string, ToolInputParser<Output>>>,
   value: unknown,
@@ -181,25 +174,4 @@ function unknownAction(label: string): Error {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function parseToolInput<const Schema extends TSchema>(
-  schema: Schema,
-  value: unknown,
-  label: string,
-): Static<Schema> {
-  try {
-    return Parse(schema, value);
-  } catch (error) {
-    if (!(error instanceof ParseError)) throw error;
-    const details = error.cause.errors
-      .slice(0, 3)
-      .map(({ instancePath, message }) => {
-        const field = instancePath.replace(/^\//u, "").replaceAll("/", ".");
-        const clearMessage = message === "must be integer" ? "must be an integer" : message;
-        return `${field ? `${field} ` : ""}${clearMessage}`;
-      })
-      .join("; ");
-    throw new Error(`Invalid ${label} tool input: ${details}`, { cause: error });
-  }
 }

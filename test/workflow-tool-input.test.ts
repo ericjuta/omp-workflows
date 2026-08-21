@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { parseToolInput } from "../src/workflows/tool-input-parse.js";
 import {
   parseWorkflowSubmissionInput,
   parseWorkflowToolInput,
+  WorkflowActionSchemas,
   WorkflowSubmissionToolParameters,
   WorkflowToolParameters,
 } from "../src/workflows/tool-input.js";
@@ -67,23 +69,20 @@ describe("workflow tool input", () => {
     );
   });
 
+  it("enumerates every action key on the provider schema", () => {
+    expect(WorkflowToolParameters.properties.action).toMatchObject({
+      type: "string",
+      enum: Object.keys(WorkflowActionSchemas),
+    });
+  });
+
   it("publishes provider-compatible object roots", () => {
     expect(WorkflowToolParameters).toMatchObject({
       type: "object",
       required: ["action"],
       properties: {
         action: {
-          enum: [
-            "list",
-            "start",
-            "status",
-            "pause",
-            "resume",
-            "cancel",
-            "answer",
-            "update",
-            "submit",
-          ],
+          enum: Object.keys(WorkflowActionSchemas),
         },
       },
     });
@@ -113,5 +112,20 @@ describe("workflow tool input", () => {
       "step",
       "update",
     ]);
+  });
+
+  it("parses through a host safeParse when the schema provides one", () => {
+    const schema = {
+      safeParse(value: unknown) {
+        if (value === "ok") return { success: true as const, data: { action: "list" } };
+        return { success: false as const, error: {} };
+      },
+    };
+    expect(parseToolInput(schema as never, "ok", "workflow")).toEqual({
+      action: "list",
+    });
+    expect(() => parseToolInput(schema as never, "bad", "workflow")).toThrow(
+      "Invalid workflow tool input: invalid value",
+    );
   });
 });

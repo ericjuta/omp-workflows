@@ -44,4 +44,16 @@ describe("bundled workflow skills", () => {
     expect(skill("autoimplement")).toContain("Do not devise an initial plan");
     expect(skill("autodoc")).toContain("It does not choose, devise, improve, or revise");
   });
+
+  it("owns operator UX for the session, Herdr, and the CLI", () => {
+    const markdown = skill("pi-workflows");
+    expect(markdown).toContain("This session has **one supervisor**");
+    expect(markdown).toContain("Do not add a second supervisor");
+    expect(markdown).toContain("`Ctrl+Shift+R piw`");
+    expect(markdown).toContain("pi-workflows herdr sync");
+    expect(markdown).toContain('{ "action": "start"');
+    expect(markdown).not.toContain("Fleet");
+    expect(markdown).not.toContain("PI_WORKFLOWS_RUN_ID");
+    expect(markdown).not.toContain("## Verify changes");
+  });
 });

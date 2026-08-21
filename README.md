@@ -40,13 +40,14 @@ Or try the npm package without installing it:
 pi -e npm:@osolmaz/pi-workflows
 ```
 
-The Pi package includes the extension and five optional skills:
+The Pi package includes the extension and six optional skills:
 
 - `pi-workflows` teaches the agent how to operate and author workflows.
 - `monitor` starts and operates the built-in monitor workflow.
 - `autoplan` selects the best practical solution and writes an implementation plan.
 - `autodoc` records an existing plan in canonical documentation.
 - `autoimplement` implements an existing plan and verifies the result.
+- `sanity-check` reviews whether a contribution is necessary, focused, and well supported.
 
 Pi discovers these skills when it loads the package. Use `pi config` to disable
 the extension, all bundled skills, or one skill independently. The equivalent

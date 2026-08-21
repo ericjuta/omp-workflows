@@ -102,7 +102,7 @@ afterEach(async () => {
 });
 
 describe.sequential("Pi package resource discovery", () => {
-  it("discovers the extension and both bundled skills from the package", async () => {
+  it("discovers the extension and bundled skills from the package", async () => {
     const tempDir = await makeTempDir();
     const commands = await getCommands(["-e", repoRoot], tempDir);
 
@@ -114,6 +114,9 @@ describe.sequential("Pi package resource discovery", () => {
     );
     expect(command(commands, "skill:pi-workflows")?.sourceInfo?.path).toBe(
       path.join(repoRoot, "skills", "pi-workflows", "SKILL.md"),
+    );
+    expect(command(commands, "skill:sanity-check")?.sourceInfo?.path).toBe(
+      path.join(repoRoot, "skills", "sanity-check", "SKILL.md"),
     );
   });
 

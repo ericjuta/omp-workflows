@@ -16,13 +16,20 @@ describe("bundled workflow skills", () => {
       .map((entry) => entry.name)
       .sort();
 
-    expect(names).toEqual(["autodoc", "autoimplement", "autoplan", "monitor", "pi-workflows"]);
+    expect(names).toEqual([
+      "autodoc",
+      "autoimplement",
+      "autoplan",
+      "monitor",
+      "pi-workflows",
+      "sanity-check",
+    ]);
     for (const name of names) {
       expect(skill(name)).toContain(`name: ${name}`);
     }
   });
 
-  it.each(["autodoc", "autoimplement", "autoplan"])(
+  it.each(["autodoc", "autoimplement", "autoplan", "sanity-check"])(
     "routes %s through its built-in workflow",
     (name) => {
       expect(skill(name)).toContain(`built-in \`${name}\` workflow`);

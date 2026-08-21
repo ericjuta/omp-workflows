@@ -80,6 +80,7 @@ describe("Pi package resources", () => {
       "autoplan/SKILL.md",
       "monitor/SKILL.md",
       "pi-workflows/SKILL.md",
+      "sanity-check/SKILL.md",
     ]);
 
     const names: string[] = [];
@@ -102,7 +103,13 @@ describe("Pi package resources", () => {
   });
 
   it("ships one-shot start contracts for built-in workflow skills", async () => {
-    const expectedWorkflows = ["autodoc", "autoimplement", "autoplan", "monitor"] as const;
+    const expectedWorkflows = [
+      "autodoc",
+      "autoimplement",
+      "autoplan",
+      "monitor",
+      "sanity-check",
+    ] as const;
 
     for (const workflow of expectedWorkflows) {
       const markdown = await fs.readFile(path.join(skillsRoot, workflow, "SKILL.md"), "utf8");

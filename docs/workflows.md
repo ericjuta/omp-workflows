@@ -461,7 +461,7 @@ Host login PATH must include `$HOME/.local/bin` and `$HOME/.bun/bin`. Reviewer c
 
 `runShellAction` applies the same overlay: an `undefined` override removes that key from the child environment.
 
-Autoimplement reviewer items keep executable `pi-reviewer` and arguments `--base <branch>`. They append `$HOME/.local/bin` and `$HOME/.bun/bin` to `PATH` when those directories are missing, and they unset `GOOGLE_GENAI_USE_VERTEXAI` and `GOOGLE_CLOUD_LOCATION` so a Vertex precedence warning cannot break the reviewer's JSON event collector.
+Autoimplement reviewer items keep executable `omp-reviewer` and arguments `--base <branch>`. They append `$HOME/.local/bin` and `$HOME/.bun/bin` to `PATH` when those directories are missing, and they unset `GOOGLE_GENAI_USE_VERTEXAI` and `GOOGLE_CLOUD_LOCATION` so a Vertex precedence warning cannot break the reviewer's JSON event collector.
 
 Autoimplement gives `implement` an eight-hour deadline. When a supported
 long-running agent node times out, one shared read-only fallback inspects the
@@ -474,7 +474,7 @@ effect step first checks what already exists and performs only missing work.
 This graph fallback starts after the timed-out turn ends and is separate from
 successor-turn delivery.
 
-Autoimplement uses batches for pi-reviewer, pending CI watches, and local verification commands from independent repositories. It keeps model turns, fixes, pushes, comment changes, merges, and releases in their existing order. Reviewer commands are tied to the repository, base branch, pushed head, and relevant dependency fingerprint. A later review round includes only repositories whose head or dependency fingerprint changed. P0 or P1 work still requires another review. P2-only work can be addressed and verified without another reviewer run only because of that P2 work.
+Autoimplement uses batches for omp-reviewer, pending CI watches, and local verification commands from independent repositories. It keeps model turns, fixes, pushes, comment changes, merges, and releases in their existing order. Reviewer commands are tied to the repository, base branch, pushed head, and relevant dependency fingerprint. A later review round includes only repositories whose head or dependency fingerprint changed. P0 or P1 work still requires another review. P2-only work can be addressed and verified without another reviewer run only because of that P2 work.
 
 Autoimplement inspects every pull request before it waits for CI. It accepts only supported pending `gh pr checks --watch` or `gh run watch` descriptors and binds each one to the validated pull request as `gh pr checks <PR URL> --watch`. Repository and pull-request overrides are rejected. One watch lasts at most five minutes. A failed or timed-out watch affects only its pull request. When checks remain pending, the model runs more useful local tests before checking CI again. Autoimplement does not invent an ETA.
 

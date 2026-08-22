@@ -67,7 +67,7 @@ describe("autoimplement command batch contracts", () => {
     ).toMatchObject({ dependencyFingerprint: "sha256:dependency" });
     expect(reviewerCommand(parsed.repositories[0]!)).toEqual({
       id: repositoryId(repository),
-      command: "pi-reviewer",
+      command: "omp-reviewer",
       args: ["--base", "main"],
       cwd: path.resolve(repository),
       timeoutMs: 600_000,
@@ -97,21 +97,21 @@ describe("autoimplement command batch contracts", () => {
     expect(JSON.parse(JSON.stringify(host)).envUnset).toEqual(host.envUnset);
   });
 
-  it("finds pi-reviewer on the augmented reviewer lookup path", async () => {
+  it("finds omp-reviewer on the augmented reviewer lookup path", async () => {
     const home = await makeTempDir("reviewer-home");
     const localBin = path.join(home, ".local", "bin");
     await fs.mkdir(localBin, { recursive: true });
     expect(reviewerExecutableExists({ HOME: home, PATH: "" })).toBe(false);
 
-    await fs.writeFile(path.join(localBin, "pi-reviewer"), "#!/bin/sh\n");
+    await fs.writeFile(path.join(localBin, "omp-reviewer"), "#!/bin/sh\n");
     expect(reviewerExecutableExists({ HOME: home, PATH: "" })).toBe(true);
 
     const pathBin = await makeTempDir("reviewer-path");
-    await fs.writeFile(path.join(pathBin, "pi-reviewer"), "#!/bin/sh\n");
+    await fs.writeFile(path.join(pathBin, "omp-reviewer"), "#!/bin/sh\n");
     expect(reviewerExecutableExists({ HOME: "", PATH: pathBin })).toBe(true);
 
     const windowsBin = await makeTempDir("reviewer-windows");
-    await fs.writeFile(path.join(windowsBin, "pi-reviewer.exe"), "binary");
+    await fs.writeFile(path.join(windowsBin, "omp-reviewer.exe"), "binary");
     expect(reviewerExecutableExists({ HOME: "", PATH: windowsBin })).toBe(true);
   });
 

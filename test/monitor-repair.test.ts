@@ -184,7 +184,7 @@ beforeEach(async () => {
   originalPath = process.env.PATH ?? "";
   const commandDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-workflows-monitor-commands-"));
   repository = await makeTempDir("pi-workflows-monitor-repo");
-  await fs.writeFile(path.join(commandDir, "pi-reviewer"), "#!/bin/sh\necho clean\n", {
+  await fs.writeFile(path.join(commandDir, "omp-reviewer"), "#!/bin/sh\necho clean\n", {
     mode: 0o755,
   });
   process.env.PATH = `${commandDir}:${originalPath}`;

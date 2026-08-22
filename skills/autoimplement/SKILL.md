@@ -1,6 +1,6 @@
 ---
 name: autoimplement
-description: Use when the user asks to implement a plan end-to-end, test it, run pi-reviewer against the base branch in a loop until no P0/P1 issues remain, and make sure CI/CD is green before finishing.
+description: Use when the user asks to implement a plan end-to-end, test it, run omp-reviewer against the base branch in a loop until no P0/P1 issues remain, and make sure CI/CD is green before finishing.
 compatibility: Requires omp-workflows and the built-in autoimplement workflow.
 ---
 
@@ -10,7 +10,7 @@ compatibility: Requires omp-workflows and the built-in autoimplement workflow.
 
 1. Call `workflow` `list` with `kind: "runs"` before starting. Resume a matching live or paused run instead of starting another.
 2. Never start a second `autoimplement` for the same task after timeout, cancel, or a parked session. Inspect and resume the existing run.
-3. Missing `pi-reviewer` is a blocker after one repair attempt, not a redesign loop.
+3. Missing `omp-reviewer` is a blocker after one repair attempt, not a redesign loop.
 
 ## Start the workflow
 
@@ -84,7 +84,7 @@ Skip plan decisions when the user says to accept every new plan immediately:
 
 Omit `approval` for autonomous mode. It asks the `operator` audience and continues with the exact presented plan after 10 minutes without an accepted answer. The workflow owns this decision. The model must not answer the protected decision through the workflow tool. Pi TUI, OMP TUI, and OMP RPC collect the answer through their host-owned decision UI; JSON, print, and non-OMP RPC require an external channel or the saved timeout policy.
 
-Do not manually duplicate stages already owned by the workflow. Autoimplement runs independent pi-reviewer commands, pending CI watches, and local verification commands from separate repositories in bounded batches. It keeps model turns, fixes, pushes, comment changes, merges, and releases ordered. One repository uses the same batch path with concurrency one.
+Do not manually duplicate stages already owned by the workflow. Autoimplement runs independent omp-reviewer commands, pending CI watches, and local verification commands from separate repositories in bounded batches. It keeps model turns, fixes, pushes, comment changes, merges, and releases ordered. One repository uses the same batch path with concurrency one.
 
 When this skill is loaded inside an active workflow step, do not start another workflow. Complete the current step contract with the available tools.
 
@@ -108,19 +108,19 @@ Outside Pi, or when the workflow is unavailable, do the following in the order t
    - Do not put mutation testing on the critical path unless repository policy explicitly requires it; keep the mutation test scripts available.
 
 3. Push your latest commits before running review so the review is always against the current PR head.
-   - Run pi-reviewer with its configured defaults against the base branch: `pi-reviewer --base <branch_name>`. The model and thinking level come from the reviewer's own config, not from this skill.
+   - Run omp-reviewer with its configured defaults against the base branch: `omp-reviewer --base <branch_name>`. The model and thinking level come from the reviewer's own config, not from this skill.
    - Run reviewer commands for independent repositories in one bounded batch. Keep each result tied to its repository, base branch, pushed head, and relevant dependency fingerprint.
    - In later rounds, rerun only repositories whose pushed head or relevant dependency fingerprint changed.
-   - Use a 10 minute timeout for each reviewer item, not the shell `timeout` program. If pi-reviewer takes more than 10 minutes, stop that item.
-   - Do not silently fall back to `codex review` when pi-reviewer is unavailable; stop and report the missing command or configuration for that repository.
+   - Use a 10 minute timeout for each reviewer item, not the shell `timeout` program. If omp-reviewer takes more than 10 minutes, stop that item.
+   - Do not silently fall back to `codex review` when omp-reviewer is unavailable; stop and report the missing command or configuration for that repository.
    - Treat truncated reviewer output as an invalid review, never a clean result.
    - Record every review round with separate P0, P1, P2, and lower findings for each repository.
-   - Run pi-reviewer in a loop and address any P0 or P1 issues until there are none left.
-   - If a round reports only P2 or lower findings, address valid proportionate P2 findings, verify and push them, then move to the next stage without running pi-reviewer again solely because of that P2 work.
+   - Run omp-reviewer in a loop and address any P0 or P1 issues until there are none left.
+   - If a round reports only P2 or lower findings, address valid proportionate P2 findings, verify and push them, then move to the next stage without running omp-reviewer again solely because of that P2 work.
    - Ignore issues about supporting legacy behavior unless the plan requires compatibility.
-   - Look at CI only after pi-reviewer passes, meaning the last completed run found no issues or only P2 or lower issues.
+   - Look at CI only after omp-reviewer passes, meaning the last completed run found no issues or only P2 or lower issues.
 
-4. pi-reviewer reports findings locally and does not post them to the pull request.
+4. omp-reviewer reports findings locally and does not post them to the pull request.
    - Separately check existing inline review comments and PR issue comments, and address valid comments.
    - Ignore irrelevant comments and stale comments from before the latest commit unless they still apply.
    - Reply to and resolve each comment either way.

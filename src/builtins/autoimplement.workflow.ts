@@ -1507,7 +1507,7 @@ export const autoimplementWorkflow = defineWorkflow({
       run: selectReviewCommands,
     }),
     runReview: action({
-      statusDetail: "running pi-reviewer commands",
+      statusDetail: "running omp-reviewer commands",
       timeoutMs: (context) => {
         const selected = latestOutput<ReviewCommandSelection>(context, ["selectReviewCommands"]);
         return commandBatchTimeoutMs(selected.commands, concurrency(context).reviewer);
@@ -1525,7 +1525,7 @@ export const autoimplementWorkflow = defineWorkflow({
           ? {
               route: "blocked",
               batch,
-              reason: "pi-reviewer failed again after one reviewer repair attempt.",
+              reason: "omp-reviewer failed again after one reviewer repair attempt.",
             }
           : { route: "repair", batch };
       },
@@ -1534,10 +1534,10 @@ export const autoimplementWorkflow = defineWorkflow({
       statusDetail: "repairing reviewer prerequisites",
       prompt: (context) =>
         [
-          "One or more pi-reviewer commands failed, timed out, or returned truncated output.",
+          "One or more omp-reviewer commands failed, timed out, or returned truncated output.",
           "Diagnose and fix only local reviewer prerequisites or configuration that are in scope.",
           "Do not change the deterministic executable, base branch, or repository command shape, and do not substitute another reviewer.",
-          "Choose retry only when the same commands can now produce complete reviews. Choose blocked when pi-reviewer or required configuration remains unavailable.",
+          "Choose retry only when the same commands can now produce complete reviews. Choose blocked when omp-reviewer or required configuration remains unavailable.",
           `Failed batch: ${JSON.stringify(context.outputs.runReview)}`,
         ].join("\n"),
       expectedOutput: `{ "route": "retry" | "blocked", "reason": "diagnosis and action" }`,
@@ -1547,7 +1547,7 @@ export const autoimplementWorkflow = defineWorkflow({
         return {
           ...result,
           route: "blocked" as const,
-          reason: "pi-reviewer remains unavailable on the reviewer lookup PATH after repair.",
+          reason: "omp-reviewer remains unavailable on the reviewer lookup PATH after repair.",
         };
       },
     }),
@@ -1557,7 +1557,7 @@ export const autoimplementWorkflow = defineWorkflow({
         const selected = latestOutput<ReviewCommandSelection>(context, ["selectReviewCommands"]);
         const execution = latestOutput<BatchExecution>(context, ["runReview"]);
         return [
-          "Assess each completed pi-reviewer result separately.",
+          "Assess each completed omp-reviewer result separately.",
           "Return one repository entry for every selected command, using the exact repository id.",
           "Set invocationSucceeded false when a complete valid review was not produced.",
           "Record every finding under P0, P1, P2, or lower and mark it as design or implementation.",
@@ -1587,7 +1587,7 @@ export const autoimplementWorkflow = defineWorkflow({
         [
           "Address valid P2 findings from the last review when the improvement is proportionate and in scope.",
           "Inspect the current diff and commits first. Do not repeat a P2 change that is already present.",
-          "Do not rerun pi-reviewer solely because P2 work changes files. Verification will run once, then the workflow continues.",
+          "Do not rerun omp-reviewer solely because P2 work changes files. Verification will run once, then the workflow continues.",
           `Review: ${JSON.stringify(outputs.assessReview)}`,
         ].join("\n"),
       expectedOutput: `{ "addressed": ["P2 change"], "skipped": [{ "finding": "finding", "reason": "why" }] }`,
@@ -1600,7 +1600,7 @@ export const autoimplementWorkflow = defineWorkflow({
         [
           "Run focused verification for the P2 changes and push the verified result.",
           "Inspect the local and remote heads first. Do not push again when the verified head is already remote.",
-          "Do not run pi-reviewer again because the previous round had no P0 or P1 findings.",
+          "Do not run omp-reviewer again because the previous round had no P0 or P1 findings.",
           "Re-observe every published PR after the push and return its current repository, branch, base branch, head revision, PR URL, pushed status, and unchanged dependency fingerprint.",
           "Report exact commands and outcomes.",
         ].join("\n"),

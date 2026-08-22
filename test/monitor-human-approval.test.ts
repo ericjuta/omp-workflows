@@ -240,7 +240,7 @@ beforeEach(async () => {
   originalPath = process.env.PATH ?? "";
   repository = await makeTempDir("monitor-approval-repository");
   const commands = await fs.mkdtemp(path.join(os.tmpdir(), "monitor-approval-commands-"));
-  await fs.writeFile(path.join(commands, "pi-reviewer"), "#!/bin/sh\necho clean\n", {
+  await fs.writeFile(path.join(commands, "omp-reviewer"), "#!/bin/sh\necho clean\n", {
     mode: 0o755,
   });
   process.env.PATH = `${commands}:${originalPath}`;

@@ -269,7 +269,7 @@ Autoimplement includes the shared plan-change workflow only as evidence-driven `
 
 Review rounds record findings at every severity from P0 through P2. P0 or P1 findings require another implementation and review round. A P2-only round can be addressed, but the workflow does not run the reviewer again solely because P2 work changed files.
 
-Reviewer and CI commands record the executable, arguments, working directory, and timeout as structured fields. A failed reviewer invocation returns to a model step that corrects the command. The executable remains `pi-reviewer`; no hidden reviewer substitution is allowed.
+Reviewer and CI commands record the executable, arguments, working directory, and timeout as structured fields. A failed reviewer invocation returns to a model step that corrects the command. The executable remains `omp-reviewer`; no hidden reviewer substitution is allowed.
 
 A CI wait is bounded to five minutes. If CI remains pending, the workflow asks the model to run additional useful local tests. It does not spend another model turn waiting and checks CI again after the tests.
 

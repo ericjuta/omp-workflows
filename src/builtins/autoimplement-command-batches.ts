@@ -137,7 +137,7 @@ export function reviewerLookupPath(
   return parts.join(path.delimiter);
 }
 
-/** Check if pi-reviewer exists in the augmented reviewer lookup PATH. */
+/** Check if omp-reviewer exists in the augmented reviewer lookup PATH. */
 export function reviewerExecutableExists(source: NodeJS.ProcessEnv = process.env): boolean {
   const lookup = reviewerLookupPath(source.PATH, source.HOME);
   return lookup
@@ -145,8 +145,8 @@ export function reviewerExecutableExists(source: NodeJS.ProcessEnv = process.env
     .filter((entry) => entry.length > 0)
     .some(
       (directory) =>
-        existsSync(path.join(directory, "pi-reviewer")) ||
-        existsSync(path.join(directory, "pi-reviewer.exe")),
+        existsSync(path.join(directory, "omp-reviewer")) ||
+        existsSync(path.join(directory, "omp-reviewer.exe")),
     );
 }
 
@@ -164,7 +164,7 @@ export function reviewerHostEnv(source: NodeJS.ProcessEnv = process.env): {
 export function reviewerCommand(repository: PublishedRepository): CommandBatchItem {
   return {
     id: repository.id,
-    command: "pi-reviewer",
+    command: "omp-reviewer",
     args: ["--base", repository.baseBranch],
     cwd: repository.repository,
     timeoutMs: REVIEW_TIMEOUT_MS,

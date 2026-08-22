@@ -21,7 +21,7 @@ async function installCommand(name: string, body: string): Promise<void> {
 
 function reviewerCommand(cwd = repository) {
   return {
-    command: "pi-reviewer",
+    command: "omp-reviewer",
     args: ["--base", "main"],
     cwd,
     timeoutMs: 600_000,
@@ -235,7 +235,7 @@ beforeEach(async () => {
   originalHome = process.env.HOME;
   commandDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-workflows-commands-"));
   repository = await makeTempDir("pi-workflows-autoimplement-repo");
-  await installCommand("pi-reviewer", "printf '%s\\n' \"review complete\"");
+  await installCommand("omp-reviewer", "printf '%s\\n' \"review complete\"");
   await installCommand("gh", "printf '%s\\n' \"checks complete\"");
   process.env.PATH = `${commandDir}:${originalPath}`;
 });
@@ -957,7 +957,7 @@ describe("built-in autoimplement", () => {
     if (review?.nodeType !== "action" || !("run" in review)) {
       throw new Error("runReview must be a function action");
     }
-    await installCommand("pi-reviewer", "printf '%s\\n' 'P1 finding'; exit 1");
+    await installCommand("omp-reviewer", "printf '%s\\n' 'P1 finding'; exit 1");
     expect(
       await review.run(
         makeContext({
@@ -978,7 +978,7 @@ describe("built-in autoimplement", () => {
               commands: [
                 {
                   id: repositoryId(repository),
-                  command: "pi-reviewer",
+                  command: "omp-reviewer",
                   args: ["--base", "main"],
                   cwd: repository,
                   timeoutMs: 600_000,
@@ -1499,7 +1499,7 @@ describe("built-in autoimplement", () => {
   it("asks for repaired reviewer prerequisites after an invocation failure", async () => {
     const marker = path.join(commandDir, "reviewer-retried");
     await installCommand(
-      "pi-reviewer",
+      "omp-reviewer",
       `if [ ! -f ${JSON.stringify(marker)} ]; then touch ${JSON.stringify(marker)}; exit 1; fi\nprintf '%s\\n' "review complete"`,
     );
     const executor = commonExecutor()
@@ -1604,8 +1604,8 @@ describe("built-in autoimplement", () => {
     ).toContain("The reviewer command failed again.");
   });
 
-  it("blocks when pi-reviewer is still missing after one repair", async () => {
-    await fs.rm(path.join(commandDir, "pi-reviewer"));
+  it("blocks when omp-reviewer is still missing after one repair", async () => {
+    await fs.rm(path.join(commandDir, "omp-reviewer"));
     process.env.PATH = commandDir;
     process.env.HOME = "";
     const executor = commonExecutor()
@@ -1613,7 +1613,7 @@ describe("built-in autoimplement", () => {
         output: { route: "retry", reason: "reviewer lookup repaired" },
       })
       .respond("challengeBlocker", {
-        output: confirmedChallenge("pi-reviewer is not installed."),
+        output: confirmedChallenge("omp-reviewer is not installed."),
       });
     const { state } = await new WorkflowEngine({
       executor,
@@ -1628,7 +1628,7 @@ describe("built-in autoimplement", () => {
     expect(state.status).toBe("completed");
     expect(state.finalOutput).toMatchObject({
       status: "blocked",
-      reason: "pi-reviewer is not installed.",
+      reason: "omp-reviewer is not installed.",
     });
     expect(state.steps.filter((step) => step.nodeId === "repairReviewCommand")).toHaveLength(1);
     expect(state.steps.filter((step) => step.nodeId === "runReview")).toHaveLength(1);
@@ -1644,7 +1644,7 @@ describe("built-in autoimplement", () => {
     const secondRepository = await makeTempDir("pi-workflows-autoimplement-second-repo");
     const eventsPath = path.join(commandDir, "review-events.log");
     await installCommand(
-      "pi-reviewer",
+      "omp-reviewer",
       `printf 'start %s\\n' "$PWD" >> ${JSON.stringify(eventsPath)}\nsleep 0.15\nprintf 'end %s\\n' "$PWD" >> ${JSON.stringify(eventsPath)}\nprintf '%s\\n' "review complete"`,
     );
     const publication = {

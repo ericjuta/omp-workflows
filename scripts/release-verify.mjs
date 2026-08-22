@@ -15,13 +15,14 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const inventoryPath = path.join(root, "scripts", "release-inventory.json");
 
 function run(command, args, options = {}) {
-  return execFileSync(command, args, {
+  const output = execFileSync(command, args, {
     cwd: root,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 32 * 1024 * 1024,
     ...options,
-  }).trim();
+  });
+  return output?.trim() ?? "";
 }
 
 function option(name, fallback) {

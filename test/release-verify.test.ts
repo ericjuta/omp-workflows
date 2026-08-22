@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
+import { makeTempDir } from "./helpers.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const verifier = path.join(root, "scripts", "release-verify.mjs");
@@ -46,4 +48,25 @@ describe("release verifier", () => {
     );
     expect(result.status).toBe(0);
   });
+  it("prepares artifacts when build commands inherit stdio", async () => {
+    const outDir = await makeTempDir("omp-release-prepare");
+    try {
+      const result = runVerifier([
+        "prepare",
+        "--expected-main-commit",
+        "HEAD",
+        "--allow-dirty",
+        "--skip-tag-ref",
+        "--skip-registry",
+        "--out-dir",
+        outDir,
+      ]);
+      expect(result.status, result.stderr).toBe(0);
+      await expect(
+        fsp.readFile(path.join(outDir, "release-manifest.json"), "utf8"),
+      ).resolves.toContain('"schema": "omp-workflows.release-manifest.v1"');
+    } finally {
+      await fsp.rm(outDir, { recursive: true, force: true });
+    }
+  }, 120_000);
 });

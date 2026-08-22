@@ -117,20 +117,31 @@ downstream rerun. Resume repairs a torn trace tail, drops trace events the
 state projection never recorded, and refuses to continue if the workflow
 source changed since the run started (a forced resume records the mismatch).
 
-The standalone host runs without an interactive session:
+The standalone host is the only supervisor for a canonical project:
 
 ```bash
 omp-workflows host --project /path/to/project
+omp-workflows host install --project /path/to/project
+omp-workflows host status --project /path/to/project --json
 ```
+
+Before opening project resources, the host claims a private transient lease for
+that identity. A live duplicate host is rejected. A provably stale owner can be
+reclaimed; ambiguous PID reuse, reboot, or heartbeat state is reported as
+`inconsistent` and never deletes durable runs. `host status` reads the lease and
+bounded health snapshot without starting a host. Linux user-level systemd
+commands wrap the same foreground host, write one generated unit, and preserve
+durable state on uninstall. Logs are on `journalctl --user`.
 
 The host claims parked runs, resumes them, and reconciles durable controllers.
 Conversation nodes execute in headless `omp --mode rpc` children that load a
 small bridge extension; the model sees the same `workflow` tool contract as an
-in-session run. The host is a foreground process: start it in a terminal and
-stop it with Ctrl-C. A second host for the same project refuses to start, and
-a host that dies has its orphaned children reaped by the next one. While the host works, reports enter a durable outbox addressed to the Pi
-session that started the run. They remain pending while that session is closed
-and never enter another conversation in the same project.
+in-session run. A headless host may advertise pending protected-decision IDs but
+has no path to answer them. Closing an interactive session detaches the durable
+presentation; a later same-project OMP or Herdr session can adopt it once.
+While the host works, reports enter a durable outbox addressed to the session
+that started the run. They remain pending while that session is closed and never
+enter another conversation in the same project.
 
 ## Node types
 

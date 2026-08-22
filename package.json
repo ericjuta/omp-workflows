@@ -1,6 +1,6 @@
 {
   "name": "@ericjuta/omp-workflows",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Workflow and controller runtime with native OMP integration and a live terminal viewer",
   "keywords": [
     "omp-plugin",
@@ -61,9 +61,14 @@
     "format:check": "oxfmt --check",
     "lint": "oxlint --deny-warnings src test examples",
     "prepare": "node scripts/prepare.mjs",
+    "release:check": "node scripts/release-verify.mjs check-metadata",
+    "release:inventory": "node scripts/release-verify.mjs check-inventory --allow-dirty",
+    "release:prepare": "node scripts/release-verify.mjs prepare",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "test:host-soak": "node scripts/host-soak.mjs",
+    "test:host-soak:release": "node scripts/host-soak.mjs --release",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

@@ -1,0 +1,12 @@
+{
+  "schema": "pi-workflows.definition-snapshot.v1",
+  "name": "v012-upgrade-fixture",
+  "startAt": "review",
+  "nodes": {
+    "review": {
+      "nodeType": "checkpoint",
+      "summary": "Sanitized compatibility checkpoint"
+    }
+  },
+  "edges": []
+}

@@ -26,66 +26,29 @@ jobs:
           ref: ${{ github.event.release.tag_name }}
           fetch-depth: 0
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
-      - name: Validate release
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare release artifacts
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          metadata="$(cargo metadata --manifest-path tui/Cargo.toml --no-deps --format-version 1)"
-          package_name="$(jq -r '.packages[0].name' <<<"$metadata")"
-          version="$(jq -r '.packages[0].version' <<<"$metadata")"
-          expected_tag="v${version}"
-
-          if [[ "$package_name" != "omp-workflows" ]]; then
-            echo "Cargo package is $package_name, expected omp-workflows." >&2
-            exit 1
-          fi
-          if [[ "$RELEASE_TAG" != "$expected_tag" ]]; then
-            echo "The release tag $RELEASE_TAG does not match Cargo version $version (expected $expected_tag)." >&2
-            exit 1
-          fi
-
           git fetch origin "$DEFAULT_BRANCH"
-          if ! git merge-base --is-ancestor HEAD "origin/$DEFAULT_BRANCH"; then
-            echo "The release commit is not on origin/$DEFAULT_BRANCH." >&2
-            exit 1
-          fi
-
-          registry_status="$(
-            curl \
-              --silent \
-              --show-error \
-              --retry 3 \
-              --retry-all-errors \
-              --output /tmp/crates-io-version.json \
-              --write-out '%{http_code}' \
-              --user-agent 'omp-workflows-release-workflow (https://github.com/ericjuta/omp-workflows)' \
-              "https://crates.io/api/v1/crates/${package_name}/${version}"
-          )"
-          case "$registry_status" in
-            404) ;;
-            200)
-              echo "${package_name} ${version} is already published." >&2
-              exit 1
-              ;;
-            *)
-              echo "crates.io version lookup returned HTTP ${registry_status}." >&2
-              exit 1
-              ;;
-          esac
-
-      - name: Check package
-        run: |
-          cargo fmt --manifest-path tui/Cargo.toml -- --check
-          cargo clippy --manifest-path tui/Cargo.toml --all-targets -- -D warnings
-          cargo test --manifest-path tui/Cargo.toml
-          cargo publish --manifest-path tui/Cargo.toml --dry-run
+          node scripts/release-verify.mjs prepare \
+            --expected-main-commit "origin/${DEFAULT_BRANCH}" \
+            --out-dir release-artifacts
 
       - name: Authenticate with crates.io
         id: crates-io-auth
@@ -94,26 +57,18 @@ jobs:
       - name: Publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
-        run: cargo publish --manifest-path tui/Cargo.toml
-
-      - name: Verify registry
         run: |
           set -euo pipefail
-          version="$(cargo metadata --manifest-path tui/Cargo.toml --no-deps --format-version 1 | jq -r '.packages[0].version')"
-          for attempt in {1..12}; do
-            status="$(
-              curl \
-                --silent \
-                --show-error \
-                --output /tmp/crates-io-version.json \
-                --write-out '%{http_code}' \
-                --user-agent 'omp-workflows-release-workflow (https://github.com/ericjuta/omp-workflows)' \
-                "https://crates.io/api/v1/crates/omp-workflows/${version}"
-            )"
-            if [[ "$status" == "200" ]]; then
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "crates.io did not report omp-workflows ${version} after publication." >&2
-          exit 1
+          state="$(node scripts/release-verify.mjs registry-state --manifest release-artifacts/release-manifest.json --kind crate)"
+          if [[ "$state" == "matched" ]]; then
+            echo "crates.io 0.13.0 already matches the release manifest"
+            exit 0
+          fi
+          if [[ "$state" != "absent" && "$state" != "unchecked" ]]; then
+            echo "crates.io registry state is $state" >&2
+            exit 1
+          fi
+          cargo publish --manifest-path tui/Cargo.toml
+
+      - name: Verify registry
+        run: node scripts/release-verify.mjs verify-registry --manifest release-artifacts/release-manifest.json --kind crate

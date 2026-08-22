@@ -120,7 +120,8 @@ omp-workflows runs
 omp-workflows view [runId]
 omp-workflows view [runId] --once
 omp-workflows cancel <runId> --dir <runsDir>
-omp-workflows host --project /path/to/project
+omp-workflows host [foreground|install|start|stop|restart|status|uninstall] --project /path/to/project
+omp-workflows host status --project /path/to/project --json
 ompw
 ompw ~/.pi/agent/workflows/runs/<runId>
 ```

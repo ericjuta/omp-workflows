@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import fs from "node:fs";
 import path from "node:path";
 import { builtinWorkflowCatalog } from "../builtins/catalog.js";
 import {
@@ -18,10 +17,17 @@ import {
   isClaimLostError,
   WorkflowSourceChangedError,
 } from "../workflows/errors.js";
+import { HumanDecisionStore } from "../workflows/human-decision.js";
 import { resolveWorkflowRef, resolveWorkflowSource } from "../workflows/loader.js";
 import { migrateLegacyWorkflowSources } from "../workflows/migrate-sources.js";
 import { WorkflowRunStore, readRunBundle } from "../workflows/store.js";
 import type { WorkflowDefinition } from "../workflows/types.js";
+import {
+  DEFAULT_HOST_HEARTBEAT_MS,
+  HostOwnership,
+  type HostHealthError,
+  type HostLifecycleState,
+} from "./ownership.js";
 import { HostProcessRegistry } from "./processes.js";
 import { RpcStepExecutor } from "./rpc-executor.js";
 
@@ -44,6 +50,8 @@ export type WorkflowHostOptions = {
   env?: Record<string, string>;
   /** Poll interval for the claim loop; tests use a faster cadence. */
   claimPollMs?: number;
+  /** Health heartbeat interval; tests may use a faster cadence. */
+  heartbeatMs?: number;
   onLog?: (message: string) => void;
 };
 
@@ -57,11 +65,15 @@ export type WorkflowHostOptions = {
 export class WorkflowHost {
   private readonly options: WorkflowHostOptions;
   private readonly runnerId: string;
-  private readonly registry: HostProcessRegistry;
-  private readonly store: SqliteControllerStore;
+  private readonly ownership: HostOwnership;
+  private controllerStore: SqliteControllerStore | null = null;
   private readonly childRunStore: WorkflowRunStore;
+  private readonly registry: HostProcessRegistry;
   private manager: ControllerManager | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private healthTimer: ReturnType<typeof setInterval> | null = null;
+  private healthRefreshActive = false;
+  private started = false;
   private readonly activeRuns = new Map<string, Promise<void>>();
   private readonly migrationBlockedRuns = new Set<string>();
   private readonly schedulerExecutors = new Map<WorkflowEngine, RpcStepExecutor>();
@@ -69,120 +81,209 @@ export class WorkflowHost {
   private readonly skippedRuns = new Set<string>();
   private stopping = false;
 
-  private readonly stateDir: string;
-
   constructor(options: WorkflowHostOptions) {
-    this.options = options;
     this.runnerId = options.runnerId ?? `host-${randomUUID().slice(0, 8)}`;
-    this.store = new SqliteControllerStore(
-      options.storeFile ?? projectControllerStorePath(options.cwd),
+    this.ownership = new HostOwnership(
+      options.cwd,
+      options.storeFile === undefined ? {} : { stateDir: path.dirname(options.storeFile) },
     );
-    this.stateDir = path.dirname(this.store.filePath);
-    this.registry = options.registry ?? new HostProcessRegistry(this.stateDir);
+    this.options = { ...options, cwd: this.ownership.canonicalProject };
+    this.registry = options.registry ?? new HostProcessRegistry(this.ownership.stateDir);
     this.childRunStore = new WorkflowRunStore(
       options.runsDir ?? process.env.PI_WORKFLOWS_RUNS_DIR ?? undefined,
     );
+    this.controllerStore = new SqliteControllerStore(
+      options.storeFile ?? projectControllerStorePath(this.options.cwd),
+    );
   }
 
+  /** Callback invoked when a claimed run completes. */
+  onRunComplete?: (runId: string, result: Awaited<ReturnType<WorkflowEngine["run"]>>) => void;
+
+  private get store(): SqliteControllerStore {
+    if (this.controllerStore === null) {
+      throw new Error("Workflow host is not started");
+    }
+    return this.controllerStore;
+  }
   private log(message: string): void {
     this.options.onLog?.(message);
   }
 
-  /** Take the advisory lock, reap orphans, and start claiming. */
+  /** Take ownership, reap orphans, and start claiming. */
   async start(): Promise<void> {
-    // The lock comes first: a second host must refuse before touching the
-    // children registry, or it would kill the live host's child processes
-    // as supposed orphans.
-    acquireHostLock(this.stateDir, this.runnerId, this.options.cwd);
-    const reaped = this.registry.reapOrphans();
-    if (reaped.length > 0) {
-      this.log(`reaped ${reaped.length} orphaned headless session(s): ${reaped.join(", ")}`);
+    if (this.started) {
+      throw new Error("Workflow host is already started");
     }
+    this.stopping = false;
+    try {
+      this.ownership.acquire();
+      if (this.controllerStore === null) {
+        this.controllerStore = new SqliteControllerStore(
+          this.options.storeFile ?? projectControllerStorePath(this.options.cwd),
+        );
+      }
+      const reaped = this.registry.reapOrphans();
+      if (reaped.length > 0) {
+        this.log(`reaped ${reaped.length} orphaned headless session(s): ${reaped.join(", ")}`);
+      }
+      await this.refreshHealth("starting");
 
-    const migration = await migrateLegacyWorkflowSources({
-      catalog: builtinWorkflowCatalog,
-      store: this.childRunStore,
-      queue: this.store,
-    });
-    for (const blocked of migration.blocked) {
-      this.migrationBlockedRuns.add(blocked.runId);
-      this.log(`run ${blocked.runId} parked: ${blocked.reason}`);
-    }
-
-    const definitions = await loadDiscoveredControllers({ cwd: this.options.cwd });
-    if (definitions.length > 0) {
-      const scheduler = new WorkflowEngineScheduler({
+      const migration = await migrateLegacyWorkflowSources({
+        catalog: builtinWorkflowCatalog,
         store: this.childRunStore,
-        resolveWorkflow: async (name) => {
-          const resolved = await resolveWorkflowRef(
-            name,
-            { cwd: this.options.cwd },
-            builtinWorkflowCatalog,
-          );
-          return { workflow: resolved.definition, workflowSource: resolved.source };
-        },
-        createEngine: () => {
-          const executor = new RpcStepExecutor({
-            cwd: this.options.cwd,
-            registry: this.registry,
-            ...(this.options.ompBin !== undefined ? { ompBin: this.options.ompBin } : {}),
-            ...(this.options.ompArgs !== undefined ? { ompArgs: this.options.ompArgs } : {}),
-            ...(this.options.env !== undefined ? { env: this.options.env } : {}),
-          });
-          const engine = new WorkflowEngine({ executor, store: this.childRunStore });
-          this.schedulerExecutors.set(engine, executor);
-          return engine;
-        },
-        disposeEngine: async (engine) => {
-          const executor = this.schedulerExecutors.get(engine);
-          if (executor !== undefined) {
-            this.schedulerExecutors.delete(engine);
-            await executor.close();
-          }
-        },
+        queue: this.store,
       });
-      this.manager = new ControllerManager({
-        store: this.store,
-        controllers: definitions,
-        workflowScheduler: scheduler,
-      });
-      this.manager.start();
-      this.log(`controller workers started for ${definitions.length} controller(s)`);
-    }
+      for (const blocked of migration.blocked) {
+        this.migrationBlockedRuns.add(blocked.runId);
+        this.log(`run ${blocked.runId} parked: ${blocked.reason}`);
+      }
 
-    this.pollTimer = setInterval(() => {
+      const definitions = await loadDiscoveredControllers({ cwd: this.options.cwd });
+      if (definitions.length > 0) {
+        const scheduler = new WorkflowEngineScheduler({
+          store: this.childRunStore,
+          resolveWorkflow: async (name) => {
+            const resolved = await resolveWorkflowRef(
+              name,
+              { cwd: this.options.cwd },
+              builtinWorkflowCatalog,
+            );
+            return { workflow: resolved.definition, workflowSource: resolved.source };
+          },
+          createEngine: () => {
+            const executor = new RpcStepExecutor({
+              cwd: this.options.cwd,
+              registry: this.registry,
+              ...(this.options.ompBin !== undefined ? { ompBin: this.options.ompBin } : {}),
+              ...(this.options.ompArgs !== undefined ? { ompArgs: this.options.ompArgs } : {}),
+              ...(this.options.env !== undefined ? { env: this.options.env } : {}),
+            });
+            const engine = new WorkflowEngine({ executor, store: this.childRunStore });
+            this.schedulerExecutors.set(engine, executor);
+            return engine;
+          },
+          disposeEngine: async (engine) => {
+            const executor = this.schedulerExecutors.get(engine);
+            if (executor !== undefined) {
+              this.schedulerExecutors.delete(engine);
+              await executor.close();
+            }
+          },
+        });
+        this.manager = new ControllerManager({
+          store: this.store,
+          controllers: definitions,
+          workflowScheduler: scheduler,
+        });
+        this.manager.start();
+        this.log(`controller workers started for ${definitions.length} controller(s)`);
+      }
+
+      this.started = true;
+      await this.refreshHealth("running");
+      this.healthTimer = setInterval(() => {
+        void this.refreshHealth("running").catch((error: unknown) => {
+          this.log(`host heartbeat failed: ${errorMessage(error)}`);
+          void this.stop();
+        });
+      }, this.options.heartbeatMs ?? DEFAULT_HOST_HEARTBEAT_MS);
+      this.pollTimer = setInterval(() => {
+        this.claimOnce();
+      }, this.options.claimPollMs ?? CLAIM_POLL_MS);
+      this.pollTimer.unref?.();
       this.claimOnce();
-    }, this.options.claimPollMs ?? CLAIM_POLL_MS);
-    this.pollTimer.unref?.();
-    this.claimOnce();
-    this.log(`host ${this.runnerId} watching ${this.options.cwd}`);
+      this.log(`host ${this.runnerId} watching ${this.options.cwd}`);
+    } catch (error) {
+      await this.manager?.stop().catch(() => undefined);
+      this.manager = null;
+      for (const executor of this.schedulerExecutors.values()) {
+        await executor.close().catch(() => undefined);
+      }
+      this.schedulerExecutors.clear();
+      this.registry.killAll();
+      this.controllerStore?.close();
+      this.controllerStore = null;
+      this.ownership.release();
+      this.started = false;
+      throw error;
+    }
   }
 
-  /** Drain: stop claiming, park in-flight runs, stop controllers, kill children. */
+  /** Drop ownership first, then drain in-flight work. */
   async stop(): Promise<void> {
-    if (this.stopping) {
-      return;
-    }
+    if (this.stopping) return;
     this.stopping = true;
     if (this.pollTimer !== null) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
-    const pending = [...this.activeRuns.values()];
-    for (const run of this.parkedEngines.splice(0)) {
-      run();
+    if (this.healthTimer !== null) {
+      clearInterval(this.healthTimer);
+      this.healthTimer = null;
     }
+    this.ownership.release();
+    this.started = false;
+    const pending = [...this.activeRuns.values()];
+    for (const run of this.parkedEngines.splice(0)) run();
     await Promise.allSettled(pending);
     await this.manager?.stop().catch(() => undefined);
+    this.manager = null;
     for (const executor of this.schedulerExecutors.values()) {
       await executor.close().catch(() => undefined);
     }
     this.schedulerExecutors.clear();
     this.registry.killAll();
-    releaseHostLock(this.stateDir, this.runnerId);
-    this.store.close();
+    this.controllerStore?.close();
+    this.controllerStore = null;
   }
 
+  private async refreshHealth(lifecycle: HostLifecycleState): Promise<void> {
+    if (this.healthRefreshActive) return;
+    this.healthRefreshActive = true;
+    try {
+      const runs = this.store.listWorkflowRuns();
+      const projectRunIds = new Set(runs.map((run) => run.runId));
+      const decisionStore = new HumanDecisionStore(this.childRunStore.outputRoot);
+      const requests = await decisionStore.listRequests();
+      const pendingDecisionIds: string[] = [];
+      for (const request of requests) {
+        if (!projectRunIds.has(request.runId)) continue;
+        const [resolved, cancelled] = await Promise.all([
+          decisionStore.readResolved(request.decisionId),
+          decisionStore.readCancellation(request.decisionId),
+        ]);
+        if (resolved === null && cancelled === null) {
+          pendingDecisionIds.push(request.decisionId);
+        }
+      }
+      const errors: HostHealthError[] = runs
+        .filter((run) => run.status === "failed" && run.errorMessage !== null)
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+        .slice(0, 8)
+        .map((run) => ({
+          class: run.errorCode ?? "workflow_run_failed",
+          summary: run.errorMessage ?? "Workflow run failed",
+          at: run.updatedAt,
+        }));
+      this.ownership.refresh({
+        lifecycle,
+        counts: {
+          active: runs.filter((run) => run.status === "starting" || run.status === "running")
+            .length,
+          waiting: pendingDecisionIds.length,
+          parked: runs.filter((run) => run.status === "parked" || run.status === "queued").length,
+          failed: runs.filter((run) => run.status === "failed").length,
+          controllers: this.store.listResources().length,
+        },
+        pendingDecisionCount: pendingDecisionIds.length,
+        pendingDecisionIds,
+        errors,
+      });
+    } finally {
+      this.healthRefreshActive = false;
+    }
+  }
   private readonly parkedEngines: Array<() => void> = [];
 
   private claimOnce(): void {
@@ -405,67 +506,5 @@ export class WorkflowHost {
     } catch {
       // The event feed is best-effort.
     }
-  }
-}
-
-function hostLockPath(stateDir: string): string {
-  return path.join(stateDir, "host.lock");
-}
-
-/**
- * The advisory lock guards host-versus-host only: the embedded runner in a
- * live interactive session does not take it. A second host refuses to start while the
- * recorded PID is alive.
- */
-function acquireHostLock(stateDir: string, runnerId: string, cwd: string): void {
-  const lockPath = hostLockPath(stateDir);
-  const existing = readLock(lockPath);
-  if (existing !== null && existing.runnerId !== runnerId && isAlive(existing.pid)) {
-    throw new Error(
-      `Another workflow host (pid ${existing.pid}, ${existing.runnerId}) is already running for ${cwd}`,
-    );
-  }
-  fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(
-    lockPath,
-    `${JSON.stringify({ pid: process.pid, runnerId, startedAt: new Date().toISOString() })}\n`,
-    { encoding: "utf8", mode: 0o600 },
-  );
-}
-
-function releaseHostLock(stateDir: string, runnerId: string): void {
-  const lockPath = hostLockPath(stateDir);
-  const existing = readLock(lockPath);
-  if (existing?.runnerId !== runnerId) {
-    return;
-  }
-  try {
-    fs.rmSync(lockPath);
-  } catch {
-    // Already gone.
-  }
-}
-
-function readLock(lockPath: string): { pid: number; runnerId: string } | null {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(lockPath, "utf8")) as {
-      pid?: unknown;
-      runnerId?: unknown;
-    };
-    if (typeof parsed.pid !== "number" || typeof parsed.runnerId !== "string") {
-      return null;
-    }
-    return { pid: parsed.pid, runnerId: parsed.runnerId };
-  } catch {
-    return null;
-  }
-}
-
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
   }
 }

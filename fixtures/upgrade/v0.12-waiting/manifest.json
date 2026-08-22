@@ -1,0 +1,13 @@
+{
+  "schema": "pi-workflows.run-bundle.v1",
+  "runId": "v012-waiting-fixture",
+  "workflowName": "v012-upgrade-fixture",
+  "startedAt": "2026-08-01T00:00:00.000Z",
+  "status": "waiting",
+  "traceSchema": "pi-workflows.trace-event.v1",
+  "paths": {
+    "workflow": "workflow.json",
+    "state": "state.json",
+    "trace": "trace.ndjson"
+  }
+}

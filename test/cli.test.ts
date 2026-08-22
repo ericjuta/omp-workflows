@@ -342,7 +342,7 @@ describe("omp-workflows CLI", () => {
 
     stderr = "";
     expect(await main(["runs", "--json"])).toBe(2);
-    expect(stderr).toContain("--json is available only for herdr sync");
+    expect(stderr).toContain("--json is available only for host status or herdr sync");
 
     stderr = "";
     expect(await main(["frobnicate"])).toBe(2);

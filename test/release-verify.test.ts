@@ -69,4 +69,20 @@ describe("release verifier", () => {
       await fsp.rm(outDir, { recursive: true, force: true });
     }
   }, 120_000);
+  it("accepts npm 11 arrays and npm 12 keyed results", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import { parseNpmPackResult } from ${JSON.stringify(pathToFileURL(verifier).href)};
+         const value = { filename: "package.tgz", files: [{ path: "README.md" }] };
+         if (parseNpmPackResult(JSON.stringify([value]))?.filename !== value.filename) process.exit(2);
+         if (parseNpmPackResult(JSON.stringify({ "@ericjuta/omp-workflows": value }))?.filename !== value.filename) process.exit(3);
+         if (parseNpmPackResult(JSON.stringify({})) !== undefined) process.exit(4);`,
+      ],
+      { cwd: root, encoding: "utf8" },
+    );
+    expect(result.status, result.stderr).toBe(0);
+  });
 });

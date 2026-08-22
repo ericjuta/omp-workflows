@@ -132,8 +132,9 @@ tool names, and no ambient extensions, skills, prompts, context files, MCP, or
 LSP. Legacy `find` and `ls` requests map to OMP `glob`.
 The same missing export is the extension-process fallback host marker because
 Herdr OMP can expose `OMPCODE=1` to tool children without exposing it to the
-legacy extension process. A native decision accepted in Herdr must persist
-`source.channel: "omp"`.
+legacy extension process. That fallback applies only when `mode === "tui"`;
+RPC, JSON, and other non-TUI modes remain headless. A native decision accepted
+in Herdr must persist `source.channel: "omp"`.
 
 A fresh Herdr OMP session must load the extension and expose the workflow
 surface without `Export named 'ModelRuntime' not found`.
@@ -191,6 +192,8 @@ this.
   only the mapped read-only tools.
 - A Herdr OMP decision redraws after navigation and persists an accepted answer
   with `source.channel: "omp"`.
+- `decisionHostKind` remains `headless` for RPC and JSON modes even when the
+  OMP runtime capability or `OMPCODE` marker is present.
 
 ## Public contracts
 

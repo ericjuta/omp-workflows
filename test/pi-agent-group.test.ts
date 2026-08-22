@@ -5,6 +5,7 @@ import {
   createEphemeralCredentialStore,
   createEphemeralModelStore,
   PiAgentGroupError,
+  ompAgentToolNames,
   runPiAgentGroup,
   type PiAgentLifecycleEvent,
   type PiAgentRequest,
@@ -114,6 +115,50 @@ describe("Pi agent groups", () => {
         signal: reasonlessAbort,
       }),
     ).rejects.toThrow(/operation cancelled/);
+  });
+
+  it("maps legacy discovery tools to OMP glob without widening access", () => {
+    expect(ompAgentToolNames(["read", "grep", "find", "ls"])).toEqual(["read", "grep", "glob"]);
+    expect(ompAgentToolNames(["find", "find", "ls"])).toEqual(["glob"]);
+  });
+
+  it("reports OMP glob work for legacy discovery requests", async () => {
+    const events: PiAgentLifecycleEvent[] = [];
+    let clock = 0;
+    const factory: PiAgentSessionFactory = async () => {
+      const listeners = new Set<(event: Record<string, unknown>) => void>();
+      return {
+        model: { provider: "mock", id: "model" },
+        thinkingLevel: "off",
+        subscribe(listener) {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        async prompt(_prompt, options) {
+          options?.preflightResult?.(true);
+          for (const listener of listeners) {
+            listener({ type: "tool_execution_start", toolName: "glob", args: {} });
+            listener(message("done"));
+          }
+        },
+        async abort() {},
+        dispose() {},
+      };
+    };
+
+    await runPiAgentGroup([{ ...request("omp-glob"), tools: ["find", "ls"] }], {
+      maxConcurrency: 1,
+      signal: new AbortController().signal,
+      sessionFactory: factory,
+      now: () => (clock += 300),
+      onLifecycle: (event) => {
+        events.push(event);
+      },
+    });
+
+    expect(events).toEqual(
+      expect.arrayContaining([expect.objectContaining({ phase: "tool: glob" })]),
+    );
   });
 
   it("returns final results in request order and emits safe lifecycle facts", async () => {

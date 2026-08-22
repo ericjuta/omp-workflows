@@ -34,6 +34,15 @@ describe("workflow tool input", () => {
     expect(parseWorkflowToolInput(input)).toEqual(input);
   });
 
+  it("removes OMP host invocation intent before action validation", () => {
+    expect(parseWorkflowToolInput({ i: "Listing Workflows", action: "list" })).toEqual({
+      action: "list",
+    });
+    expect(() =>
+      parseWorkflowToolInput({ i: "Listing Workflows", action: "list", extra: true }),
+    ).toThrow("Invalid workflow tool input");
+  });
+
   it.each([
     { action: "unknown" },
     { action: "start" },
@@ -118,7 +127,7 @@ describe("workflow tool input", () => {
     const schema = {
       safeParse(value: unknown) {
         if (value === "ok") return { success: true as const, data: { action: "list" } };
-        return { success: false as const, error: {} };
+        return { success: false as const };
       },
     };
     expect(parseToolInput(schema as never, "ok", "workflow")).toEqual({

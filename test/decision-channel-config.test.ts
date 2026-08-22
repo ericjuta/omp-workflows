@@ -48,7 +48,8 @@ describe("decision channel configuration", () => {
     expect(audienceChannels(piOnly(), "missing", { kind: "headless" })).toEqual([]);
   });
 
-  it("detects OMP from OMPCODE before Pi TUI or herdr", () => {
+  it("detects OMP from the runtime capability or OMPCODE before Pi TUI or herdr", () => {
+    expect(decisionHostKind({ mode: "tui", env: {}, ompRuntime: true })).toBe("omp");
     expect(decisionHostKind({ mode: "tui", env: { OMPCODE: "1" } })).toBe("omp");
     expect(decisionHostKind({ mode: "tui", env: { HERDR_ENV: "1" } })).toBe("pi-tui");
     expect(decisionHostKind({ mode: "rpc", env: { HERDR_ENV: "1" } })).toBe("headless");

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import * as codingAgentModule from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey } from "@earendil-works/pi-tui";
 import { builtinWorkflowCatalog } from "../builtins/catalog.js";
@@ -127,6 +128,8 @@ export {
   type SettledHumanDecision,
   type TelegramFetch,
 } from "../channels/index.js";
+
+const OMP_COMPATIBILITY_RUNTIME = !("ModelRuntime" in codingAgentModule);
 
 const RUN_CLAIM_LEASE_MS = 30_000;
 const RUN_CLAIM_RENEW_MS = 10_000;
@@ -1164,7 +1167,11 @@ export default function piWorkflows(pi: ExtensionAPI) {
     }
     void presentRun(ctx, run, state);
     if (pendingDecision !== null && state.status === "waiting") {
-      const hostKind = decisionHostKind({ mode: ctx.mode, env: process.env });
+      const hostKind = decisionHostKind({
+        mode: ctx.mode,
+        env: process.env,
+        ompRuntime: OMP_COMPATIBILITY_RUNTIME,
+      });
       const channels = audienceChannels(decisionChannelConfig, pendingDecision.audience, {
         kind: hostKind,
       });
@@ -2189,7 +2196,10 @@ export default function piWorkflows(pi: ExtensionAPI) {
             return {
               render: (width) => widget.render(width),
               invalidate: () => widget.invalidate(),
-              handleInput: (data) => widget.handleInput(data),
+              handleInput: (data) => {
+                widget.handleInput(data);
+                _tui.requestRender();
+              },
               dispose: () => widget.dispose(),
             };
           }),
@@ -2323,7 +2333,11 @@ export default function piWorkflows(pi: ExtensionAPI) {
         }
         if (resolved === null) {
           if (!deliverPending || !ownedBySession) continue;
-          const hostKind = decisionHostKind({ mode: ctx.mode, env: process.env });
+          const hostKind = decisionHostKind({
+            mode: ctx.mode,
+            env: process.env,
+            ompRuntime: OMP_COMPATIBILITY_RUNTIME,
+          });
           const channels = audienceChannels(decisionChannelConfig, request.audience, {
             kind: hostKind,
           });

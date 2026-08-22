@@ -146,7 +146,11 @@ const workflowSubmissionInputParsers = {
 >;
 
 export function parseWorkflowToolInput(value: unknown): WorkflowToolInput {
-  return parseSelectedAction<WorkflowToolInput>(workflowInputParsers, value, "workflow");
+  return parseSelectedAction<WorkflowToolInput>(
+    workflowInputParsers,
+    withoutHostInvocationIntent(value),
+    "workflow",
+  );
 }
 
 export function parseWorkflowSubmissionInput(value: unknown): WorkflowSubmissionInput {
@@ -166,6 +170,12 @@ function parseSelectedAction<Output>(
   const parser = parsers[value.action];
   if (parser === undefined) throw unknownAction(label);
   return parser(value);
+}
+
+function withoutHostInvocationIntent(value: unknown): unknown {
+  if (!isRecord(value) || !("i" in value)) return value;
+  const { i: _intent, ...input } = value;
+  return input;
 }
 
 function unknownAction(label: string): Error {

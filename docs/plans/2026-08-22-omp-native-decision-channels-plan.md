@@ -122,6 +122,22 @@ and `docs/HUMAN_DECISIONS.md`:
 
 No new spawn wrappers in the repository.
 
+### OMP extension-loader compatibility
+
+The extension module graph must not statically request Pi exports that OMP's
+legacy compatibility shim does not provide. `runPiAgentGroup` capability-detects
+`ModelRuntime`: Pi keeps its isolated runtime and agent-directory catalog path;
+OMP uses the shimmed `createAgentSession` with `modelPattern`, restricted native
+tool names, and no ambient extensions, skills, prompts, context files, MCP, or
+LSP. Legacy `find` and `ls` requests map to OMP `glob`.
+The same missing export is the extension-process fallback host marker because
+Herdr OMP can expose `OMPCODE=1` to tool children without exposing it to the
+legacy extension process. A native decision accepted in Herdr must persist
+`source.channel: "omp"`.
+
+A fresh Herdr OMP session must load the extension and expose the workflow
+surface without `Export named 'ModelRuntime' not found`.
+
 ### Optional sqlite export
 
 If cheap after the channel lift: export `wrapSqliteDatabase` and add a unit
@@ -145,13 +161,16 @@ this.
 6. Update `docs/HUMAN_DECISIONS.md`, `docs/HUMAN_DECISION_PRESENTATIONS.md`,
    and `docs/workflows.md` for host-derived defaults and the `omp` channel.
    Mention the spawn contract. State that the herdr plugin id is unchanged.
-7. Optional sqlite export test.
-8. Verify: `npm run check`, `npm run test:e2e`,
+7. Remove the static `ModelRuntime` requirement from the extension module
+   graph. Keep Pi's runtime path and add the restricted OMP SDK path. Verify in
+   a fresh Herdr OMP session.
+8. Export the sqlite wrapper and test a fake statement returning `null`.
+9. Verify: `npm run check`, `npm run test:e2e`,
    `npx slophammer-ts@latest dry .`,
    `npx slophammer-ts@latest check . --only ts.dependency-boundaries-required`.
-9. Commit with Conventional Commits. Push `main` or the task branch to
-   remote `ericjuta` only. Open or update a PR on `ericjuta/omp-workflows`
-   if publication needs a PR. Do not push `origin`.
+10. Commit with Conventional Commits. Push `main` or the task branch to
+    remote `ericjuta` only. Open or update a PR on `ericjuta/omp-workflows`
+    if publication needs a PR. Do not push `origin`.
 
 ## Verification
 
@@ -167,6 +186,11 @@ this.
 - Reviewer command is still `pi-reviewer` with args `--base <branch>`.
 - Plugin id in `herdr-plugin.toml` and `src/herdr/constants.ts` is still
   `osolmaz.pi-workflows`.
+- A fresh OMP session loads the extension without requiring `ModelRuntime`,
+  lists workflows when the host supplies `i`, and an isolated agent exposes
+  only the mapped read-only tools.
+- A Herdr OMP decision redraws after navigation and persists an accepted answer
+  with `source.channel: "omp"`.
 
 ## Public contracts
 

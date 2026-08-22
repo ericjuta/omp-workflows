@@ -133,10 +133,12 @@ export type DecisionHostKind = "pi-tui" | "omp" | "headless";
 export function decisionHostKind(input: {
   mode?: string;
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
+  ompRuntime?: boolean;
 }): DecisionHostKind {
   const env = input.env ?? {};
-  // OMP sets OMPCODE=1 on its process. HERDR_ENV is also set for Pi panes.
-  if (env.OMPCODE === "1") return "omp";
+  // OMP's tool environment sets OMPCODE, while its legacy extension process
+  // can require capability detection before that marker is visible.
+  if (input.ompRuntime === true || env.OMPCODE === "1") return "omp";
   if (input.mode === "tui") return "pi-tui";
   return "headless";
 }

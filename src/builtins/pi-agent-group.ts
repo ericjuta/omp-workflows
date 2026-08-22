@@ -1,14 +1,15 @@
 import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import * as codingAgentModule from "@earendil-works/pi-coding-agent";
 import {
   createAgentSession,
   DefaultResourceLoader,
   getAgentDir,
-  ModelRuntime,
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 const MAX_AGENTS = 8;
@@ -21,6 +22,11 @@ const MAX_TIMEOUT_MS = 60 * 60_000;
 const MAX_ERROR_CHARS = 2_000;
 const MAX_PHASE_UPDATES = 64;
 const MIN_PHASE_INTERVAL_MS = 250;
+
+type ModelRuntimeConstructor = typeof ModelRuntime;
+
+const PiModelRuntime = (codingAgentModule as unknown as { ModelRuntime?: ModelRuntimeConstructor })
+  .ModelRuntime;
 
 export type PiAgentTool = "read" | "grep" | "find" | "ls";
 export type PiAgentThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -102,8 +108,8 @@ export async function runPiAgentGroup(
   if (options.signal.aborted) throw cancellationError("group", options.signal.reason);
 
   const modelRuntime =
-    options.sessionFactory === undefined
-      ? await ModelRuntime.create({
+    options.sessionFactory === undefined && PiModelRuntime !== undefined
+      ? await PiModelRuntime.create({
           allowModelNetwork: false,
           credentials: await createEphemeralCredentialStore(options.signal),
           modelsStore: createEphemeralModelStore(),
@@ -155,7 +161,7 @@ export async function runPiAgentGroup(
   return results as PiAgentResult[];
 }
 
-type ModelRuntimeCreateOptions = NonNullable<Parameters<typeof ModelRuntime.create>[0]>;
+type ModelRuntimeCreateOptions = NonNullable<Parameters<ModelRuntimeConstructor["create"]>[0]>;
 type CredentialStore = NonNullable<ModelRuntimeCreateOptions["credentials"]>;
 type Credential = Awaited<ReturnType<CredentialStore["read"]>>;
 type StoredCredential = Exclude<Credential, undefined>;
@@ -450,6 +456,12 @@ function lifecyclePublisher(
   };
 }
 
+export function ompAgentToolNames(tools: readonly PiAgentTool[]): string[] {
+  const names = new Set<string>();
+  for (const tool of tools) names.add(tool === "find" || tool === "ls" ? "glob" : tool);
+  return [...names];
+}
+
 async function createSdkSession(
   request: PiAgentRequest,
   context: { modelRuntime?: ModelRuntime; signal: AbortSignal },
@@ -474,26 +486,62 @@ async function createSdkSession(
   await resourceLoader.reload();
   const modelRuntime =
     context.modelRuntime ??
-    (await ModelRuntime.create({
-      allowModelNetwork: false,
-      modelsPath: path.join(agentDir, "models.json"),
-      authPath: path.join(agentDir, "auth.json"),
-    }));
+    (PiModelRuntime === undefined
+      ? undefined
+      : await PiModelRuntime.create({
+          allowModelNetwork: false,
+          modelsPath: path.join(agentDir, "models.json"),
+          authPath: path.join(agentDir, "auth.json"),
+        }));
   if (context.signal.aborted) throw cancellationError(request.id, context.signal.reason);
-  const model = resolveRequestedModel(request, modelRuntime, settingsManager, agentDir);
-  const { session } = await createAgentSession({
-    cwd: request.cwd,
-    agentDir,
-    modelRuntime,
-    settingsManager,
-    resourceLoader,
-    sessionManager: SessionManager.inMemory(request.cwd),
-    tools: request.tools,
-    ...(model !== undefined ? { model } : {}),
-    ...(request.thinkingLevel !== undefined ? { thinkingLevel: request.thinkingLevel } : {}),
-  });
+  const model =
+    modelRuntime === undefined
+      ? undefined
+      : resolveRequestedModel(request, modelRuntime, settingsManager, agentDir);
+  const sessionOptions =
+    modelRuntime === undefined
+      ? {
+          cwd: request.cwd,
+          agentDir,
+          settingsManager,
+          resourceLoader,
+          sessionManager: SessionManager.inMemory(request.cwd),
+          toolNames: ompAgentToolNames(request.tools),
+          restrictToolNames: true,
+          enableMCP: false,
+          enableLsp: false,
+          ...(request.model !== undefined
+            ? { modelPattern: `${request.model.provider}/${request.model.id}` }
+            : {}),
+          ...(request.thinkingLevel !== undefined ? { thinkingLevel: request.thinkingLevel } : {}),
+        }
+      : {
+          cwd: request.cwd,
+          agentDir,
+          modelRuntime,
+          settingsManager,
+          resourceLoader,
+          sessionManager: SessionManager.inMemory(request.cwd),
+          tools: request.tools,
+          ...(model !== undefined ? { model } : {}),
+          ...(request.thinkingLevel !== undefined ? { thinkingLevel: request.thinkingLevel } : {}),
+        };
+  const { session } = await createAgentSession(sessionOptions);
+  if (
+    request.model !== undefined &&
+    (session.model?.provider !== request.model.provider || session.model.id !== request.model.id)
+  ) {
+    session.dispose();
+    throw new PiAgentGroupError(
+      request.id,
+      "has no model",
+      `${request.model.provider}/${request.model.id}`,
+    );
+  }
   const activeTools = session.getActiveToolNames().toSorted();
-  const requestedTools = request.tools.toSorted();
+  const requestedTools = (
+    modelRuntime === undefined ? ompAgentToolNames(request.tools) : request.tools
+  ).toSorted();
   if (activeTools.join("\0") !== requestedTools.join("\0")) {
     session.dispose();
     throw new PiAgentGroupError(
@@ -620,7 +668,10 @@ function eventPhase(event: PiAgentEvent, tools: PiAgentTool[]): string | undefin
     return event.assistantMessageEvent.type === "thinking_delta" ? "thinking" : undefined;
   }
   if (event.type !== "tool_execution_start" || typeof event.toolName !== "string") return undefined;
-  return tools.includes(event.toolName as PiAgentTool) ? `tool: ${event.toolName}` : undefined;
+  if (tools.includes(event.toolName as PiAgentTool)) return `tool: ${event.toolName}`;
+  return event.toolName === "glob" && (tools.includes("find") || tools.includes("ls"))
+    ? "tool: glob"
+    : undefined;
 }
 
 function assistantMessage(event: PiAgentEvent): Record<string, unknown> | undefined {

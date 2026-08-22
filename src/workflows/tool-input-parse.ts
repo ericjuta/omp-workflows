@@ -3,7 +3,7 @@ import { Parse, ParseError } from "typebox/value";
 
 type HostSafeParseResult<T> =
   | { success: true; data: T }
-  | { success: false; error: { message?: string } };
+  | { success: false; error?: { message?: string } };
 
 export function parseToolInput<const Schema extends TSchema>(
   schema: Schema,
@@ -14,7 +14,7 @@ export function parseToolInput<const Schema extends TSchema>(
   if (safeParse !== undefined) {
     const result = safeParse(value);
     if (!result.success) {
-      const message = result.error.message ?? "invalid value";
+      const message = result.error?.message ?? "invalid value";
       throw new Error(`Invalid ${label} tool input: ${message}`);
     }
     return result.data;

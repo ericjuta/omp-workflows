@@ -132,6 +132,7 @@ function makeHarness(options: {
   let tool: RegisteredTool | null = null;
   let idle = true;
   let abortCalls = 0;
+  let renderRequests = 0;
 
   const ctx: FakeContext = {
     cwd: options.cwd,
@@ -162,7 +163,18 @@ function makeHarness(options: {
         ) => WidgetComponent | Promise<WidgetComponent>,
       ) =>
         await new Promise<T>((resolve, reject) => {
-          void Promise.resolve(factory({ requestRender() {} }, TEST_THEME, {}, resolve))
+          void Promise.resolve(
+            factory(
+              {
+                requestRender() {
+                  renderRequests += 1;
+                },
+              },
+              TEST_THEME,
+              {},
+              resolve,
+            ),
+          )
             .then(async (component) => {
               const selected = await options.select?.("Human decision", []);
               if (selected === undefined) {
@@ -250,6 +262,9 @@ function makeHarness(options: {
     messageRenderers,
     get abortCalls() {
       return abortCalls;
+    },
+    get renderRequests() {
+      return renderRequests;
     },
     setIdle: (value: boolean) => {
       idle = value;
@@ -536,6 +551,28 @@ describe("pi-workflows extension", () => {
       answer: { choice: "replan", input: { instructions: exact } },
     });
     expect(JSON.stringify(completed?.state.finalOutput)).not.toContain("actorId");
+  });
+
+  it("requests a redraw after OMP decision input", async () => {
+    const cwd = await makeTempDir("pi-workflows-human-omp-render");
+    const runsDir = await makeTempDir("pi-workflows-human-omp-render-runs");
+    vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
+    vi.stubEnv("OMPCODE", "1");
+    try {
+      await writeHumanDecisionWorkflow(cwd);
+      const harness = makeHarness({
+        cwd,
+        respond: () => {},
+        select: async () => "Continue",
+      });
+
+      await harness.command.handler("human", harness.ctx);
+      await waitFor(() => harness.renderRequests > 0);
+      expect(harness.renderRequests).toBeGreaterThanOrEqual(1);
+      await harness.command.handler("cancel", harness.ctx);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("cancels a pending human decision and rejects later acceptance", async () => {

@@ -253,6 +253,13 @@ Existing waiting runs keep their request digest. After this change, an
 unconfigured operator decision in an OMP pane delivers to `omp` instead of
 warning that `pi` is unavailable. Pi TUI behavior is unchanged.
 
+Closing the owning interactive session detaches its durable queue rows after
+the active run has parked. A later eligible session in the same project claims
+a detached waiting decision with a compare-and-set update before presenting or
+continuing it. A headless session with no deliverable channel does not claim an
+unresolved decision. `omp-workflows cancel <runId>` records the same immutable
+cancellation fence when no interactive session is available.
+
 The naming cutover does not rewrite existing run bundles. Local installations
 unlink the old Herdr plugin and install the new npm and Cargo package names;
 workflow definitions must import `@ericjuta/omp-workflows` after the cutover.

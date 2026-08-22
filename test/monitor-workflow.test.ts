@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import monitor, {
   prepareMonitorInput,
   validateMonitorCheck,
+  waitForMonitorInterval,
 } from "../src/builtins/monitor.workflow.js";
 import { WorkflowEngine } from "../src/workflows/engine.js";
 import { WorkflowRunStore } from "../src/workflows/store.js";
@@ -306,6 +307,35 @@ describe("built-in monitor workflow", () => {
     expect(monitor.nodes.report_continue).toBeUndefined();
     expect(monitor.nodes.report_stop).toBeUndefined();
     expect(JSON.stringify(monitor.edges)).not.toContain("quiet");
+  });
+
+  it("waits for the next check in-process without a child or node timeout", async () => {
+    const sleep = monitor.nodes.sleep;
+
+    expect(sleep?.nodeType).toBe("compute");
+    expect(sleep).toHaveProperty("timeoutMs", null);
+    expect(sleep).not.toHaveProperty("command");
+    expect(sleep).not.toHaveProperty("shell");
+    expect(monitor.edges).toContainEqual({ from: "sleep", to: "check" });
+    if (sleep?.nodeType !== "compute") throw new Error("sleep must be a compute node");
+
+    await expect(
+      sleep.run({
+        outputs: {
+          prepare: prepareMonitorInput(input()),
+          schedule: { nextCheckAt: "not-a-date" },
+        },
+        signal: new AbortController().signal,
+      } as never),
+    ).resolves.toEqual({ waitedMinutes: 30, interrupted: true });
+    await expect(
+      waitForMonitorInterval(Date.now() - 1, new AbortController().signal),
+    ).resolves.toEqual({ interrupted: false });
+
+    const abort = new AbortController();
+    const waiting = waitForMonitorInterval(Date.now() + 60_000, abort.signal);
+    abort.abort(new Error("stop monitor"));
+    await expect(waiting).rejects.toThrow("stop monitor");
   });
 });
 

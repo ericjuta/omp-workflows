@@ -6,7 +6,6 @@ import {
   includeWorkflow,
   includedResult,
   notify,
-  shell,
 } from "../workflows/definition.js";
 import {
   estimateProgress,
@@ -36,8 +35,6 @@ const MAX_TRACKS = 256;
 const MAX_OBSERVATION_CHARS = 8_000;
 const MAX_REPORT_CHARS = 4_000;
 const MAX_REASON_CHARS = 2_000;
-const SLEEP_TIMEOUT_MARGIN_MS = 60_000;
-const NODE_TIMEOUT_MARGIN_MS = 2 * 60_000;
 
 export type MonitorRepairPolicy = {
   authorized: true;
@@ -111,6 +108,54 @@ async function waitForUpdateSlot(signal: AbortSignal): Promise<void> {
     if (signal.aborted) onAbort();
     else signal.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+export async function waitForMonitorInterval(
+  deadlineMs: number,
+  signal: AbortSignal,
+): Promise<{ interrupted: boolean }> {
+  try {
+    if (signal.aborted) {
+      throw signal.reason ?? new Error("monitor interval was cancelled");
+    }
+    if (!Number.isFinite(deadlineMs)) {
+      return { interrupted: true };
+    }
+    const remaining = Math.max(0, deadlineMs - Date.now());
+    if (remaining === 0) {
+      return { interrupted: false };
+    }
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(signal.reason ?? new Error("monitor interval was cancelled"));
+      };
+      const timer = setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, remaining);
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    });
+    return { interrupted: false };
+  } catch (error) {
+    if (signal.aborted) throw error;
+    return { interrupted: true };
+  }
+}
+
+function monitorIntervalDeadline(outputs: Record<string, unknown>): number {
+  const scheduled = outputs.schedule;
+  if (
+    scheduled !== null &&
+    typeof scheduled === "object" &&
+    !Array.isArray(scheduled) &&
+    "nextCheckAt" in scheduled &&
+    typeof scheduled.nextCheckAt === "string"
+  ) {
+    return Date.parse(scheduled.nextCheckAt);
+  }
+  return Number.NaN;
 }
 
 export function prepareMonitorInput(input: unknown): MonitorConfig {
@@ -549,19 +594,14 @@ const monitorWorkflow: WorkflowDefinition = defineWorkflow({
         return { lastCheckAt, nextCheckAt, everyMinutes: config.everyMinutes };
       },
     }),
-    sleep: shell({
+    sleep: compute({
       statusDetail: "waiting for next monitor check",
-      timeoutMs: MAX_INTERVAL_MINUTES * 60_000 + NODE_TIMEOUT_MARGIN_MS,
-      exec: ({ outputs }) => {
-        const sleepMs = configFrom(outputs).everyMinutes * 60_000;
-        return {
-          command: process.execPath,
-          args: ["-e", "setTimeout(() => {}, Number(process.argv[1]))", String(sleepMs)],
-          timeoutMs: sleepMs + SLEEP_TIMEOUT_MARGIN_MS,
-          maxOutputChars: 1_024,
-        };
+      timeoutMs: null,
+      run: async ({ outputs, signal }) => {
+        const config = configFrom(outputs);
+        const waited = await waitForMonitorInterval(monitorIntervalDeadline(outputs), signal);
+        return { waitedMinutes: config.everyMinutes, ...waited };
       },
-      parse: (_result, { outputs }) => ({ waitedMinutes: configFrom(outputs).everyMinutes }),
     }),
     finish: compute({
       run: ({ outputs }) => {

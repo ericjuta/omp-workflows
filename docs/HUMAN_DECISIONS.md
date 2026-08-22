@@ -336,6 +336,10 @@ Recovery follows these rules:
 - failed channel settlement has a bounded retry count and cannot create an unbounded record loop; and
 - cancellation resolves the owned waiting decision from durable state, even after restart, closes pending views, and prevents a later answer from continuing the run.
 
+Session shutdown stops the interactive channels and clears that session's durable run binding. The waiting decision remains intact and unowned. A later project session adopts it with an atomic compare-and-set only when that session can present or deliver the unresolved request, when the person explicitly addresses the waiting run by ID, or when an already accepted resolution needs its continuation. A channel-less headless session does not claim an unresolved decision merely because it scans the project. Concurrent adopters fail closed: only the session that changes the null binding owns presentation and continuation.
+
+When no interactive session is available, `omp-workflows cancel <runId> --dir <runsDir>` cancels a named waiting human decision directly from durable state. The command rejects missing runs, non-waiting runs, and ordinary checkpoints. It writes the same immutable human-decision cancellation fence as interactive cancellation, so a later answer or recovery pass cannot continue the run.
+
 A required decision with no available channel remains waiting and reports the configuration problem. An automatic decision does not need a channel to apply its saved response after the deadline. A skipped plan policy creates no decision.
 
 ## Compatibility

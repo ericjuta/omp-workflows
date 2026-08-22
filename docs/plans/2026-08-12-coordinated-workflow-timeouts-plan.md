@@ -26,14 +26,14 @@ The workflow engine will expose agent-step aborts through its existing `AbortSig
 
 `WorkflowNodeCommon.timeoutMs` will accept a positive number or a callback that returns a positive number from the node context. The engine will resolve and validate that value before it dispatches the node. Existing numeric timeouts and the 15-minute engine default will continue to work.
 
-The monitor will accept `checkTimeoutMinutes`. Its default will be the larger of 60 minutes and `everyMinutes`, with a maximum of 24 hours. The timeout will apply to check and report agent nodes. The shell wait keeps its current interval-specific timeout.
+The monitor will accept `checkTimeoutMinutes`. Its default will be the larger of 60 minutes and `everyMinutes`, with a maximum of 24 hours. The timeout will apply to check and report agent nodes. The interval wait runs in process to its durable next-check deadline and has no node timeout; cancellation or parking still aborts it.
 
 ## Non-goals
 
 - Do not change Pi internals.
 - Do not add a persistent timeout registry or change the run-state schema.
 - Do not make timed-out runs resumable.
-- Do not remove safety deadlines from workflow nodes.
+- Do not remove safety deadlines from agent or side-effect workflow nodes.
 - Do not add compatibility code for submissions that omit `action: "submit"`.
 
 ## Implementation

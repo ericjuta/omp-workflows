@@ -73,7 +73,7 @@ const TEST_THEME: WidgetTheme = {
 
 type FakeContext = {
   cwd: string;
-  mode: "tui" | "rpc";
+  mode: "tui" | "rpc" | "json";
   hasUI: boolean;
   isIdle: () => boolean;
   abort: () => void;
@@ -109,7 +109,7 @@ function makeHarness(options: {
   cwd: string;
   respond: (prompt: string, tool: RegisteredTool) => void;
   sessionId?: string;
-  mode?: "tui" | "rpc";
+  mode?: "tui" | "rpc" | "json";
   select?: (title: string, choices: string[]) => Promise<string | undefined>;
   input?: (title: string, initial?: string) => Promise<string | undefined>;
   exec?: (
@@ -554,6 +554,118 @@ describe("omp-workflows extension", () => {
     expect(completed?.state.finalOutput).toMatchObject({
       answer: { choice: "continue" },
     });
+  });
+
+  it("adopts a waiting decision after the origin session shuts down", async () => {
+    const cwd = await makeTempDir("omp-workflows-hitl-session-detach");
+    const runsDir = await makeTempDir("omp-workflows-hitl-session-detach-runs");
+    vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
+    vi.stubEnv("OMPCODE", "1");
+    await writeHumanDecisionWorkflow(cwd);
+    const owner = makeHarness({
+      cwd,
+      mode: "rpc",
+      sessionId: "owner-session",
+      respond: () => {},
+    });
+    await owner.command.handler("human", owner.ctx);
+    await waitFor(() => owner.notifications.some((note) => note.includes("verified human")));
+    const waiting = (await listRunBundles(runsDir)).find(
+      (bundle) => bundle.state.status === "waiting",
+    );
+    const request = waiting?.state.finalOutput as HumanDecisionRequest | undefined;
+    if (request === undefined) throw new Error("missing waiting human decision request");
+
+    const before = new SqliteControllerStore(projectControllerStorePath(cwd), { readOnly: true });
+    try {
+      const row = before.getWorkflowRun(request.runId);
+      expect(row).toMatchObject({
+        status: "done",
+        originSessionId: "owner-session",
+      });
+    } finally {
+      before.close();
+    }
+
+    await owner.emitAsync("session_shutdown");
+
+    const detached = new SqliteControllerStore(projectControllerStorePath(cwd), {
+      readOnly: true,
+    });
+    try {
+      expect(detached.getWorkflowRun(request.runId)).toMatchObject({
+        status: "done",
+        originSessionId: null,
+      });
+    } finally {
+      detached.close();
+    }
+
+    vi.stubEnv("OMPCODE", "");
+    const headless = makeHarness({
+      cwd,
+      mode: "json",
+      sessionId: "headless-session",
+      respond: () => {},
+    });
+    await headless.emitAsync("session_start", {});
+    const afterHeadless = new SqliteControllerStore(projectControllerStorePath(cwd), {
+      readOnly: true,
+    });
+    try {
+      expect(afterHeadless.getWorkflowRun(request.runId)?.originSessionId).toBeNull();
+    } finally {
+      afterHeadless.close();
+    }
+    expect(
+      (await listRunBundles(runsDir)).filter(
+        (bundle) => bundle.state.parentRunId === request.runId,
+      ),
+    ).toHaveLength(0);
+    await headless.emitAsync("session_shutdown");
+
+    const firstAdopter = new SqliteControllerStore(projectControllerStorePath(cwd));
+    const competingAdopter = new SqliteControllerStore(projectControllerStorePath(cwd));
+    try {
+      expect(firstAdopter.setWorkflowRunOriginSession(request.runId, "cas-winner")).toBe(true);
+      expect(competingAdopter.setWorkflowRunOriginSession(request.runId, "cas-loser")).toBe(false);
+      expect(competingAdopter.getWorkflowRun(request.runId)?.originSessionId).toBe("cas-winner");
+      expect(firstAdopter.clearWorkflowRunOriginSession("cas-winner")).toBe(1);
+    } finally {
+      firstAdopter.close();
+      competingAdopter.close();
+    }
+
+    vi.stubEnv("OMPCODE", "1");
+    const recovered = makeHarness({
+      cwd,
+      mode: "rpc",
+      sessionId: "later-session",
+      respond: () => {},
+      select: async (_title, choices) =>
+        choices.find((choice) => choice.includes("Continue")) ?? choices[0],
+    });
+    await recovered.emitAsync("session_start", {});
+    await waitFor(async () =>
+      (await listRunBundles(runsDir)).some(
+        (bundle) =>
+          bundle.state.parentRunId === request.runId && bundle.state.status === "completed",
+      ),
+    );
+    const continuations = (await listRunBundles(runsDir)).filter(
+      (bundle) => bundle.state.parentRunId === request.runId,
+    );
+    expect(continuations).toHaveLength(1);
+    expect(continuations[0]?.state.finalOutput).toMatchObject({
+      answer: { choice: "continue" },
+    });
+    const adopted = new SqliteControllerStore(projectControllerStorePath(cwd), { readOnly: true });
+    try {
+      expect(adopted.getWorkflowRun(request.runId)?.originSessionId).toBe("later-session");
+    } finally {
+      adopted.close();
+    }
+    await recovered.emitAsync("session_shutdown");
   });
 
   it("runs a workflow end to end through the command and tool", async () => {

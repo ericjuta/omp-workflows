@@ -6,7 +6,10 @@ import { SqliteControllerStore } from "../controllers/sqlite.js";
 import { projectControllerStoreBaseDir } from "../controllers/store.js";
 import { syncHerdrPlugin } from "../herdr/setup.js";
 import { sanitizeText } from "../render/ansi.js";
+import { validateHumanDecisionRequestIntegrity } from "../workflows/decision-presentation.js";
+import { HumanDecisionStore } from "../workflows/human-decision.js";
 import { listRunBundles, readRunBundle, workflowRunsBaseDir } from "../workflows/store.js";
+import type { HumanDecisionRequest } from "../workflows/types.js";
 import {
   formatDuration,
   renderRunDetailLines,
@@ -17,10 +20,9 @@ import {
 import { runViewer } from "./tui.js";
 
 const USAGE = `omp-workflows — workflow runs and controller resources
-
-Usage:
   omp-workflows view [runId] [--dir <runsDir>] [--once]
   omp-workflows runs [--dir <runsDir>]
+  omp-workflows cancel <runId> [--dir <runsDir>]
   omp-workflows controllers [--controller-dir <dir>]
   omp-workflows controller <controller> <key> [--controller-dir <dir>]
   omp-workflows host [--project <dir>] [-- <extra agent args>]
@@ -30,6 +32,7 @@ Usage:
 Commands:
   view          Open the live workflow TUI. With --once, print a snapshot.
   runs          List recent workflow runs.
+  cancel        Abandon a waiting human decision without an interactive session.
   controllers   List durable controller resources.
   controller    Show one resource, its effects, child workflows, and events.
   host          Run the always-on workflow host in the foreground.
@@ -118,6 +121,23 @@ export function parseCliArgs(argv: string[]): CliArgs {
       throw new Error("herdr requires the sync action");
     }
     return { command, herdrAction: positionals[0], dir, controllerDir, once, json };
+  }
+  if (command === "cancel") {
+    const runId = positionals[0];
+    if (runId === undefined) {
+      throw new Error("cancel requires <runId>");
+    }
+    if (positionals.length !== 1) {
+      throw new Error(`Unexpected argument: ${positionals[1]}`);
+    }
+    return {
+      command,
+      runId,
+      dir,
+      controllerDir,
+      once,
+      json,
+    };
   }
   if (positionals.length > 1) {
     throw new Error(`Unexpected argument: ${positionals[1]}`);
@@ -218,6 +238,32 @@ function printController(controllerDir: string, controller: string, key: string)
   }
 }
 
+async function cancelWaitingRun(dir: string, runId: string): Promise<void> {
+  const bundle = await readRunBundle(path.join(dir, runId));
+  if (bundle === null) {
+    throw new Error(`Run not found: ${runId}`);
+  }
+  if (bundle.state.status !== "waiting") {
+    throw new Error(`Workflow run ${runId} is ${bundle.state.status}, not waiting.`);
+  }
+  const output = bundle.state.finalOutput;
+  if (output === null || typeof output !== "object" || !("schema" in output)) {
+    throw new Error(`Workflow run ${runId} is waiting at a plain checkpoint.`);
+  }
+  if (output.schema !== "pi-workflows.human-decision-request.v1") {
+    throw new Error(`Workflow run ${runId} is waiting at a plain checkpoint.`);
+  }
+  const persistedRequest = output as HumanDecisionRequest;
+  const request = validateHumanDecisionRequestIntegrity(persistedRequest);
+  if (request.runId !== runId) {
+    throw new Error(`Human decision request does not belong to run ${runId}.`);
+  }
+  await new HumanDecisionStore(dir).cancel(request, "cancelled");
+  process.stdout.write(
+    `Cancelled waiting human decision ${request.decisionId} for run ${runId}.\n`,
+  );
+}
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   let args: CliArgs;
   try {
@@ -254,6 +300,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     if (args.command === "herdr") {
       const result = syncHerdrPlugin(packageRoot());
       process.stdout.write(args.json ? `${JSON.stringify(result)}\n` : `${result.message}\n`);
+      return 0;
+    }
+    if (args.command === "cancel") {
+      if (args.runId === undefined) {
+        throw new Error("cancel requires <runId>");
+      }
+      await cancelWaitingRun(args.dir, args.runId);
       return 0;
     }
     if (args.command === "view") {

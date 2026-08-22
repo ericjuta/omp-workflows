@@ -83,11 +83,12 @@ A verified person answers through the channel:
 - OMP RPC clients handle `extension_ui_request` frames for `select` and, when
   requested, `input`, then return the matching `extension_ui_response`.
 - JSON, print, and non-OMP RPC hosts have no local interactive channel. They
-  wait for a configured external channel or a saved timeout policy.
+  wait for a configured external channel or a saved timeout policy, and do not
+  claim a detached unresolved decision merely by scanning the project.
 
 Plan approval presents **Approve**, **Return for changes**, and **Stop**. An
-accepted OMP response is recorded as `source.channel: "omp"` and starts the
-normal continuation run. No model-facing tool can forge it.
+accepted OMP response is recorded as `source.channel: "omp"` and starts or is
+adopted by the normal continuation run. No model-facing tool can forge it.
 
 ## Complete agent steps
 
@@ -118,6 +119,7 @@ omp-workflows herdr sync
 omp-workflows runs
 omp-workflows view [runId]
 omp-workflows view [runId] --once
+omp-workflows cancel <runId> --dir <runsDir>
 omp-workflows host --project /path/to/project
 ompw
 ompw ~/.pi/agent/workflows/runs/<runId>
@@ -127,9 +129,14 @@ From a clone, or if `omp-workflows` is not on `PATH`, run the same commands
 through `node dist/viewer/cli.js`. `herdr setup` is an alias for `herdr sync`.
 
 Runs live under `~/.pi/agent/workflows/runs/<runId>/`. Closing the session
-**parks** the run. It does not cancel. Reopen the same session, or keep the
-foreground host. Ctrl-C stops the host. Reports return only to the session
-that started the run.
+**parks** active work and detaches durable waiting human decisions; it does not
+cancel them. A later project session that can actually present or deliver a
+waiting decision may atomically adopt it and continue once. A channel-less
+headless session leaves it unowned. Use
+`omp-workflows cancel <runId> --dir <runsDir>` to cancel a waiting human
+decision without presenting UI. The command does not cancel ordinary
+checkpoints or non-waiting runs. Ctrl-C stops the foreground host. Reports for
+session-bound active work still return to the session that started it.
 
 Controllers (`/controller`, CLI `controllers`) reconcile durable resources.
 They are not a second workflow supervisor.

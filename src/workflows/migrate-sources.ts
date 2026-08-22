@@ -50,12 +50,6 @@ export async function migrateLegacyWorkflowSources(options: {
   for (const bundle of await listRunBundles(store.outputRoot)) {
     const state = bundle.state;
     if (state.status !== "running" && state.status !== "waiting") continue;
-    if (
-      options.queue?.setWorkflowRunOriginSession !== undefined &&
-      bundle.sessionBinding !== null
-    ) {
-      options.queue.setWorkflowRunOriginSession(state.runId, bundle.sessionBinding.piSessionId);
-    }
     if (state.workflowSource !== undefined) {
       if (options.queue === undefined) continue;
       const claimToken = randomUUID();
@@ -80,6 +74,12 @@ export async function migrateLegacyWorkflowSources(options: {
         });
       }
       continue;
+    }
+    if (
+      options.queue?.setWorkflowRunOriginSession !== undefined &&
+      bundle.sessionBinding !== null
+    ) {
+      options.queue.setWorkflowRunOriginSession(state.runId, bundle.sessionBinding.piSessionId);
     }
     if (state.workflowPath === undefined || state.workflowHash === undefined) {
       result.blocked.push({ runId: state.runId, reason: "legacy workflow identity is incomplete" });

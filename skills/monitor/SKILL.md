@@ -17,8 +17,8 @@ Build the complete input and start the workflow in the same turn. As soon as the
 1. Read the current conversation, active plan, repository instructions, and applicable compute, runtime, credential, deployment, or publication skills.
 2. Preserve the exact objective, immutable execution contract, current identifiers, durable progress, cost already spent, approval ceilings, finish criteria, and known recovery rules in the workflow input. Write or update a durable plan or incident note first only when the work needs one for safe continuation.
 3. Make the workflow instructions faithful to what the user requested. Do not reduce an implementation or recovery objective to observation-only monitoring.
-4. Call `workflow` with `action: "start"` in the current Pi session without asking for another confirmation or waiting for a later turn.
-5. Let the first workflow check run immediately. Do not use Unified Exec sleeps, manual polling loops, a second scheduler, or a separate Pi session as a substitute.
+4. Call `workflow` with `action: "start"` in the current OMP session without asking for another confirmation or waiting for a later turn.
+5. Let the first workflow check run immediately. Do not use Unified Exec sleeps, manual polling loops, a second scheduler, or a separate OMP session as a substitute.
 
 Do not finish the initiating turn before the workflow start call. If a safe contract cannot yet be written because a critical identifier or boundary is missing, gather it immediately when possible. Ask the user only when the missing decision is consequential and cannot be inferred safely.
 
@@ -120,6 +120,8 @@ The monitor may use a credential only when the conversation or repository has al
 
 Use the user-supplied interval instead of the example value when present. Add `maxChecks` only when the user explicitly supplies that limit. Do not send `reportWhen`; the current monitor reports every accepted check.
 
+The built-in owns the interval: its `sleep` compute node waits in-process until the scheduled `nextCheckAt` with its node timeout disabled. Do not substitute `omp -e`, another child process, or a hand poll between checks. Run cancellation or parking interrupts the built-in wait immediately.
+
 Do not start a second monitor for the same objective while one is active. Update or replace the run only when the objective or contract changes. A replacement must preserve the previous accepted observation and durable recovery state.
 
 ## Complete workflow checks
@@ -136,11 +138,11 @@ For each check:
 6. Select `continue` or `stop` as required by the step contract.
 7. Call `workflow` with `action: "submit"` exactly once, using the supplied step and attempt IDs and the required output shape.
 
-The workflow sends each report as a Pi notification. Notifications do not start a new assistant turn. Do not add a separate assistant reply to a workflow notification.
+The workflow sends each report as a notification. Notifications do not start a new assistant turn. Do not add a separate assistant reply to a workflow notification.
 
 ## Publish progress when measurable
 
-The regular Pi model that runs the check is the observation adapter. It reads the target through the tools and sources named in the task, maps observed facts to progress tracks, and publishes them through the existing `workflow` tool. There is no separate monitor model.
+The session model that runs the check is the observation adapter. It reads the target through the tools and sources named in the task, maps observed facts to progress tracks, and publishes them through the existing `workflow` tool. There is no separate monitor model.
 
 Progress is optional. Do not invent it for work that has no factual count, total, rate, or source estimate.
 

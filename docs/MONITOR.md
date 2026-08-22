@@ -119,7 +119,7 @@ prepare
 - `planChange` and `implementation` are included workflows. Plan change owns Autoplan, Autodoc, approval policy, and exact-text replanning. Autoimplement receives the selected plan without another decision and enters its own plan-change mount only when later evidence requires a changed plan.
 - `repairBlocked` and `repairReport` preserve a truthful blocked result and user notification.
 - `schedule` is a function `action` that publishes the next-check time.
-- `sleep` is the existing runtime-owned shell wait.
+- `sleep` is a `compute` node that owns the in-process wait until `schedule.nextCheckAt`. Its node timeout is disabled, so a slow interval cannot fail the run. Cancellation or parking still aborts the wait immediately; any non-abort interval anomaly returns `{ interrupted: true }` and continues to `check`. Operators must not replace it with an `omp -e` or other child process, or with a hand poll.
 - `finish` is a `compute` node that returns the final observation and reason.
 
 The workflow has no quiet route, report acknowledgement agent, or `presentationPrompt`.
@@ -142,11 +142,11 @@ A check may use available tools to read current state. It must use the target's 
 
 ## Progress ownership boundary
 
-The regular Pi model running the check is the observation adapter. It uses the target-specific tools authorized by the task, converts observed facts into `pi-workflows.progress.v1` tracks, and publishes them through the existing `workflow` tool. omp-workflows validates, stores, estimates, and displays those tracks.
+The session model running the check is the observation adapter. It uses the target-specific tools authorized by the task, converts observed facts into `pi-workflows.progress.v1` tracks, and publishes them through the existing `workflow` tool. omp-workflows validates, stores, estimates, and displays those tracks.
 
-The monitored target stays independent of omp-workflows. A monitor must not require a target Job or application to import omp-workflows, emit a Pi schema, write a Pi progress file, expose a Pi endpoint, create a progress store, or add a progress reader command solely for monitoring. Provider-specific clients and credentials do not belong in omp-workflows.
+The monitored target stays independent of omp-workflows. A monitor must not require a target Job or application to import omp-workflows, emit a workflow-specific schema, write a workflow-specific progress file, expose a workflow-specific endpoint, create a progress store, or add a progress reader command solely for monitoring. Provider-specific clients and credentials do not belong in omp-workflows.
 
-When a target does not expose a factual count, total, or source estimate, the check reports that ETA is unavailable. Better application telemetry is separate work. It should expose normal operational facts for all operators, not a Pi-specific reporting protocol.
+When a target does not expose a factual count, total, or source estimate, the check reports that ETA is unavailable. Better application telemetry is separate work. It should expose normal operational facts for all operators, not an omp-workflows-specific reporting protocol.
 
 ## Progress publication
 

@@ -130,7 +130,7 @@ export default defineWorkflow({
 });
 ```
 
-Then, from any pi conversation:
+Then, from any OMP conversation:
 
 ```
 /workflow echo summarize this repository
@@ -155,8 +155,11 @@ reserved and rejected as workflow names.
 
 Protected `humanDecision()` checkpoints use native HITL. `/hitl` reopens the
 pending decision; the `hitl` tool can present the same prompt but cannot select
-an answer. Approval or return-for-changes still comes from the host-owned Pi or
-OMP UI and is persisted as a verified human response.
+an answer. Approval or return-for-changes still comes from the host-owned OMP
+or Pi UI and is persisted as a verified human response. Closing the owning
+session leaves the decision durable and detached; a later eligible project
+session can adopt it once. `omp-workflows cancel <runId>` cancels it directly
+when no interactive session is available.
 
 While a run is on screen, the footer status bar shows a compact
 `wf <name> [status] <node>` indicator alongside the widget.
@@ -208,15 +211,15 @@ omp-workflows includes a `monitor` workflow for plain-language requests such as:
 > Monitor PR 123 every 30 minutes. Report failed checks. Stop when it is merged or closed.
 
 The monitor checks immediately, reports only the states requested by the user,
-waits with a normal shell action, and loops until its stop condition or check
-limit. Its input supports `task`, `everyMinutes`, `stopWhen`, `maxChecks`, and
-an optional `checkTimeoutMinutes`.
+waits in process until the scheduled next check, and loops until its stop
+condition or check limit. Its input supports `task`, `everyMinutes`, `stopWhen`,
+`maxChecks`, and an optional `checkTimeoutMinutes`.
 
 Monitor is observation-only by default. An explicit `repair` policy authorizes its composed `autoplan` and `autoimplement` path. The monitor checks the target again after repair and stops when the same issue and target evidence return without progress. Project and global workflows can replace the built-in `monitor` by using the same file name.
 
-A monitor occupies the session's one active workflow slot. If its Pi runner
-stops during the shell wait, the run parks and repeats that wait node when a
-runner resumes it.
+A monitor occupies the session's one active workflow slot. If its OMP or Pi
+runner stops during the interval, the run parks. On resume, the interval node
+reuses the durable next-check deadline instead of starting a child process.
 
 Because the workflow runs in your current conversation, you can have a long
 discussion first and then trigger a workflow that builds on it. The
@@ -274,13 +277,13 @@ then reconciles settled messages to verbatim Pi entries. See
   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ```
 
-Inside pi, a compact widget above the editor shows one line per workflow node.
-The first glyph is the node status. The second glyph is the node type: `●`
-agent, `ƒ` compute, `!` notification, `$` shell action, `*` function action, or
-`◆` checkpoint. Repeated visits, runtime details, and timing appear on the same
-line when they apply. Pi's current theme highlights the full active-node line,
-while status glyphs keep every state readable without color. Long workflows are
-windowed around the active node.
+Inside OMP or the supported Pi adapter, a compact widget above the editor shows
+one line per workflow node. The first glyph is the node status. The second glyph
+is the node type: `●` agent, `ƒ` compute, `!` notification, `$` shell action,
+`*` function action, or `◆` checkpoint. Repeated visits, runtime details, and
+timing appear on the same line when they apply. The active host's current theme
+highlights the full active-node line, while status glyphs keep every state
+readable without color. Long workflows are windowed around the active node.
 Scroll the list with `shift+↑` / `shift+↓`; it snaps back to following the
 active node whenever the workflow advances a step. Use `ompw` when you need the
 full boxed graph and its edges.
@@ -290,7 +293,7 @@ full boxed graph and its edges.
 A workflow is a graph of named nodes with exactly one entry point. Each node
 finishes with a JSON output, and edges decide what runs next.
 
-An `agent` node sends a prompt into the pi conversation and waits for the
+An `agent` node sends a prompt into the current conversation and waits for the
 model to submit its output through the `workflow` tool. A `compute` node runs
 a pure TypeScript function. A `notify` node writes a durable message for the
 originating OMP or Pi session. An `action` node performs a side effect,

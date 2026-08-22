@@ -2050,16 +2050,29 @@ export class SqliteControllerStore implements ControllerStore {
     return result.changes === 1;
   }
 
-  setWorkflowRunOriginSession(runId: string, originSessionId: string): boolean {
+  setWorkflowRunOriginSession(runId: string, originSessionId: string, now?: string): boolean {
     validateRunId(runId);
     validateKey(originSessionId, "origin session id");
     const result = this.database
       .prepare(
-        `UPDATE workflow_run_queue SET origin_session_id = ?
+        `UPDATE workflow_run_queue SET origin_session_id = ?, updated_at = ?
          WHERE run_id = ? AND origin_session_id IS NULL`,
       )
-      .run(originSessionId, runId);
+      .run(originSessionId, validTimestamp(now), runId);
     return result.changes === 1;
+  }
+
+  clearWorkflowRunOriginSession(sessionId: string, now?: string): number {
+    validateKey(sessionId, "session id");
+    const timestamp = validTimestamp(now);
+    const result = this.database
+      .prepare(
+        `UPDATE workflow_run_queue
+         SET origin_session_id = NULL, updated_at = ?
+         WHERE origin_session_id = ? AND status = 'done'`,
+      )
+      .run(timestamp, sessionId);
+    return Number(result.changes);
   }
 
   private requireWorkflowRun(runId: string): WorkflowRunQueueRecord {

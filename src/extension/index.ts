@@ -648,6 +648,16 @@ export default function piWorkflows(pi: ExtensionAPI) {
     ensureRunQueueStore(ctx.cwd).getWorkflowRun(runId)?.originSessionId ??
     ctx.sessionManager.getSessionId();
 
+  const adoptRunOriginSession = (ctx: ExtensionContext, runId: string): boolean => {
+    const queue = ensureRunQueueStore(ctx.cwd);
+    const sessionId = ctx.sessionManager.getSessionId();
+    const record = queue.getWorkflowRun(runId);
+    if (record === undefined) return false;
+    if (record.originSessionId === sessionId) return true;
+    if (record.originSessionId !== null) return false;
+    return queue.setWorkflowRunOriginSession(runId, sessionId);
+  };
+
   const storeTurnDescriptor = (
     ctx: ExtensionContext,
     descriptor: DeferredTurnDescriptor,
@@ -1777,12 +1787,17 @@ export default function piWorkflows(pi: ExtensionAPI) {
 
   const findOwnedWaitingHumanDecision = async (
     ctx: ExtensionContext,
+    requestedRunId?: string,
   ): Promise<{ state: WorkflowRunState; request: HumanDecisionRequest } | null> => {
     const rows = ensureRunQueueStore(ctx.cwd).listWorkflowRuns();
     const sessionId = ctx.sessionManager.getSessionId();
     const owned = new Set(
       rows
-        .filter((row) => row.originSessionId === null || row.originSessionId === sessionId)
+        .filter(
+          (row) =>
+            row.originSessionId === sessionId ||
+            (requestedRunId !== undefined && row.originSessionId === null),
+        )
         .map((row) => row.runId),
     );
     const continued = new Set(
@@ -1792,6 +1807,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
     for (const bundle of bundles) {
       if (
         bundle.state.status !== "waiting" ||
+        (requestedRunId !== undefined && bundle.state.runId !== requestedRunId) ||
         !owned.has(bundle.state.runId) ||
         continued.has(bundle.state.runId)
       ) {
@@ -1850,7 +1866,10 @@ export default function piWorkflows(pi: ExtensionAPI) {
         },
       };
     }
-    if (widgetSource) {
+    if (
+      widgetSource &&
+      (requestedRunId === undefined || widgetSource.state.runId === requestedRunId)
+    ) {
       const { state } = widgetSource;
       const request = humanDecisionRequest(state.finalOutput);
       if (state.status === "waiting" && request !== null) {
@@ -1873,8 +1892,13 @@ export default function piWorkflows(pi: ExtensionAPI) {
         details: { action: "clear", workflowName: state.workflowName, runId: state.runId },
       };
     }
-    const recovered = await findOwnedWaitingHumanDecision(ctx);
+    const recovered = await findOwnedWaitingHumanDecision(ctx, requestedRunId);
     if (recovered !== null) {
+      if (!adoptRunOriginSession(ctx, recovered.state.runId)) {
+        throw new Error(
+          `Workflow run ${recovered.state.runId} belongs to another interactive session.`,
+        );
+      }
       await cancelHumanDecision(recovered.request);
       return {
         message: `Cancelled the pending human decision for workflow ${recovered.state.workflowName}.`,
@@ -2022,7 +2046,9 @@ export default function piWorkflows(pi: ExtensionAPI) {
       const rows = ensureRunQueueStore(ctx.cwd).listWorkflowRuns();
       const sessionId = ctx.sessionManager.getSessionId();
       const known = new Set(
-        rows.filter((row) => row.originSessionId === sessionId).map((row) => row.runId),
+        rows
+          .filter((row) => row.originSessionId === null || row.originSessionId === sessionId)
+          .map((row) => row.runId),
       );
       const continued = new Set(
         rows.map((row) => row.parentRunId).filter((parent): parent is string => parent !== null),
@@ -2044,7 +2070,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
       if (queueRecord === undefined) {
         throw new Error(`Workflow run ${parentRunId} is not owned by this project.`);
       }
-      if (queueRecord.originSessionId !== ctx.sessionManager.getSessionId()) {
+      if (!adoptRunOriginSession(ctx, parentRunId)) {
         throw new Error(`Workflow run ${parentRunId} belongs to another interactive session.`);
       }
     }
@@ -2113,10 +2139,10 @@ export default function piWorkflows(pi: ExtensionAPI) {
     if (request !== null && accepted !== undefined && verified !== undefined) {
       const queueRecord = ensureRunQueueStore(ctx.cwd).getWorkflowRun(waiting.parentRunId);
       const currentSessionId = ctx.sessionManager.getSessionId();
-      if (
-        queueRecord === undefined ||
-        (queueRecord.originSessionId !== null && queueRecord.originSessionId !== currentSessionId)
-      ) {
+      const ownedBySession =
+        queueRecord?.originSessionId === currentSessionId ||
+        (queueRecord?.originSessionId === null && adoptRunOriginSession(ctx, waiting.parentRunId));
+      if (!ownedBySession) {
         await settleHumanDecisionChannels(accepted);
         return {
           message: "Human decision accepted; its owning session will continue the workflow.",
@@ -2395,10 +2421,6 @@ export default function piWorkflows(pi: ExtensionAPI) {
       ) {
         continue;
       }
-      const queueRecord = ensureRunQueueStore(ctx.cwd).getWorkflowRun(request.runId);
-      const ownedBySession =
-        queueRecord?.originSessionId === null ||
-        queueRecord?.originSessionId === ctx.sessionManager.getSessionId();
       let resolved = await store.readResolved(request.decisionId);
       if (resolved === null) {
         let cancellation = await store.readCancellation(request.decisionId);
@@ -2422,7 +2444,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
           continue;
         }
         if (resolved === null) {
-          if (!deliverPending || !ownedBySession) continue;
+          if (!deliverPending) continue;
           const hostKind = decisionHostKind({
             mode: ctx.mode,
             env: process.env,
@@ -2431,6 +2453,13 @@ export default function piWorkflows(pi: ExtensionAPI) {
           const channels = audienceChannels(decisionChannelConfig, request.audience, {
             kind: hostKind,
           });
+          const canDeliver =
+            (hostKind === "pi-tui" && channels.includes("pi")) ||
+            (hostKind === "omp" && channels.includes("omp")) ||
+            channels.some((channelId) => telegramDecisionChannels.has(channelId));
+          if (!canDeliver) continue;
+          const ownedBySession = adoptRunOriginSession(ctx, request.runId);
+          if (!ownedBySession) continue;
           for (const channelId of channels) {
             const channel = telegramDecisionChannels.get(channelId);
             if (channel !== undefined) await channel.deliver(humanDecisionChannelRequest(request));
@@ -2446,6 +2475,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
         }
       }
 
+      const ownedBySession = adoptRunOriginSession(ctx, request.runId);
       if (!ownedBySession) continue;
       const currentParent = await readRunBundle(runStore.runDirFor(request.runId));
       if (currentParent === null || currentParent.state.status !== "waiting") continue;
@@ -3270,7 +3300,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
     runSyncPass(ctx);
   });
 
-  pi.on("session_shutdown", async () => {
+  pi.on("session_shutdown", async (_event, ctx) => {
     sessionClosed = true;
     herdrProbeGeneration += 1;
     systemTurnAbort = null;
@@ -3303,6 +3333,18 @@ export default function piWorkflows(pi: ExtensionAPI) {
     await stopDecisionChannels();
     await controllerHost?.close().catch(() => undefined);
     controllerHost = undefined;
+    const sessionId =
+      ctx?.sessionManager.getSessionId() ?? controllerContext?.sessionManager.getSessionId();
+    const store =
+      runQueueStore ??
+      (ctx !== undefined
+        ? ensureRunQueueStore(ctx.cwd)
+        : controllerContext !== null
+          ? ensureRunQueueStore(controllerContext.cwd)
+          : null);
+    if (sessionId !== undefined && store !== null) {
+      store.clearWorkflowRunOriginSession(sessionId);
+    }
     controllerContext = null;
     runQueueStore?.close();
     runQueueStore = null;

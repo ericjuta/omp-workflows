@@ -3,8 +3,15 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SqliteControllerStore } from "../src/controllers/sqlite.js";
 import { main, parseCliArgs } from "../src/viewer/cli.js";
-import { compute, defineWorkflow } from "../src/workflows/definition.js";
+import { checkpoint, compute, defineWorkflow } from "../src/workflows/definition.js";
 import { WorkflowEngine } from "../src/workflows/engine.js";
+import {
+  HumanDecisionStore,
+  choice,
+  defineHumanChoices,
+  humanDecision,
+} from "../src/workflows/human-decision.js";
+import type { HumanDecisionRequest } from "../src/workflows/types.js";
 import { ScriptedExecutor, makeTempDir } from "./helpers.js";
 
 async function makeCompletedRun(outputRoot: string): Promise<string> {
@@ -12,6 +19,49 @@ async function makeCompletedRun(outputRoot: string): Promise<string> {
     name: "cli-demo",
     startAt: "one",
     nodes: { one: compute({ run: () => ({ ok: true }) }) },
+    edges: [],
+  });
+  const engine = new WorkflowEngine({ executor: new ScriptedExecutor(), outputRoot });
+  const { state } = await engine.run(workflow, {});
+  return state.runId;
+}
+
+const decisionChoices = defineHumanChoices({
+  continue: choice({ label: "Continue" }),
+  stop: choice({ label: "Stop" }),
+});
+
+async function makeWaitingHumanDecisionRun(outputRoot: string): Promise<HumanDecisionRequest> {
+  const workflow = defineWorkflow({
+    name: "cli-human-decision",
+    startAt: "approve",
+    nodes: {
+      approve: humanDecision({
+        audience: "operator",
+        choices: decisionChoices,
+        request: () => ({
+          title: "Approve",
+          subject: { task: "test CLI cancellation" },
+          presentation: {
+            schema: "pi-workflows.decision-presentation.v1",
+            summary: "Approve this test decision.",
+            blocks: [],
+          },
+        }),
+      }),
+    },
+    edges: [],
+  });
+  const engine = new WorkflowEngine({ executor: new ScriptedExecutor(), outputRoot });
+  const { state } = await engine.run(workflow, {});
+  return state.finalOutput as HumanDecisionRequest;
+}
+
+async function makeWaitingCheckpointRun(outputRoot: string): Promise<string> {
+  const workflow = defineWorkflow({
+    name: "cli-checkpoint",
+    startAt: "review",
+    nodes: { review: checkpoint({ summary: "Review" }) },
     edges: [],
   });
   const engine = new WorkflowEngine({ executor: new ScriptedExecutor(), outputRoot });
@@ -87,6 +137,16 @@ describe("parseCliArgs", () => {
     });
   });
 
+  it("parses the cancel command with its run and runs directory", () => {
+    expect(parseCliArgs(["cancel", "run-123", "--dir", "/tmp/runs"])).toMatchObject({
+      command: "cancel",
+      runId: "run-123",
+      dir: "/tmp/runs",
+    });
+    expect(() => parseCliArgs(["cancel"])).toThrow(/cancel requires <runId>/);
+    expect(() => parseCliArgs(["cancel", "run-123", "extra"])).toThrow(/Unexpected argument/);
+  });
+
   it("parses the host command with project and passthrough args", () => {
     expect(parseCliArgs(["host"])).toMatchObject({ command: "host" });
     expect(parseCliArgs(["host", "--project", "/repo"])).toMatchObject({
@@ -143,6 +203,36 @@ describe("omp-workflows CLI", () => {
     await makeCompletedRun(outputRoot);
     expect(await main(["view", "--dir", outputRoot, "--once"])).toBe(0);
     expect(stdout).toContain("omp-workflows — runs");
+  });
+
+  it("cancels a waiting human decision through the immutable cancellation fence", async () => {
+    const outputRoot = await makeTempDir("pi-workflows-cli-cancel");
+    const request = await makeWaitingHumanDecisionRun(outputRoot);
+
+    expect(await main(["cancel", request.runId, "--dir", outputRoot])).toBe(0);
+    expect(stdout).toContain(`Cancelled waiting human decision ${request.decisionId}`);
+    await expect(
+      new HumanDecisionStore(outputRoot).readCancellation(request.decisionId),
+    ).resolves.toMatchObject({
+      decisionId: request.decisionId,
+      requestDigest: request.requestDigest,
+      reason: "cancelled",
+    });
+  });
+
+  it("rejects cancellation of missing, non-waiting, and plain-checkpoint runs", async () => {
+    const outputRoot = await makeTempDir("pi-workflows-cli-cancel-invalid");
+    const completedRunId = await makeCompletedRun(outputRoot);
+    const checkpointRunId = await makeWaitingCheckpointRun(outputRoot);
+
+    expect(await main(["cancel", "missing-run", "--dir", outputRoot])).toBe(1);
+    expect(stderr).toContain("Run not found: missing-run");
+    stderr = "";
+    expect(await main(["cancel", completedRunId, "--dir", outputRoot])).toBe(1);
+    expect(stderr).toContain("not waiting");
+    stderr = "";
+    expect(await main(["cancel", checkpointRunId, "--dir", outputRoot])).toBe(1);
+    expect(stderr).toContain("waiting at a plain checkpoint");
   });
 
   it("lists and inspects controller resources without modifying the store", async () => {

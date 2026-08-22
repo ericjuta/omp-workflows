@@ -21,6 +21,9 @@ function decisionUi(
       widget.dispose();
       return choiceValue;
     },
+    async select() {
+      throw new Error("TUI must not call select");
+    },
     async input() {
       return input;
     },
@@ -66,6 +69,9 @@ describe("OmpDecisionChannel", () => {
           widget.dispose();
         });
       },
+      async select() {
+        throw new Error("TUI must not call select");
+      },
       async input() {
         return undefined;
       },
@@ -77,6 +83,7 @@ describe("OmpDecisionChannel", () => {
     const answers: HumanDecisionChannelAnswer[] = [];
     const channel = new OmpDecisionChannel({
       actorId: "session-a",
+      mode: "tui",
       ui,
       store: new HumanDecisionStore(await makeTempDir("omp-decision-readable")),
       onAnswer: async (answer) => {
@@ -96,6 +103,7 @@ describe("OmpDecisionChannel", () => {
     const answers: HumanDecisionChannelAnswer[] = [];
     const channel = new OmpDecisionChannel({
       actorId: "session-a",
+      mode: "tui",
       ui: decisionUi("continue"),
       store: new HumanDecisionStore(await makeTempDir("omp-decision")),
       onAnswer: async (answer) => {
@@ -113,6 +121,7 @@ describe("OmpDecisionChannel", () => {
   it("rejects an OMP selection outside the rendered choice labels", async () => {
     const channel = new OmpDecisionChannel({
       actorId: "session-a",
+      mode: "tui",
       ui: decisionUi("unknown"),
       store: new HumanDecisionStore(await makeTempDir("omp-decision-unknown")),
       onAnswer: async () => {},
@@ -124,6 +133,7 @@ describe("OmpDecisionChannel", () => {
     const answers: HumanDecisionChannelAnswer[] = [];
     const channel = new OmpDecisionChannel({
       actorId: "session-a",
+      mode: "tui",
       ui: decisionUi(undefined),
       store: new HumanDecisionStore(await makeTempDir("omp-decision-cancel")),
       onAnswer: async (answer) => {
@@ -138,6 +148,7 @@ describe("OmpDecisionChannel", () => {
     const answers: HumanDecisionChannelAnswer[] = [];
     const channel = new OmpDecisionChannel({
       actorId: "session-a",
+      mode: "tui",
       ui: decisionUi("replan"),
       store: new HumanDecisionStore(await makeTempDir("omp-decision-input-cancel")),
       onAnswer: async (answer) => {
@@ -153,6 +164,7 @@ describe("OmpDecisionChannel", () => {
     const answers: HumanDecisionChannelAnswer[] = [];
     const channel = new OmpDecisionChannel({
       actorId: "session-a",
+      mode: "tui",
       ui: decisionUi("replan", exact),
       store: new HumanDecisionStore(await makeTempDir("omp-decision-text")),
       onAnswer: async (answer) => {
@@ -163,6 +175,109 @@ describe("OmpDecisionChannel", () => {
     expect(answers[0]?.response).toEqual({
       choice: "replan",
       input: { instructions: exact },
+    });
+  });
+
+  it("uses native RPC select and input requests", async () => {
+    const exact = "  revise through RPC  ";
+    let title = "";
+    let options: string[] = [];
+    let customCalled = false;
+    const answers: HumanDecisionChannelAnswer[] = [];
+    const ui: OmpDecisionUi = {
+      async custom<T>() {
+        customCalled = true;
+        return undefined as T;
+      },
+      async select(nextTitle, nextOptions, dialogOptions) {
+        title = nextTitle;
+        options = nextOptions;
+        expect(dialogOptions.signal?.aborted).toBe(false);
+        return nextOptions[1];
+      },
+      async input(_prompt, _defaultValue, dialogOptions) {
+        expect(dialogOptions.signal?.aborted).toBe(false);
+        return exact;
+      },
+      matchesEscape: () => false,
+      matchesEnter: () => false,
+      matchesUp: () => false,
+      matchesDown: () => false,
+    };
+    const channel = new OmpDecisionChannel({
+      actorId: "rpc-session",
+      mode: "rpc",
+      ui,
+      store: new HumanDecisionStore(await makeTempDir("omp-decision-rpc")),
+      onAnswer: async (answer) => {
+        answers.push(answer);
+      },
+    });
+
+    expect((await channel.deliver(request())).status).toBe("confirmed");
+    expect(customCalled).toBe(false);
+    expect(title).toContain("Review this decision.");
+    expect(title).toContain("Decision");
+    expect(options).toEqual(["1. Continue", "2. Replan"]);
+    expect(answers[0]).toMatchObject({
+      response: { choice: "replan", input: { instructions: exact } },
+      source: { channel: "omp", actorId: "rpc-session" },
+    });
+  });
+
+  it("cancels a pending RPC select after external settlement", async () => {
+    const store = new HumanDecisionStore(await makeTempDir("omp-decision-rpc-settlement"));
+    let markPromptReady: (() => void) | undefined;
+    const promptReady = new Promise<void>((resolve) => {
+      markPromptReady = resolve;
+    });
+    const ui: OmpDecisionUi = {
+      async custom() {
+        throw new Error("RPC must not call custom UI");
+      },
+      async select(_title, _options, dialogOptions) {
+        return await new Promise<string | undefined>((resolve) => {
+          dialogOptions.signal?.addEventListener("abort", () => resolve(undefined), { once: true });
+          markPromptReady?.();
+        });
+      },
+      async input() {
+        return undefined;
+      },
+      matchesEscape: () => false,
+      matchesEnter: () => false,
+      matchesUp: () => false,
+      matchesDown: () => false,
+    };
+    const channel = new OmpDecisionChannel({
+      actorId: "rpc-session",
+      mode: "rpc",
+      ui,
+      store,
+      onAnswer: async () => {},
+    });
+    const decision = request();
+    const delivery = channel.deliver(decision);
+    await promptReady;
+    const accepted = {
+      schema: "pi-workflows.human-decision-accepted.v1" as const,
+      provenance: "human" as const,
+      decisionId: decision.decisionId,
+      requestDigest: decision.requestDigest,
+      subjectDigest: `sha256:${"b".repeat(64)}`,
+      presentationDigest: decision.presentationDigest,
+      revision: decision.revision,
+      response: { choice: "continue" },
+      source: { channel: "telegram:approval", actorId: "person", eventId: "event" },
+      idempotencyKey: "event",
+      acceptedAt: "2026-08-19T00:01:00.000Z",
+      answerDigest: `sha256:${"a".repeat(64)}`,
+    };
+
+    await channel.settle(accepted);
+    await expect(delivery).resolves.toMatchObject({
+      status: "failed",
+      errorCode: "omp_selection_settled_elsewhere",
     });
   });
 
@@ -179,6 +294,9 @@ describe("OmpDecisionChannel", () => {
           markPromptReady?.();
         });
       },
+      async select() {
+        throw new Error("TUI must not call select");
+      },
       async input() {
         return undefined;
       },
@@ -189,6 +307,7 @@ describe("OmpDecisionChannel", () => {
     } as OmpDecisionUi;
     const channel = new OmpDecisionChannel({
       actorId: "session-a",
+      mode: "tui",
       ui,
       store,
       onAnswer: async () => {},

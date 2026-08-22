@@ -2189,7 +2189,9 @@ export default function piWorkflows(pi: ExtensionAPI) {
     if (activeOmpDecisionChannels.has(request.decisionId)) return;
     const channel = new OmpDecisionChannel({
       actorId: ctx.sessionManager.getSessionId(),
+      mode: ctx.mode === "rpc" ? "rpc" : "tui",
       ui: {
+        select: (title, options, dialogOptions) => ctx.ui.select(title, options, dialogOptions),
         custom: (factory) =>
           ctx.ui.custom((_tui, _theme, _keybindings, done) => {
             const widget = factory(done);

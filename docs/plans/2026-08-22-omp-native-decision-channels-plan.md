@@ -19,8 +19,8 @@ reviewer, another decision node, or a plugin rename.
 
 - Channel contract, config, and Telegram are pi-agnostic.
 - Pi TUI HITL still works with no `channels.json`.
-- An OMP pane is a first-class channel for audience `operator`.
-- Headless hosts fail loudly when they have no channel.
+- OMP TUI and RPC hosts are first-class channels for audience `operator`.
+- JSON, print, and non-OMP RPC hosts remain headless and fail loudly when they have no channel.
 - Autoimplement still shells `pi-reviewer --base <branch>`.
 - Herdr plugin id stays `osolmaz.pi-workflows`.
 
@@ -56,9 +56,9 @@ reviewer, another decision node, or a plugin rename.
 
 4. Put `OmpDecisionChannel` in `src/host`. Allow `src/host` to import
    `src/channels` in addition to workflows, builtins, and controllers.
-   The channel takes a pi-agnostic UI port (`custom` + `input` + abort), not
-   herdr types. The extension, when the process is an OMP pane, adapts herdr
-   pane I/O to that port without moving channel logic into herdr.
+   The channel takes a pi-agnostic UI port (`custom` + `select` + `input` +
+   abort), not herdr types. The extension adapts OMP TUI and RPC UI methods to
+   that port without moving channel logic into herdr.
 
 ### Host-derived default
 
@@ -77,19 +77,18 @@ return configured === undefined ? ["pi"] : [...configured];
 
 Detect host from the running process, not from `channels.json`:
 
-- Pi TUI: existing `ctx.mode === "tui"`.
-- OMP: herdr/OMP pane environment already present in this host (pane id or
-  herdr parent). Do not invent a new user-facing env var unless detection is
-  otherwise impossible; if one is required, document it in
-  `docs/HUMAN_DECISIONS.md`.
-- Otherwise headless.
+- Pi TUI: existing `ctx.mode === "tui"` when the process is not OMP.
+- OMP TUI or RPC: OMP runtime capability or `OMPCODE=1` plus a mode with an
+  interactive UI transport. TUI uses a custom component; RPC uses the host's
+  `extension_ui_request` protocol.
+- JSON, print, Pi RPC, and other hosts are headless.
 
-Delivery already treats `pi` as available only when `ctx.mode === "tui"`.
-Keep that gate. Treat `omp` as available only when the OMP channel can
-actually prompt. If resolved channels have no available adapter, keep the
-existing warning: the decision remains waiting because the audience has no
-available channel. Do not manufacture a Pi answer from a model or RPC
-`workflow answer`.
+Delivery treats `pi` as available only in Pi TUI. Treat `omp` as available only
+in OMP TUI or OMP RPC, where the channel can actually prompt. If resolved
+channels have no available adapter, keep the existing warning: the decision
+remains waiting because its audience has no available channel. Do not
+manufacture a Pi or OMP answer from a model or the RPC `workflow answer` tool;
+OMP RPC answers must return through the host-owned extension UI response.
 
 Do not default unconfigured `operator` to no channel. That regresses plain Pi.
 
@@ -98,12 +97,15 @@ Do not default unconfigured `operator` to no channel. That regresses plain Pi.
 `OmpDecisionChannel` id is `omp`. It implements the same
 `HumanDecisionChannel` methods: `start`, `deliver`, `settle`, `stop`.
 
-- `deliver` renders `pi-workflows.decision-presentation.v1` (same document
-  segments as Pi/Telegram).
-- Collect one choice. If the choice has `textInput`, collect that exact text.
+- TUI `deliver` renders the complete `pi-workflows.decision-presentation.v1`
+  document in the custom OMP component.
+- RPC `deliver` emits a native `select` request containing the readable
+  presentation and uniquely numbered choice labels.
+- Collect one choice. If the choice has `textInput`, collect that exact text
+  through the corresponding TUI or RPC input method.
 - Submit through the existing host-owned acceptance path
   (`HumanDecisionChannelAnswer`, first-valid-answer, same store records).
-- `settle` closes the prompt when another channel or a timeout wins.
+- `settle` aborts either prompt when another channel or a timeout wins.
 - Source is `channel: "omp"` with a host-assigned actor id. Workflows and
   models cannot claim this source.
 
@@ -132,9 +134,9 @@ tool names, and no ambient extensions, skills, prompts, context files, MCP, or
 LSP. Legacy `find` and `ls` requests map to OMP `glob`.
 The same missing export is the extension-process fallback host marker because
 Herdr OMP can expose `OMPCODE=1` to tool children without exposing it to the
-legacy extension process. That fallback applies only when `mode === "tui"`;
-RPC, JSON, and other non-TUI modes remain headless. A native decision accepted
-in Herdr must persist `source.channel: "omp"`.
+legacy extension process. OMP TUI and RPC modes use the `omp` channel. JSON,
+print, Pi RPC, and other non-interactive modes remain headless. An accepted
+native decision persists `source.channel: "omp"`.
 
 A fresh Herdr OMP session must load the extension and expose the workflow
 surface without `Export named 'ModelRuntime' not found`.
@@ -160,8 +162,9 @@ this.
 5. Wire the extension to start the OMP channel when the host is OMP, deliver
    pending decisions to it, and settle it with Pi/Telegram.
 6. Update `docs/HUMAN_DECISIONS.md`, `docs/HUMAN_DECISION_PRESENTATIONS.md`,
-   and `docs/workflows.md` for host-derived defaults and the `omp` channel.
-   Mention the spawn contract. State that the herdr plugin id is unchanged.
+   `docs/workflows.md`, `skills/pi-workflows/SKILL.md`, and
+   `skills/autoimplement/SKILL.md` for host-derived defaults and the `omp`
+   channel. Mention the spawn contract. State that the herdr plugin id is unchanged.
 7. Remove the static `ModelRuntime` requirement from the extension module
    graph. Keep Pi's runtime path and add the restricted OMP SDK path. Verify in
    a fresh Herdr OMP session.
@@ -190,10 +193,12 @@ this.
 - A fresh OMP session loads the extension without requiring `ModelRuntime`,
   lists workflows when the host supplies `i`, and an isolated agent exposes
   only the mapped read-only tools.
-- A Herdr OMP decision redraws after navigation and persists an accepted answer
-  with `source.channel: "omp"`.
-- `decisionHostKind` remains `headless` for RPC and JSON modes even when the
-  OMP runtime capability or `OMPCODE` marker is present.
+- A Herdr OMP TUI decision redraws after navigation and persists an accepted
+  answer with `source.channel: "omp"`.
+- OMP RPC emits native `select` and optional `input` requests, and settlement
+  cancels the pending request.
+- `decisionHostKind` returns `omp` for OMP TUI and RPC, but remains `headless`
+  for JSON, print, and Pi RPC.
 
 ## Public contracts
 

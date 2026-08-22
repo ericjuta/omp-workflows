@@ -309,9 +309,9 @@ humanDecision({
 
 The waiting run stores a versioned request and asks every channel configured for the logical audience. The structured `subject` remains machine data. Channels receive only the normalized `presentation`, title, choices, input prompts, and any deadline policy. The first valid verified human answer wins. When `onTimeout` is present and no human answer wins before the saved deadline, recovery applies the validated response with `timeout` provenance. This policy can continue without a configured channel. A continuation preserves the original workflow input and exposes the resolved response as the checkpoint output. `humanDecisionEdge()` provides exhaustive routing for the choices. Existing `body` requests remain a legacy compatibility form and use deterministic readable formatting.
 
-Unconfigured audience `operator` is host-derived: Pi TUI uses `pi`, an OMP process (`OMPCODE=1`) uses `omp`, and a headless host uses no channel. Configured audiences stay as written. Herdr plugin id remains `osolmaz.pi-workflows`.
+Unconfigured audience `operator` is host-derived: Pi TUI uses `pi`; OMP TUI and RPC use `omp`; JSON, print, and non-OMP RPC hosts use no channel. Configured audiences stay as written. Herdr plugin id remains `osolmaz.pi-workflows`.
 
-The model-facing workflow tool cannot answer a protected human decision. Pi interactive UI, the OMP decision pane, and configured external channels use a host-owned answer path. Ordinary checkpoints keep the existing `/workflow answer` behavior.
+The model-facing workflow tool cannot answer a protected human decision. Pi interactive UI, OMP's custom TUI component, OMP RPC `select`/`input` requests, and configured external channels use a host-owned answer path. Ordinary checkpoints keep the existing `/workflow answer` behavior.
 
 See [Human decisions](HUMAN_DECISIONS.md) for channels, recovery, persistence, and plan approval.
 

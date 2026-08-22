@@ -22,6 +22,11 @@ export type OmpDecisionUiCustomWidget = {
 
 export type OmpDecisionUi = {
   custom: <T>(factory: (done: (value: T) => void) => OmpDecisionUiCustomWidget) => Promise<T>;
+  select: (
+    title: string,
+    options: string[],
+    dialogOptions: { signal?: AbortSignal },
+  ) => Promise<string | undefined>;
   input: (
     prompt: string,
     defaultValue: string,
@@ -37,6 +42,7 @@ export class OmpDecisionChannel extends HostDecisionChannel implements HumanDeci
   constructor(
     private readonly uiOptions: {
       actorId: string;
+      mode: "tui" | "rpc";
       ui: OmpDecisionUi;
       store: HumanDecisionStore;
       onAnswer: (answer: HumanDecisionChannelAnswer) => Promise<void>;
@@ -57,49 +63,68 @@ export class OmpDecisionChannel extends HostDecisionChannel implements HumanDeci
     return this.session.run(request, async ({ attemptId, createdAt, controller }) => {
       const entries = Object.entries(request.choices);
       const ui = this.uiOptions.ui;
-      const selectedChoice = await ui.custom<string | undefined>((done) => {
-        let choiceIndex = 0;
-        let settled = false;
-        const finish = (value: string | undefined) => {
-          if (settled) return;
-          settled = true;
-          done(value);
-        };
-        const abort = () => finish(undefined);
-        controller.signal.addEventListener("abort", abort, { once: true });
-        return {
-          render(_width: number): string[] {
-            const lines: string[] = [];
-            for (const segment of decisionDocumentSegments(request).filter(
-              (candidate) => candidate.kind !== "choices",
-            )) {
-              lines.push(operatorSafeText(segment.text), "");
-            }
-            lines.push(`Decision ${decisionPresentationFingerprint(request)}`, "");
-            for (const [index, [, definition]] of entries.entries()) {
-              const marker = index === choiceIndex ? ">" : " ";
-              lines.push(`${marker} ${definition.label}`);
-              if (definition.input !== undefined) {
-                lines.push(`    ${definition.input.prompt}`);
+      let selectedChoice: string | undefined;
+      if (this.uiOptions.mode === "rpc") {
+        const title = [
+          ...decisionDocumentSegments(request)
+            .filter((candidate) => candidate.kind !== "choices")
+            .map((segment) => operatorSafeText(segment.text)),
+          `Decision ${decisionPresentationFingerprint(request)}`,
+        ].join("\n\n");
+        const options = entries.map(
+          ([, definition], index) => `${index + 1}. ${operatorSafeText(definition.label)}`,
+        );
+        const selected = await ui.select(title, options, { signal: controller.signal });
+        if (selected !== undefined) {
+          const selectedIndex = options.indexOf(selected);
+          if (selectedIndex < 0) throw new Error("OMP decision selection is not in the request");
+          selectedChoice = entries[selectedIndex]?.[0];
+        }
+      } else {
+        selectedChoice = await ui.custom<string | undefined>((done) => {
+          let choiceIndex = 0;
+          let settled = false;
+          const finish = (value: string | undefined) => {
+            if (settled) return;
+            settled = true;
+            done(value);
+          };
+          const abort = () => finish(undefined);
+          controller.signal.addEventListener("abort", abort, { once: true });
+          return {
+            render(_width: number): string[] {
+              const lines: string[] = [];
+              for (const segment of decisionDocumentSegments(request).filter(
+                (candidate) => candidate.kind !== "choices",
+              )) {
+                lines.push(operatorSafeText(segment.text), "");
               }
-            }
-            lines.push("", "↑/↓ choose · Enter confirm · Esc cancel");
-            return lines;
-          },
-          invalidate() {},
-          handleInput(data: string): void {
-            if (ui.matchesEscape(data)) finish(undefined);
-            else if (ui.matchesEnter(data)) finish(entries[choiceIndex]?.[0]);
-            else if (ui.matchesUp(data)) choiceIndex = Math.max(0, choiceIndex - 1);
-            else if (ui.matchesDown(data)) {
-              choiceIndex = Math.min(entries.length - 1, choiceIndex + 1);
-            }
-          },
-          dispose(): void {
-            controller.signal.removeEventListener("abort", abort);
-          },
-        };
-      });
+              lines.push(`Decision ${decisionPresentationFingerprint(request)}`, "");
+              for (const [index, [, definition]] of entries.entries()) {
+                const marker = index === choiceIndex ? ">" : " ";
+                lines.push(`${marker} ${definition.label}`);
+                if (definition.input !== undefined) {
+                  lines.push(`    ${definition.input.prompt}`);
+                }
+              }
+              lines.push("", "↑/↓ choose · Enter confirm · Esc cancel");
+              return lines;
+            },
+            invalidate() {},
+            handleInput(data: string): void {
+              if (ui.matchesEscape(data)) finish(undefined);
+              else if (ui.matchesEnter(data)) finish(entries[choiceIndex]?.[0]);
+              else if (ui.matchesUp(data)) choiceIndex = Math.max(0, choiceIndex - 1);
+              else if (ui.matchesDown(data)) {
+                choiceIndex = Math.min(entries.length - 1, choiceIndex + 1);
+              }
+            },
+            dispose(): void {
+              controller.signal.removeEventListener("abort", abort);
+            },
+          };
+        });
+      }
       if (selectedChoice === undefined) {
         const errorCode = controller.signal.aborted
           ? "omp_selection_settled_elsewhere"

@@ -76,7 +76,7 @@ Skip plan decisions when the user says to accept every new plan immediately:
 }
 ```
 
-Omit `approval` for autonomous mode. It asks the `operator` audience and continues with the exact presented plan after 10 minutes without an accepted answer. The workflow owns this decision. The model must not answer the protected decision through the workflow tool.
+Omit `approval` for autonomous mode. It asks the `operator` audience and continues with the exact presented plan after 10 minutes without an accepted answer. The workflow owns this decision. The model must not answer the protected decision through the workflow tool. Pi TUI, OMP TUI, and OMP RPC collect the answer through their host-owned decision UI; JSON, print, and non-OMP RPC require an external channel or the saved timeout policy.
 
 Do not manually duplicate stages already owned by the workflow. Autoimplement runs independent pi-reviewer commands, pending CI watches, and local verification commands from separate repositories in bounded batches. It keeps model turns, fixes, pushes, comment changes, merges, and releases ordered. One repository uses the same batch path with concurrency one.
 

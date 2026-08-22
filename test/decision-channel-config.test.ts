@@ -48,12 +48,13 @@ describe("decision channel configuration", () => {
     expect(audienceChannels(piOnly(), "missing", { kind: "headless" })).toEqual([]);
   });
 
-  it("detects OMP only for interactive TUI hosts", () => {
+  it("detects OMP for TUI and RPC UI hosts", () => {
     expect(decisionHostKind({ mode: "tui", env: {}, ompRuntime: true })).toBe("omp");
     expect(decisionHostKind({ mode: "tui", env: { OMPCODE: "1" } })).toBe("omp");
-    expect(decisionHostKind({ mode: "rpc", env: {}, ompRuntime: true })).toBe("headless");
-    expect(decisionHostKind({ mode: "rpc", env: { OMPCODE: "1" } })).toBe("headless");
+    expect(decisionHostKind({ mode: "rpc", env: {}, ompRuntime: true })).toBe("omp");
+    expect(decisionHostKind({ mode: "rpc", env: { OMPCODE: "1" } })).toBe("omp");
     expect(decisionHostKind({ mode: "json", env: {}, ompRuntime: true })).toBe("headless");
+    expect(decisionHostKind({ mode: "print", env: { OMPCODE: "1" } })).toBe("headless");
     expect(decisionHostKind({ mode: "tui", env: { HERDR_ENV: "1" } })).toBe("pi-tui");
     expect(decisionHostKind({ mode: "rpc", env: { HERDR_ENV: "1" } })).toBe("headless");
     expect(decisionHostKind({ mode: "tui", env: {} })).toBe("pi-tui");

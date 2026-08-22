@@ -166,10 +166,10 @@ The model-facing `workflow` tool cannot satisfy a human decision. Its `answer` a
 The accepted human sources are:
 
 - the Pi interactive decision view;
-- the OMP native decision pane; and
+- the OMP native decision UI (custom TUI component or RPC `select`/`input` request); and
 - a configured external decision channel such as Telegram.
 
-The host assigns the source. A workflow or model cannot claim that an answer came from a person. Headless hosts can wait for Telegram, but they cannot manufacture a Pi or OMP UI answer.
+The host assigns the source. A workflow or model cannot claim that an answer came from a person. OMP RPC accepts an answer only through its extension UI response protocol. JSON, print, and non-OMP RPC hosts can wait for Telegram, but they cannot manufacture a Pi or OMP UI answer.
 
 ## Audiences and channel profiles
 
@@ -203,10 +203,10 @@ Private configuration maps the audience to channels:
 If an audience has no `channels` entry, the host chooses the default:
 
 - Pi TUI (`ctx.mode === "tui"` and the process is not OMP): `["pi"]`.
-- OMP pane (`OMPCODE=1`, already set by OMP on its process): `["omp"]`.
+- OMP TUI or RPC (OMP runtime capability or `OMPCODE=1`): `["omp"]`.
 - Otherwise headless: `[]`, and the decision stays waiting with the existing no-available-channel warning.
 
-`HERDR_ENV=1` is not enough. Herdr sets that for Pi panes too. Configured audiences are unchanged.
+OMP TUI renders the complete decision in a custom component. OMP RPC sends a native `select` request with the readable presentation and uniquely numbered labels, followed by `input` when the chosen option requires text. `HERDR_ENV=1` alone is not enough because Herdr sets it for Pi panes too. Configured audiences are unchanged.
 
 The workflow never receives a bot token, user ID, chat ID, Telegram message ID, or Pi session detail. Channel profiles are private host configuration and are excluded from run presentation.
 
@@ -325,7 +325,7 @@ Recovery follows these rules:
 - duplicate channel updates are harmless;
 - stale responses are rejected;
 - one human or timeout response creates one continuation;
-- the winning human answer or timeout policy dismisses any pending Pi dialog;
+- the winning human answer or timeout policy dismisses any pending Pi or OMP TUI/RPC dialog;
 - confirmed channel settlement is adopted without another remote call;
 - failed channel settlement has a bounded retry count and cannot create an unbounded record loop; and
 - cancellation resolves the owned waiting decision from durable state, even after restart, closes pending views, and prevents a later answer from continuing the run.
@@ -336,7 +336,7 @@ A required decision with no available channel remains waiting and reports the co
 
 This alpha change updates the current request, accepted-result, receipt, resolution, continuation, and snapshot contracts in place. Old active runs refuse resume through normal source and definition identity checks. There is no compatibility reader, migration, dual path, or new schema generation. Updated viewers label a human decision as a checkpoint, show its deadline and automatic action when present, and keep the canonical subject separate. Private channel configuration and transport identifiers remain hidden.
 
-The engine remains independent from Pi and Telegram. Core code owns decision contracts, validation, durable acceptance, and continuation. The Pi extension owns UI and channel lifecycle. The Telegram adapter owns Bot API translation. Workflow definitions own only the question, choices, audience, and routes.
+The engine remains independent from Pi, OMP, and Telegram. Core code owns decision contracts, validation, durable acceptance, and continuation. The host extension owns UI and channel lifecycle. The Telegram adapter owns Bot API translation. Workflow definitions own only the question, choices, audience, and routes.
 
 ## Contract impact
 

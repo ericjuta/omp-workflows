@@ -135,12 +135,13 @@ export function decisionHostKind(input: {
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   ompRuntime?: boolean;
 }): DecisionHostKind {
-  if (input.mode !== "tui") return "headless";
   const env = input.env ?? {};
+  const ompHost = input.ompRuntime === true || env.OMPCODE === "1";
+  if (input.mode === "rpc") return ompHost ? "omp" : "headless";
+  if (input.mode !== "tui") return "headless";
   // OMP's tool environment sets OMPCODE, while its legacy extension process
   // can require capability detection before that marker is visible.
-  if (input.ompRuntime === true || env.OMPCODE === "1") return "omp";
-  return "pi-tui";
+  return ompHost ? "omp" : "pi-tui";
 }
 
 export function audienceChannels(

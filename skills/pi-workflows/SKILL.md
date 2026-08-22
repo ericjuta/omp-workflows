@@ -71,6 +71,21 @@ Call `start` once for one requested run. A model-started run is saved before
 the tool reports it queued; that `runId` works with `status` and `cancel`
 immediately.
 
+## Protected human decisions
+
+Do not use `workflow answer` for a waiting `humanDecision()` node. A verified
+person must answer through a host-owned channel:
+
+- Pi TUI uses its interactive decision view.
+- OMP TUI uses the native custom decision component.
+- OMP RPC clients must handle `extension_ui_request` frames for `select` and,
+  when requested, `input`, then return the matching `extension_ui_response`.
+- JSON, print, and non-OMP RPC hosts have no local interactive channel. They
+  wait for a configured external channel or a saved timeout policy.
+
+An accepted OMP RPC response is recorded as `source.channel: "omp"` and starts
+the normal continuation run. The model-facing workflow tool cannot forge it.
+
 ## Complete agent steps
 
 When a workflow step message arrives:

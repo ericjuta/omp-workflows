@@ -309,7 +309,9 @@ humanDecision({
 
 The waiting run stores a versioned request and asks every channel configured for the logical audience. The structured `subject` remains machine data. Channels receive only the normalized `presentation`, title, choices, input prompts, and any deadline policy. The first valid verified human answer wins. When `onTimeout` is present and no human answer wins before the saved deadline, recovery applies the validated response with `timeout` provenance. This policy can continue without a configured channel. A continuation preserves the original workflow input and exposes the resolved response as the checkpoint output. `humanDecisionEdge()` provides exhaustive routing for the choices. Existing `body` requests remain a legacy compatibility form and use deterministic readable formatting.
 
-The model-facing workflow tool cannot answer a protected human decision. Pi interactive UI and configured external channels use a host-owned answer path. Ordinary checkpoints keep the existing `/workflow answer` behavior.
+Unconfigured audience `operator` is host-derived: Pi TUI uses `pi`, an OMP process (`OMPCODE=1`) uses `omp`, and a headless host uses no channel. Configured audiences stay as written. Herdr plugin id remains `osolmaz.pi-workflows`.
+
+The model-facing workflow tool cannot answer a protected human decision. Pi interactive UI, the OMP decision pane, and configured external channels use a host-owned answer path. Ordinary checkpoints keep the existing `/workflow answer` behavior.
 
 See [Human decisions](HUMAN_DECISIONS.md) for channels, recovery, persistence, and plan approval.
 
@@ -430,6 +432,8 @@ Autoimplement runs independent commands through bounded command batches. A batch
 ### Command batch environment
 
 `runCommandBatch` items may include optional `env` and `envUnset`. `env` is a string map overlaid on the process environment. `envUnset` is an array of names deleted after that overlay so the child does not inherit them. Workflow snapshots cannot store `undefined`, so deletion uses `envUnset` rather than a missing map value. Items still cannot set `stdin`, `shell`, or `allowNonZeroExit`. Commands run without a shell.
+
+Host login PATH must include `$HOME/.local/bin` and `$HOME/.bun/bin`. Reviewer children unset `GOOGLE_GENAI_USE_VERTEXAI` and `GOOGLE_CLOUD_LOCATION` via `envUnset` to prevent environment confusion during authentication. Isolated `runPiAgentGroup` sessions pin the agent-dir catalog so they execute predictably. The herdr plugin ID remains `osolmaz.pi-workflows`.
 
 `runShellAction` applies the same overlay: an `undefined` override removes that key from the child environment.
 

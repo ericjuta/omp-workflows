@@ -6,12 +6,13 @@ import {
   audienceChannels,
   createTelegramChannels,
   decisionConfigDir,
+  decisionHostKind,
   loadDecisionChannelConfig,
   verifyTelegramTokenFile,
   writeDecisionChannelProfile,
   type DecisionChannelConfig,
   type TelegramFetch,
-} from "../src/extension/decision-channels.js";
+} from "../src/channels/index.js";
 import { HumanDecisionStore } from "../src/workflows/human-decision.js";
 import { makeTempDir } from "./helpers.js";
 
@@ -37,9 +38,38 @@ describe("decision channel configuration", () => {
   });
 
   it("resolves default and configured named audiences", () => {
-    expect(audienceChannels(null, "operator")).toEqual(["pi"]);
-    expect(audienceChannels(piOnly(), "operator")).toEqual(["pi"]);
-    expect(audienceChannels(piOnly(), "missing")).toEqual(["pi"]);
+    expect(audienceChannels(null, "operator", { kind: "pi-tui" })).toEqual(["pi"]);
+    expect(audienceChannels(null, "operator", { kind: "omp" })).toEqual(["omp"]);
+    expect(audienceChannels(null, "operator", { kind: "headless" })).toEqual([]);
+    expect(audienceChannels(piOnly(), "operator", { kind: "pi-tui" })).toEqual(["pi"]);
+    expect(audienceChannels(piOnly(), "operator", { kind: "omp" })).toEqual(["pi"]);
+    expect(audienceChannels(piOnly(), "missing", { kind: "pi-tui" })).toEqual(["pi"]);
+    expect(audienceChannels(piOnly(), "missing", { kind: "omp" })).toEqual(["omp"]);
+    expect(audienceChannels(piOnly(), "missing", { kind: "headless" })).toEqual([]);
+  });
+
+  it("detects OMP from OMPCODE before Pi TUI or herdr", () => {
+    expect(decisionHostKind({ mode: "tui", env: { OMPCODE: "1" } })).toBe("omp");
+    expect(decisionHostKind({ mode: "tui", env: { HERDR_ENV: "1" } })).toBe("pi-tui");
+    expect(decisionHostKind({ mode: "rpc", env: { HERDR_ENV: "1" } })).toBe("headless");
+    expect(decisionHostKind({ mode: "tui", env: {} })).toBe("pi-tui");
+    expect(decisionHostKind({ mode: "rpc", env: {} })).toBe("headless");
+  });
+
+  it("accepts an explicit omp channel in private configuration", async () => {
+    const configDir = await makeTempDir("decision-config-omp");
+    await privateJson(path.join(configDir, "channels.json"), {
+      schema: "pi-workflows.channels.v1",
+      audiences: { operator: { channels: ["omp"], accept: "first-valid-answer" } },
+    });
+    expect(await loadDecisionChannelConfig(configDir)).toEqual({
+      channels: {
+        schema: "pi-workflows.channels.v1",
+        audiences: { operator: { channels: ["omp"], accept: "first-valid-answer" } },
+      },
+      credentials: {},
+      configDir,
+    });
   });
 
   it("returns null without configuration and loads Pi-only configuration", async () => {

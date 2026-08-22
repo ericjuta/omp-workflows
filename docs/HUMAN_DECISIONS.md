@@ -1,6 +1,6 @@
 # Human decisions
 
-pi-workflows needs a reusable way to stop at a proposal and wait for a person. The same decision must appear in Pi and Telegram, and either channel must be able to continue the run. Workflows must be able to offer plain choices, choices that collect text, and choices that route back to planning.
+pi-workflows needs a reusable way to stop at a proposal and wait for a person. The same decision must appear in Pi, OMP, and Telegram, and any of those channels must be able to continue the run. Workflows must be able to offer plain choices, choices that collect text, and choices that route back to planning.
 
 This document defines that behavior. The implementation is tracked in the [human decision gates plan](plans/2026-08-19-human-decision-gates-plan.md).
 
@@ -16,7 +16,7 @@ A workflow author can:
 - add a typed human decision without writing channel code;
 - route every choice exhaustively;
 - collect exact text with a choice such as `replan`;
-- address a logical audience instead of a Telegram chat or Pi session;
+- address a logical audience instead of a Telegram chat, Pi session, or OMP pane;
 - reuse a standard plan approval workflow; and
 - rely on one accepted answer and one continuation after a crash or concurrent reply.
 
@@ -165,10 +165,11 @@ The model-facing `workflow` tool cannot satisfy a human decision. Its `answer` a
 
 The accepted human sources are:
 
-- the Pi interactive decision view; and
+- the Pi interactive decision view;
+- the OMP native decision pane; and
 - a configured external decision channel such as Telegram.
 
-The host assigns the source. A workflow or model cannot claim that an answer came from a person. Pi non-interactive modes can wait for Telegram, but they cannot manufacture a Pi UI answer.
+The host assigns the source. A workflow or model cannot claim that an answer came from a person. Headless hosts can wait for Telegram, but they cannot manufacture a Pi or OMP UI answer.
 
 ## Audiences and channel profiles
 
@@ -185,7 +186,7 @@ Private configuration maps the audience to channels:
   "schema": "pi-workflows.channels.v1",
   "audiences": {
     "operator": {
-      "channels": ["pi", "telegram:default"],
+      "channels": ["pi", "omp", "telegram:default"],
       "accept": "first-valid-answer"
     }
   },
@@ -198,6 +199,14 @@ Private configuration maps the audience to channels:
   }
 }
 ```
+
+If an audience has no `channels` entry, the host chooses the default:
+
+- Pi TUI (`ctx.mode === "tui"` and the process is not OMP): `["pi"]`.
+- OMP pane (`OMPCODE=1`, already set by OMP on its process): `["omp"]`.
+- Otherwise headless: `[]`, and the decision stays waiting with the existing no-available-channel warning.
+
+`HERDR_ENV=1` is not enough. Herdr sets that for Pi panes too. Configured audiences are unchanged.
 
 The workflow never receives a bot token, user ID, chat ID, Telegram message ID, or Pi session detail. Channel profiles are private host configuration and are excluded from run presentation.
 

@@ -10,7 +10,7 @@ import {
   writeDecisionChannelProfile,
   type HumanDecisionChannelAnswer,
   type TelegramFetch,
-} from "../src/extension/decision-channels.js";
+} from "../src/channels/index.js";
 import { humanDecisionChannelRequest } from "../src/workflows/decision-presentation.js";
 import {
   HumanDecisionStore,

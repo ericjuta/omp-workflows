@@ -14,6 +14,10 @@ export default defineConfig({
     ],
   },
   test: {
+    env: {
+      // OMP sets OMPCODE=1 on its process. Tests must not inherit that host.
+      OMPCODE: "",
+    },
     testTimeout: 15_000,
     include: ["test/**/*.test.ts"],
     exclude: ["test/e2e/**", "node_modules/**"],

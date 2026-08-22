@@ -1,0 +1,221 @@
+import { describe, expect, it } from "vitest";
+import { type HumanDecisionChannelAnswer } from "../src/channels/index.js";
+import { OmpDecisionChannel, type OmpDecisionUi } from "../src/host/omp-decision-channel.js";
+import { humanDecisionChannelRequest } from "../src/workflows/decision-presentation.js";
+import {
+  HumanDecisionStore,
+  choice,
+  createHumanDecisionRequest,
+  defineHumanChoices,
+  textInput,
+} from "../src/workflows/human-decision.js";
+import { decisionPrompt, makeTempDir } from "./helpers.js";
+
+function decisionUi(
+  choiceValue: string | undefined,
+  input: string | undefined = undefined,
+): OmpDecisionUi {
+  return {
+    async custom(factory) {
+      const widget = factory(() => {});
+      widget.dispose();
+      return choiceValue;
+    },
+    async input() {
+      return input;
+    },
+    matchesEscape: () => false,
+    matchesEnter: () => true,
+    matchesUp: () => false,
+    matchesDown: () => false,
+  } as OmpDecisionUi;
+}
+
+function request() {
+  return humanDecisionChannelRequest(
+    createHumanDecisionRequest({
+      runId: "run-a",
+      workflowName: "workflow-a",
+      nodeId: "approve",
+      attemptId: "attempt-a",
+      contract: {
+        audience: "operator",
+        choices: defineHumanChoices({
+          continue: choice({ label: "Continue" }),
+          replan: choice({
+            label: "Replan",
+            input: textInput({ name: "instructions", prompt: "What should change?" }),
+          }),
+        }),
+      },
+      prompt: decisionPrompt(),
+      createdAt: "2026-08-19T00:00:00.000Z",
+    }),
+  );
+}
+
+describe("OmpDecisionChannel", () => {
+  it("shows the complete readable presentation through the OMP UI port", async () => {
+    let lines: string[] = [];
+    const ui: OmpDecisionUi = {
+      async custom(factory) {
+        return await new Promise<string | undefined>((resolve) => {
+          const widget = factory((value) => resolve(value as string | undefined));
+          lines = widget.render(80);
+          widget.handleInput("enter");
+          widget.dispose();
+        });
+      },
+      async input() {
+        return undefined;
+      },
+      matchesEscape: () => false,
+      matchesEnter: () => true,
+      matchesUp: () => false,
+      matchesDown: () => false,
+    } as OmpDecisionUi;
+    const answers: HumanDecisionChannelAnswer[] = [];
+    const channel = new OmpDecisionChannel({
+      actorId: "session-a",
+      ui,
+      store: new HumanDecisionStore(await makeTempDir("omp-decision-readable")),
+      onAnswer: async (answer) => {
+        answers.push(answer);
+      },
+    });
+    await channel.deliver(request());
+    const rendered = lines.join("\n");
+    expect(rendered).toContain("Approve");
+    expect(rendered).toContain("Review this decision.");
+    expect(rendered).toContain("Decision");
+    expect(rendered).toContain("Continue");
+    expect(answers[0]?.response).toEqual({ choice: "continue" });
+  });
+
+  it("marks an interactive OMP choice as a verified OMP answer", async () => {
+    const answers: HumanDecisionChannelAnswer[] = [];
+    const channel = new OmpDecisionChannel({
+      actorId: "session-a",
+      ui: decisionUi("continue"),
+      store: new HumanDecisionStore(await makeTempDir("omp-decision")),
+      onAnswer: async (answer) => {
+        answers.push(answer);
+      },
+    });
+    expect((await channel.deliver(request())).status).toBe("confirmed");
+    expect(answers).toHaveLength(1);
+    expect(answers[0]).toMatchObject({
+      response: { choice: "continue" },
+      source: { channel: "omp", actorId: "session-a" },
+    });
+  });
+
+  it("rejects an OMP selection outside the rendered choice labels", async () => {
+    const channel = new OmpDecisionChannel({
+      actorId: "session-a",
+      ui: decisionUi("unknown"),
+      store: new HumanDecisionStore(await makeTempDir("omp-decision-unknown")),
+      onAnswer: async () => {},
+    });
+    await expect(channel.deliver(request())).rejects.toThrow(/not in the request/);
+  });
+
+  it("records a cancelled OMP selection without submitting an answer", async () => {
+    const answers: HumanDecisionChannelAnswer[] = [];
+    const channel = new OmpDecisionChannel({
+      actorId: "session-a",
+      ui: decisionUi(undefined),
+      store: new HumanDecisionStore(await makeTempDir("omp-decision-cancel")),
+      onAnswer: async (answer) => {
+        answers.push(answer);
+      },
+    });
+    expect((await channel.deliver(request())).errorCode).toBe("omp_selection_cancelled");
+    expect(answers).toEqual([]);
+  });
+
+  it("records a cancelled OMP text input without submitting an answer", async () => {
+    const answers: HumanDecisionChannelAnswer[] = [];
+    const channel = new OmpDecisionChannel({
+      actorId: "session-a",
+      ui: decisionUi("replan"),
+      store: new HumanDecisionStore(await makeTempDir("omp-decision-input-cancel")),
+      onAnswer: async (answer) => {
+        answers.push(answer);
+      },
+    });
+    expect((await channel.deliver(request())).errorCode).toBe("omp_input_cancelled");
+    expect(answers).toEqual([]);
+  });
+
+  it("preserves exact interactive replan text", async () => {
+    const exact = "  use option B\nkeep this  ";
+    const answers: HumanDecisionChannelAnswer[] = [];
+    const channel = new OmpDecisionChannel({
+      actorId: "session-a",
+      ui: decisionUi("replan", exact),
+      store: new HumanDecisionStore(await makeTempDir("omp-decision-text")),
+      onAnswer: async (answer) => {
+        answers.push(answer);
+      },
+    });
+    await channel.deliver(request());
+    expect(answers[0]?.response).toEqual({
+      choice: "replan",
+      input: { instructions: exact },
+    });
+  });
+
+  it("dismisses a pending OMP dialog when another channel settles the decision", async () => {
+    const store = new HumanDecisionStore(await makeTempDir("omp-decision-external-settlement"));
+    let markPromptReady: (() => void) | undefined;
+    const promptReady = new Promise<void>((resolve) => {
+      markPromptReady = resolve;
+    });
+    const ui: OmpDecisionUi = {
+      async custom(factory) {
+        return await new Promise<string | undefined>((resolve) => {
+          factory((value) => resolve(value as string | undefined));
+          markPromptReady?.();
+        });
+      },
+      async input() {
+        return undefined;
+      },
+      matchesEscape: () => false,
+      matchesEnter: () => false,
+      matchesUp: () => false,
+      matchesDown: () => false,
+    } as OmpDecisionUi;
+    const channel = new OmpDecisionChannel({
+      actorId: "session-a",
+      ui,
+      store,
+      onAnswer: async () => {},
+    });
+    const decision = request();
+    const delivery = channel.deliver(decision);
+    await promptReady;
+    const accepted = {
+      schema: "pi-workflows.human-decision-accepted.v1" as const,
+      provenance: "human" as const,
+      decisionId: decision.decisionId,
+      requestDigest: decision.requestDigest,
+      subjectDigest: `sha256:${"b".repeat(64)}`,
+      presentationDigest: decision.presentationDigest,
+      revision: decision.revision,
+      response: { choice: "continue" },
+      source: { channel: "telegram:approval", actorId: "person", eventId: "event" },
+      idempotencyKey: "event",
+      acceptedAt: "2026-08-19T00:01:00.000Z",
+      answerDigest: `sha256:${"a".repeat(64)}`,
+    };
+    await Promise.all([channel.settle(accepted), channel.settle(accepted)]);
+    await expect(delivery).resolves.toMatchObject({
+      status: "failed",
+      errorCode: "omp_selection_settled_elsewhere",
+    });
+    await channel.settle(accepted);
+    expect(await store.listSettlements(decision.decisionId, "omp")).toHaveLength(1);
+  });
+});

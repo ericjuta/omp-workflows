@@ -18,6 +18,10 @@ typescript:
     # workflows is the core engine; it must stay pi-agnostic and standalone.
     - from: src/workflows
       allow: []
+    - from: src/channels
+      allow:
+        - src/workflows
+        - src/controllers
     # Durable reconciliation may launch finite child workflows, never the reverse.
     - from: src/controllers
       allow:
@@ -38,12 +42,15 @@ typescript:
         - src/controllers
         - src/render
         - src/herdr
+        - src/channels
+        - src/host
     # The host runs headlessly; it spawns pi but never embeds it.
     - from: src/host
       allow:
         - src/workflows
         - src/builtins
         - src/controllers
+        - src/channels
     # Herdr setup is a standalone host integration with no engine imports.
     - from: src/herdr
       allow: []

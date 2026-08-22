@@ -2,7 +2,20 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { Key, matchesKey } from "@earendil-works/pi-tui";
 import { builtinWorkflowCatalog } from "../builtins/catalog.js";
+import {
+  TelegramDecisionChannel,
+  audienceChannels,
+  createTelegramChannels,
+  decisionHostKind,
+  loadDecisionChannelConfig,
+  verifyTelegramTokenFile,
+  writeDecisionChannelProfile,
+  type DecisionChannelConfig,
+  type HumanDecisionChannelAnswer,
+  type SettledHumanDecision,
+} from "../channels/index.js";
 import {
   projectControllerStorePath,
   SqliteControllerStore,
@@ -14,6 +27,7 @@ import type {
 } from "../controllers/sqlite.js";
 import type { JsonObject } from "../controllers/types.js";
 import type { WorkflowSchedulerResult } from "../controllers/workflows.js";
+import { OmpDecisionChannel } from "../host/omp-decision-channel.js";
 import { compositionMetadata } from "../workflows/composition.js";
 import { humanDecisionChannelRequest } from "../workflows/decision-presentation.js";
 import { WorkflowEngine } from "../workflows/engine.js";
@@ -58,18 +72,7 @@ import {
   parseControllerArgs,
   type PiChildWorkflowStarter,
 } from "./controller-host.js";
-import {
-  PiDecisionChannel,
-  TelegramDecisionChannel,
-  audienceChannels,
-  createTelegramChannels,
-  loadDecisionChannelConfig,
-  verifyTelegramTokenFile,
-  writeDecisionChannelProfile,
-  type DecisionChannelConfig,
-  type HumanDecisionChannelAnswer,
-  type SettledHumanDecision,
-} from "./decision-channels.js";
+import { PiDecisionChannel } from "./decision-channels.js";
 import {
   DeferredTurnCoordinator,
   type BranchIntentResolution,
@@ -104,25 +107,26 @@ import {
 import { buildWidgetView } from "./widget.js";
 import { parseWorkflowToolInput, WorkflowToolParameters } from "./workflow-tool.js";
 
+export { PiDecisionChannel, type PiDecisionUi } from "./decision-channels.js";
 export {
-  PiDecisionChannel,
   TelegramDecisionChannel,
   audienceChannels,
   createTelegramChannels,
   decisionConfigDir,
+  decisionHostKind,
   loadDecisionChannelConfig,
   verifyTelegramTokenFile,
   writeDecisionChannelProfile,
   type DecisionChannelConfig,
   type DecisionCredentialConfig,
+  type DecisionHostKind,
   type HumanDecisionChannel,
   type HumanDecisionChannelAnswer,
   type HumanDecisionDeliveryResult,
   type LoadedDecisionChannelConfig,
-  type PiDecisionUi,
   type SettledHumanDecision,
   type TelegramFetch,
-} from "./decision-channels.js";
+} from "../channels/index.js";
 
 const RUN_CLAIM_LEASE_MS = 30_000;
 const RUN_CLAIM_RENEW_MS = 10_000;
@@ -429,10 +433,13 @@ export default function piWorkflows(pi: ExtensionAPI) {
   let decisionChannelConfig: DecisionChannelConfig | null = null;
   let telegramDecisionChannels = new Map<string, TelegramDecisionChannel>();
   const activePiDecisionChannels = new Map<string, PiDecisionChannel>();
+  const activeOmpDecisionChannels = new Map<string, OmpDecisionChannel>();
   const settleHumanDecisionChannels = async (decision: SettledHumanDecision): Promise<void> => {
     const piChannel = activePiDecisionChannels.get(decision.decisionId);
+    const ompChannel = activeOmpDecisionChannels.get(decision.decisionId);
     await Promise.allSettled([
       ...(piChannel === undefined ? [] : [piChannel.settle(decision)]),
+      ...(ompChannel === undefined ? [] : [ompChannel.settle(decision)]),
       ...[...telegramDecisionChannels.values()].map(async (channel) => channel.settle(decision)),
     ]);
   };
@@ -1157,11 +1164,17 @@ export default function piWorkflows(pi: ExtensionAPI) {
     }
     void presentRun(ctx, run, state);
     if (pendingDecision !== null && state.status === "waiting") {
-      const channels = audienceChannels(decisionChannelConfig, pendingDecision.audience);
+      const hostKind = decisionHostKind({ mode: ctx.mode, env: process.env });
+      const channels = audienceChannels(decisionChannelConfig, pendingDecision.audience, {
+        kind: hostKind,
+      });
       let available = false;
-      if (ctx.mode === "tui" && channels.includes("pi")) {
+      if (hostKind === "pi-tui" && channels.includes("pi")) {
         available = true;
         queueMicrotask(() => void promptHumanDecision(ctx, pendingDecision));
+      } else if (hostKind === "omp" && channels.includes("omp")) {
+        available = true;
+        queueMicrotask(() => void promptOmpDecision(ctx, pendingDecision));
       }
       for (const channelId of channels) {
         const channel = telegramDecisionChannels.get(channelId);
@@ -2162,6 +2175,48 @@ export default function piWorkflows(pi: ExtensionAPI) {
     };
   };
 
+  async function promptOmpDecision(
+    ctx: ExtensionContext,
+    request: HumanDecisionRequest,
+  ): Promise<void> {
+    if (activeOmpDecisionChannels.has(request.decisionId)) return;
+    const channel = new OmpDecisionChannel({
+      actorId: ctx.sessionManager.getSessionId(),
+      ui: {
+        custom: (factory) =>
+          ctx.ui.custom((_tui, _theme, _keybindings, done) => {
+            const widget = factory(done);
+            return {
+              render: (width) => widget.render(width),
+              invalidate: () => widget.invalidate(),
+              handleInput: (data) => widget.handleInput(data),
+              dispose: () => widget.dispose(),
+            };
+          }),
+        input: (prompt, defaultValue, options) => ctx.ui.input(prompt, defaultValue, options),
+        matchesEscape: (data) => matchesKey(data, Key.escape),
+        matchesEnter: (data) => matchesKey(data, Key.enter),
+        matchesUp: (data) => matchesKey(data, Key.up),
+        matchesDown: (data) => matchesKey(data, Key.down),
+      },
+      store: new HumanDecisionStore(new WorkflowRunStore().outputRoot),
+      onAnswer: async (answer) => {
+        const result = await answerWorkflowControl(ctx, answer.response, request.runId, answer);
+        notify(ctx, result.message, result.level);
+      },
+    });
+    activeOmpDecisionChannels.set(request.decisionId, channel);
+    try {
+      await channel.deliver(humanDecisionChannelRequest(request));
+    } catch (error) {
+      notify(ctx, `Could not answer human decision: ${errorMessage(error)}`, "error");
+    } finally {
+      if (activeOmpDecisionChannels.get(request.decisionId) === channel) {
+        activeOmpDecisionChannels.delete(request.decisionId);
+      }
+    }
+  }
+
   async function promptHumanDecision(
     ctx: ExtensionContext,
     request: HumanDecisionRequest,
@@ -2191,9 +2246,11 @@ export default function piWorkflows(pi: ExtensionAPI) {
   const stopDecisionChannels = async (): Promise<void> => {
     await Promise.allSettled([
       ...[...activePiDecisionChannels.values()].map(async (channel) => channel.stop()),
+      ...[...activeOmpDecisionChannels.values()].map(async (channel) => channel.stop()),
       ...[...telegramDecisionChannels.values()].map(async (channel) => channel.stop()),
     ]);
     activePiDecisionChannels.clear();
+    activeOmpDecisionChannels.clear();
     telegramDecisionChannels.clear();
     decisionChannelConfig = null;
   };
@@ -2266,14 +2323,20 @@ export default function piWorkflows(pi: ExtensionAPI) {
         }
         if (resolved === null) {
           if (!deliverPending || !ownedBySession) continue;
-          const channels = audienceChannels(decisionChannelConfig, request.audience);
+          const hostKind = decisionHostKind({ mode: ctx.mode, env: process.env });
+          const channels = audienceChannels(decisionChannelConfig, request.audience, {
+            kind: hostKind,
+          });
           for (const channelId of channels) {
             const channel = telegramDecisionChannels.get(channelId);
             if (channel !== undefined) await channel.deliver(humanDecisionChannelRequest(request));
           }
-          if (ctx.mode === "tui" && channels.includes("pi") && lastWaitingRunId === null) {
+          if (hostKind === "pi-tui" && channels.includes("pi") && lastWaitingRunId === null) {
             lastWaitingRunId = request.runId;
             queueMicrotask(() => void promptHumanDecision(ctx, request));
+          } else if (hostKind === "omp" && channels.includes("omp") && lastWaitingRunId === null) {
+            lastWaitingRunId = request.runId;
+            queueMicrotask(() => void promptOmpDecision(ctx, request));
           }
           continue;
         }

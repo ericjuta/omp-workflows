@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  PiDecisionChannel,
-  type HumanDecisionChannelAnswer,
-  type PiDecisionUi,
-} from "../src/extension/decision-channels.js";
+import { type HumanDecisionChannelAnswer } from "../src/channels/index.js";
+import { PiDecisionChannel, type PiDecisionUi } from "../src/extension/decision-channels.js";
 import { humanDecisionChannelRequest } from "../src/workflows/decision-presentation.js";
 import {
   HumanDecisionStore,

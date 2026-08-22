@@ -7,8 +7,8 @@ The implementation plan is in
 [the human decision presentations plan](plans/2026-08-19-human-decision-presentations-plan.md).
 
 A human decision contains machine data and a separate message for the operator.
-pi-workflows stores and validates the machine data. Pi and Telegram render only
-the operator message, and future channels follow the same rule.
+pi-workflows stores and validates the machine data. Pi, OMP, and Telegram render
+only the operator message, and future channels follow the same rule.
 
 ## Minimal example
 

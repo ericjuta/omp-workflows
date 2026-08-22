@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -106,6 +107,8 @@ export async function runPiAgentGroup(
           allowModelNetwork: false,
           credentials: await createEphemeralCredentialStore(options.signal),
           modelsStore: createEphemeralModelStore(),
+          modelsPath: path.join(getAgentDir(), "models.json"),
+          authPath: path.join(getAgentDir(), "auth.json"),
         })
       : undefined;
   if (options.signal.aborted) throw cancellationError("group", options.signal.reason);
@@ -453,7 +456,9 @@ async function createSdkSession(
 ): Promise<PiAgentSession> {
   if (context.signal.aborted) throw cancellationError(request.id, context.signal.reason);
   const agentDir = getAgentDir();
-  const settingsManager = SettingsManager.create(request.cwd, agentDir);
+  const settingsManager = SettingsManager.create(request.cwd, agentDir, {
+    projectTrusted: false,
+  });
   const resourceLoader = new DefaultResourceLoader({
     cwd: request.cwd,
     agentDir,
@@ -467,9 +472,15 @@ async function createSdkSession(
     appendSystemPromptOverride: () => [],
   });
   await resourceLoader.reload();
-  const modelRuntime = context.modelRuntime ?? (await ModelRuntime.create());
+  const modelRuntime =
+    context.modelRuntime ??
+    (await ModelRuntime.create({
+      allowModelNetwork: false,
+      modelsPath: path.join(agentDir, "models.json"),
+      authPath: path.join(agentDir, "auth.json"),
+    }));
   if (context.signal.aborted) throw cancellationError(request.id, context.signal.reason);
-  const model = resolveRequestedModel(request, modelRuntime);
+  const model = resolveRequestedModel(request, modelRuntime, settingsManager, agentDir);
   const { session } = await createAgentSession({
     cwd: request.cwd,
     agentDir,
@@ -506,17 +517,55 @@ async function createSdkSession(
   };
 }
 
-function resolveRequestedModel(request: PiAgentRequest, runtime: ModelRuntime) {
-  if (request.model === undefined) return undefined;
-  const model = runtime.getModel(request.model.provider, request.model.id);
+function resolveRequestedModel(
+  request: PiAgentRequest,
+  runtime: ModelRuntime,
+  settings: SettingsManager,
+  agentDir: string,
+) {
+  const selection = request.model ?? settingsModel(settings) ?? catalogModel(runtime, agentDir);
+  if (selection === undefined) return undefined;
+  const model = runtime.getModel(selection.provider, selection.id);
   if (model === undefined) {
     throw new PiAgentGroupError(
       request.id,
       "has no model",
-      `${request.model.provider}/${request.model.id}`,
+      `${selection.provider}/${selection.id}`,
     );
   }
   return model;
+}
+
+function settingsModel(settings: SettingsManager): { provider: string; id: string } | undefined {
+  const provider = settings.getDefaultProvider();
+  const id = settings.getDefaultModel();
+  if (provider === undefined || provider === "" || id === undefined || id === "") return undefined;
+  return { provider, id };
+}
+
+function catalogModel(
+  runtime: ModelRuntime,
+  agentDir: string,
+): { provider: string; id: string } | undefined {
+  for (const provider of catalogProviderIds(agentDir)) {
+    const model = runtime.getModels(provider)[0];
+    if (model !== undefined) return { provider: model.provider, id: model.id };
+  }
+  return undefined;
+}
+
+function catalogProviderIds(agentDir: string): string[] {
+  try {
+    const source: unknown = JSON.parse(readFileSync(path.join(agentDir, "models.json"), "utf8"));
+    if (source === null || typeof source !== "object" || Array.isArray(source)) return [];
+    const providers = (source as { providers?: unknown }).providers;
+    if (providers === null || typeof providers !== "object" || Array.isArray(providers)) {
+      return [];
+    }
+    return Object.keys(providers);
+  } catch {
+    return [];
+  }
 }
 
 function validateGroup(

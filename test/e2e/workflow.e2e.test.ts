@@ -841,6 +841,12 @@ describe.sequential("pi-workflows end to end", () => {
       ),
       "utf8",
     );
+    await fs.writeFile(
+      path.join(agentDir, "settings.json"),
+      JSON.stringify({ defaultProvider: "mock", defaultModel: "mock-model" }),
+      "utf8",
+    );
+    await fs.writeFile(path.join(agentDir, "auth.json"), "{}\n", "utf8");
 
     await execFileAsync("git", ["init", "-q"], { cwd: projectDir });
     await execFileAsync("git", ["config", "user.name", "Test User"], { cwd: projectDir });

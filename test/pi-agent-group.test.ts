@@ -990,6 +990,51 @@ describe("Pi agent groups", () => {
     }
   });
 
+  it("pins models.json catalog when host Vertex env is authenticated", async () => {
+    const mock = await startMockOpenAiServer(() => ({
+      kind: "text",
+      text: '{"answer":"catalog"}',
+    }));
+    const agentDir = await makeTempDir("pi-agent-group-catalog");
+    const cwd = await makeTempDir("pi-agent-group-catalog-cwd");
+    await fs.writeFile(
+      path.join(agentDir, "models.json"),
+      JSON.stringify({
+        providers: {
+          mock: {
+            name: "Mock",
+            baseUrl: mock.baseUrl,
+            api: "openai-completions",
+            apiKey: "mock-key",
+            compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
+            models: [{ id: "mock-model", reasoning: true }],
+          },
+        },
+      }),
+      "utf8",
+    );
+    await fs.writeFile(path.join(agentDir, "auth.json"), "{}\n", "utf8");
+    vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
+    vi.stubEnv("HOME", agentDir);
+    vi.stubEnv("GOOGLE_GENAI_USE_VERTEXAI", "true");
+    vi.stubEnv("GOOGLE_CLOUD_LOCATION", "us-east1");
+    vi.stubEnv("GEMINI_API_KEY", "vertex-leak");
+    try {
+      const results = await runPiAgentGroup([{ ...request("catalog"), cwd, tools: ["read"] }], {
+        maxConcurrency: 1,
+        signal: new AbortController().signal,
+      });
+      expect(results[0]).toMatchObject({
+        text: '{"answer":"catalog"}',
+        model: "mock/mock-model",
+      });
+      expect(mock.requests.length).toBe(1);
+    } finally {
+      vi.unstubAllEnvs();
+      await mock.close();
+    }
+  });
+
   it("continues remaining work when fail-fast is disabled", async () => {
     const created: string[] = [];
     const factory: PiAgentSessionFactory = async (agent) => {

@@ -36,19 +36,19 @@ async function makePackage(label = "pi-workflows-herdr-sync", version = "0.11.0"
   await fs.mkdir(path.join(root, "plugins", "herdr"), { recursive: true });
   await fs.writeFile(
     path.join(root, "package.json"),
-    `${JSON.stringify({ name: "@osolmaz/pi-workflows", version }, null, 2)}\n`,
+    `${JSON.stringify({ name: "@ericjuta/omp-workflows", version }, null, 2)}\n`,
   );
   await fs.writeFile(
     path.join(root, "herdr-plugin.toml"),
     [
       `id = "${HERDR_PLUGIN_ID}"`,
-      'name = "pi-workflows"',
+      'name = "omp-workflows"',
       `version = "${version}"`,
       'min_herdr_version = "0.7.0"',
       'platforms = ["linux", "macos"]',
       "",
       "[[panes]]",
-      'id = "piw"',
+      'id = "ompw"',
       'command = ["node", "plugins/herdr/viewer.mjs"]',
       "",
     ].join("\n"),
@@ -336,12 +336,12 @@ describe("syncHerdrPlugin", () => {
       path.join(wrongName, "package.json"),
       `${JSON.stringify({ name: "other", version: "0.11.0" })}\n`,
     );
-    expect(() => syncHerdrPlugin(wrongName, () => reply())).toThrow("Unexpected pi-workflows");
+    expect(() => syncHerdrPlugin(wrongName, () => reply())).toThrow("Unexpected omp-workflows");
 
     const missingVersion = await makePackage("pi-workflows-missing-version");
     await fs.writeFile(
       path.join(missingVersion, "package.json"),
-      `${JSON.stringify({ name: "@osolmaz/pi-workflows" })}\n`,
+      `${JSON.stringify({ name: "@ericjuta/omp-workflows" })}\n`,
     );
     expect(() => syncHerdrPlugin(missingVersion, () => reply())).toThrow(
       "package version is missing",

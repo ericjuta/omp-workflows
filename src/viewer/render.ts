@@ -76,7 +76,7 @@ export function renderRunListLines(
   now: Date = new Date(),
 ): string[] {
   const lines: string[] = [];
-  lines.push(ansi.bold("pi-workflows — runs"));
+  lines.push(ansi.bold("omp-workflows — runs"));
   lines.push(ansi.dim("↑/↓ select · enter open · q quit"));
   lines.push("");
   if (bundles.length === 0) {

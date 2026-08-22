@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 /**
- * Tracks headless child processes (spawned `pi --mode rpc` sessions) so a
+ * Tracks headless child processes (spawned `omp --mode rpc` sessions) so a
  * killed host never leaves orphans working. Children spawn in their own
  * process group; the registry file lets a later host reap leftovers by
  * killing the whole group. The file lives next to the project store and is

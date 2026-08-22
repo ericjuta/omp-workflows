@@ -25,7 +25,7 @@ async function copyExample(targetDir: string, fileName: string): Promise<string>
   const target = path.join(targetDir, fileName);
   let source = await fs.readFile(ECHO_EXAMPLE, "utf8");
   source = source.replace(
-    `from "@osolmaz/pi-workflows"`,
+    `from "@ericjuta/omp-workflows"`,
     `from ${JSON.stringify(path.join(REPO_ROOT, "src", "workflows", "index.ts"))}`,
   );
   await fs.writeFile(target, source, "utf8");

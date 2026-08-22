@@ -1,7 +1,7 @@
 //! The interactive TUI (see docs/tui-viewer.md): a runs sidebar, the graph
 //! pane, an inspector with steps/trace/conversation/info tabs, and a replay
-//! transport. Works against a local runs directory, a single bundle, or a
-//! `piw serve` WebSocket server; all three feed the same view model.
+//! transport. Works against a local runs directory, a single bundle, or an
+//! `ompw serve` WebSocket server; all three feed the same view model.
 
 mod controls;
 mod conversation;
@@ -1437,7 +1437,7 @@ fn draw(frame: &mut Frame, app: &mut App, summaries: &[RunSummary]) {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(" piw ")
+                        .title(" ompw ")
                         .style(Style::default().bg(palette.panel_bg))
                         .border_style(pane_border(&palette, false)),
                 ),
@@ -1495,7 +1495,7 @@ fn draw(frame: &mut Frame, app: &mut App, summaries: &[RunSummary]) {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(" piw ")
+                        .title(" ompw ")
                         .style(Style::default().bg(palette.panel_bg))
                         .border_style(pane_border(&palette, false)),
                 ),

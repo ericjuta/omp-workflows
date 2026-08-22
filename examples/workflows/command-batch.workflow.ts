@@ -4,7 +4,7 @@ import {
   defineWorkflow,
   runCommandBatch,
   type CommandBatchRequest,
-} from "@osolmaz/pi-workflows";
+} from "@ericjuta/omp-workflows";
 
 type Input = {
   cwd: string;

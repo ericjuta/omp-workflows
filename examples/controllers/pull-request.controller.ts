@@ -4,7 +4,7 @@ import {
   conditionUnknown,
   defineController,
   type ChildWorkflowRecord,
-} from "@osolmaz/pi-workflows/controllers";
+} from "@ericjuta/omp-workflows/controllers";
 
 type PullRequestSpec = {
   apiBaseUrl: string;

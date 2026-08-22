@@ -95,7 +95,7 @@ describe("parseCliArgs", () => {
     });
     expect(parseCliArgs(["host", "--", "--provider", "mock"])).toMatchObject({
       command: "host",
-      piArgs: ["--provider", "mock"],
+      ompArgs: ["--provider", "mock"],
     });
     expect(() => parseCliArgs(["host", "--project"])).toThrow(/--project requires/);
   });
@@ -108,10 +108,10 @@ describe("parseCliArgs", () => {
   });
 });
 
-describe("pi-workflows CLI", () => {
+describe("omp-workflows CLI", () => {
   it("prints usage for help", async () => {
     expect(await main(["--help"])).toBe(0);
-    expect(stdout).toContain("pi-workflows — workflow runs and controller resources");
+    expect(stdout).toContain("omp-workflows — workflow runs and controller resources");
   });
 
   it("lists runs", async () => {
@@ -142,7 +142,7 @@ describe("pi-workflows CLI", () => {
     const outputRoot = await makeTempDir("pi-workflows-cli");
     await makeCompletedRun(outputRoot);
     expect(await main(["view", "--dir", outputRoot, "--once"])).toBe(0);
-    expect(stdout).toContain("pi-workflows — runs");
+    expect(stdout).toContain("omp-workflows — runs");
   });
 
   it("lists and inspects controller resources without modifying the store", async () => {
@@ -203,7 +203,7 @@ describe("pi-workflows CLI", () => {
     const herdr = path.join(bin, "herdr");
     await fs.writeFile(
       herdr,
-      `#!/usr/bin/env node\nconst path = require("node:path");\nconst root = process.env.TEST_HERDR_ROOT;\nconst pkg = require(path.join(root, "package.json"));\nprocess.stdout.write(JSON.stringify({ result: { plugins: [{ plugin_id: "osolmaz.pi-workflows", plugin_root: root, manifest_path: path.join(root, "herdr-plugin.toml"), version: pkg.version, enabled: true }] } }));\n`,
+      `#!/usr/bin/env node\nconst path = require("node:path");\nconst root = process.env.TEST_HERDR_ROOT;\nconst pkg = require(path.join(root, "package.json"));\nprocess.stdout.write(JSON.stringify({ result: { plugins: [{ plugin_id: "ericjuta.omp-workflows", plugin_root: root, manifest_path: path.join(root, "herdr-plugin.toml"), version: pkg.version, enabled: true }] } }));\n`,
     );
     await fs.chmod(herdr, 0o755);
     vi.stubEnv("TEST_HERDR_ROOT", root);

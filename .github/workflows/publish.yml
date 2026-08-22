@@ -37,7 +37,7 @@ jobs:
 
       - name: Validate release
         env:
-          PACKAGE_NAME: "@osolmaz/pi-workflows"
+          PACKAGE_NAME: "@ericjuta/omp-workflows"
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
@@ -75,7 +75,7 @@ jobs:
 
       - name: Verify registry
         env:
-          PACKAGE_NAME: "@osolmaz/pi-workflows"
+          PACKAGE_NAME: "@ericjuta/omp-workflows"
         run: |
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"

@@ -1,1 +1,1 @@
-export { autoimplementWorkflow as default } from "@osolmaz/pi-workflows/builtins";
+export { autoimplementWorkflow as default } from "@ericjuta/omp-workflows/builtins";

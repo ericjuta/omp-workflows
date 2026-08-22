@@ -57,7 +57,7 @@ describe("WorkflowHost", { timeout: 30_000 }, () => {
         const workflowPath = path.join(cwd, ".pi", "workflows", "parked-demo.workflow.ts");
         await fs.writeFile(
           workflowPath,
-          `import { compute, defineWorkflow, notify } from "@osolmaz/pi-workflows";
+          `import { compute, defineWorkflow, notify } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "parked-demo",
   startAt: "work",
@@ -230,7 +230,7 @@ export default defineWorkflow({
       const workflowPath = path.join(cwd, ".pi", "workflows", "parked-demo.workflow.ts");
       await fs.writeFile(
         workflowPath,
-        `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "parked-demo",
   startAt: "work",
@@ -431,7 +431,7 @@ export default defineWorkflow({
         await fs.mkdir(path.join(cwd, ".pi", "workflows"), { recursive: true });
         await fs.writeFile(
           path.join(cwd, ".pi", "workflows", "child.workflow.ts"),
-          `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+          `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "child",
   startAt: "work",
@@ -443,7 +443,7 @@ export default defineWorkflow({
         );
         await fs.writeFile(
           path.join(cwd, ".pi", "controllers", "demo.controller.ts"),
-          `import { conditionTrue, defineController } from "@osolmaz/pi-workflows/controllers";
+          `import { conditionTrue, defineController } from "@ericjuta/omp-workflows/controllers";
 export default defineController({
   name: "demo",
   initialStatus: () => ({ phase: "new" }),

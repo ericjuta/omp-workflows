@@ -21,7 +21,7 @@ describe("bundled workflow skills", () => {
       "autoimplement",
       "autoplan",
       "monitor",
-      "pi-workflows",
+      "omp-workflows",
       "sanity-check",
     ]);
     for (const name of names) {
@@ -37,7 +37,7 @@ describe("bundled workflow skills", () => {
   );
 
   it("routes monitor through its built-in workflow", () => {
-    expect(skill("monitor")).toContain("built-in Pi `monitor` workflow");
+    expect(skill("monitor")).toContain("built-in OMP `monitor` workflow");
   });
 
   it("keeps initial planning out of autoimplement and autodoc", () => {
@@ -46,11 +46,11 @@ describe("bundled workflow skills", () => {
   });
 
   it("owns operator UX for the session, Herdr, and the CLI", () => {
-    const markdown = skill("pi-workflows");
+    const markdown = skill("omp-workflows");
     expect(markdown).toContain("This session has **one supervisor**");
     expect(markdown).toContain("Do not add a second supervisor");
-    expect(markdown).toContain("`Ctrl+Shift+R piw`");
-    expect(markdown).toContain("pi-workflows herdr sync");
+    expect(markdown).toContain("`Ctrl+Shift+R ompw`");
+    expect(markdown).toContain("omp-workflows herdr sync");
     expect(markdown).toContain('{ "action": "start"');
     expect(markdown).not.toContain("Fleet");
     expect(markdown).not.toContain("PI_WORKFLOWS_RUN_ID");

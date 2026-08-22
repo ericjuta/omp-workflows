@@ -25,20 +25,20 @@ describe("packed Herdr plugin synchronization", () => {
     const herdr = path.join(bin, "herdr");
     await fs.writeFile(
       herdr,
-      `#!/usr/bin/env node\nconst path = require("node:path");\nconst root = process.env.TEST_PLUGIN_ROOT;\nconst pkg = require(path.join(root, "package.json"));\nprocess.stdout.write(JSON.stringify({ result: { plugins: [{ plugin_id: "osolmaz.pi-workflows", plugin_root: root, manifest_path: path.join(root, "herdr-plugin.toml"), version: pkg.version, enabled: true }] } }));\n`,
+      `#!/usr/bin/env node\nconst path = require("node:path");\nconst root = process.env.TEST_PLUGIN_ROOT;\nconst pkg = require(path.join(root, "package.json"));\nprocess.stdout.write(JSON.stringify({ result: { plugins: [{ plugin_id: "ericjuta.omp-workflows", plugin_root: root, manifest_path: path.join(root, "herdr-plugin.toml"), version: pkg.version, enabled: true }] } }));\n`,
     );
     await fs.chmod(herdr, 0o755);
 
     const packageRoots = [
-      path.join(temp, "hoisted install with spaces", "node_modules", "@osolmaz", "pi-workflows"),
+      path.join(temp, "hoisted install with spaces", "node_modules", "@ericjuta", "omp-workflows"),
       path.join(
         temp,
         "workspace with spaces",
         "packages",
         "wrapper",
         "node_modules",
-        "@osolmaz",
-        "pi-workflows",
+        "@ericjuta",
+        "omp-workflows",
       ),
     ];
 

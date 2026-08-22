@@ -44,7 +44,7 @@ function contentText(content: unknown): string {
 const E2E_CONTROLLER = `import {
   conditionTrue,
   defineController,
-} from "@osolmaz/pi-workflows/controllers";
+} from "@ericjuta/omp-workflows/controllers";
 
 export default defineController({
   name: "e2e-controller",
@@ -75,7 +75,7 @@ export default defineController({
 });
 `;
 
-const E2E_CONTROLLER_CHILD = `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+const E2E_CONTROLLER_CHILD = `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   name: "controller-child",
@@ -85,7 +85,7 @@ export default defineWorkflow({
 });
 `;
 
-const HOST_E2E_WORKFLOW = `import { agent, defineWorkflow } from "@osolmaz/pi-workflows";
+const HOST_E2E_WORKFLOW = `import { agent, defineWorkflow } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   name: "host-e2e",
@@ -100,7 +100,7 @@ export default defineWorkflow({
 });
 `;
 
-const TIMEOUT_E2E_WORKFLOW = `import { agent, defineWorkflow } from "@osolmaz/pi-workflows";
+const TIMEOUT_E2E_WORKFLOW = `import { agent, defineWorkflow } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   name: "timeout-e2e",
@@ -115,7 +115,7 @@ export default defineWorkflow({
 });
 `;
 
-const NO_TIMEOUT_E2E_WORKFLOW = `import { agent, defineWorkflow } from "@osolmaz/pi-workflows";
+const NO_TIMEOUT_E2E_WORKFLOW = `import { agent, defineWorkflow } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   name: "no-timeout-e2e",
@@ -130,7 +130,7 @@ export default defineWorkflow({
 });
 `;
 
-const COMPOSED_CHILD_WORKFLOW = `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+const COMPOSED_CHILD_WORKFLOW = `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   source: import.meta.url,
@@ -143,7 +143,7 @@ export default defineWorkflow({
 });
 `;
 
-const COMPOSED_PARENT_WORKFLOW = `import { compute, defineWorkflow, includeWorkflow } from "@osolmaz/pi-workflows";
+const COMPOSED_PARENT_WORKFLOW = `import { compute, defineWorkflow, includeWorkflow } from "@ericjuta/omp-workflows";
 import child from "./composed-child.workflow.ts";
 
 export default defineWorkflow({
@@ -162,7 +162,7 @@ export default defineWorkflow({
 });
 `;
 
-const HUMAN_DECISION_E2E_WORKFLOW = `import { choice, compute, defineHumanChoices, defineWorkflow, humanDecision, humanDecisionEdge } from "@osolmaz/pi-workflows";
+const HUMAN_DECISION_E2E_WORKFLOW = `import { choice, compute, defineHumanChoices, defineWorkflow, humanDecision, humanDecisionEdge } from "@ericjuta/omp-workflows";
 
 const choices = defineHumanChoices({
   continue: choice({ label: "Continue" }),
@@ -189,7 +189,7 @@ export default defineWorkflow({
 });
 `;
 
-const HUMAN_TIMEOUT_E2E_WORKFLOW = `import { choice, compute, defineHumanChoices, defineWorkflow, humanDecision, humanDecisionEdge } from "@osolmaz/pi-workflows";
+const HUMAN_TIMEOUT_E2E_WORKFLOW = `import { choice, compute, defineHumanChoices, defineWorkflow, humanDecision, humanDecisionEdge } from "@ericjuta/omp-workflows";
 
 const choices = defineHumanChoices({ continue: choice({ label: "Continue" }) });
 
@@ -209,7 +209,7 @@ export default defineWorkflow({
 });
 `;
 
-const DURABLE_LAUNCH_WORKFLOW = `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+const DURABLE_LAUNCH_WORKFLOW = `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   name: "durable-launch-e2e",
@@ -219,7 +219,7 @@ export default defineWorkflow({
 });
 `;
 
-const POST_START_CRASH_E2E_WORKFLOW = `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+const POST_START_CRASH_E2E_WORKFLOW = `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   name: "post-start-crash-e2e",
@@ -239,7 +239,7 @@ export default defineWorkflow({
 });
 `;
 
-const SELF_CANCEL_E2E_WORKFLOW = `import { agent, defineWorkflow } from "@osolmaz/pi-workflows";
+const SELF_CANCEL_E2E_WORKFLOW = `import { agent, defineWorkflow } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   name: "self-cancel-e2e",
@@ -249,7 +249,7 @@ export default defineWorkflow({
 });
 `;
 
-const COMMAND_BATCH_E2E_WORKFLOW = `import { action, compute, defineWorkflow, runCommandBatch } from "@osolmaz/pi-workflows";
+const COMMAND_BATCH_E2E_WORKFLOW = `import { action, compute, defineWorkflow, runCommandBatch } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   name: "command-batch-e2e",
@@ -276,7 +276,7 @@ export default defineWorkflow({
 });
 `;
 
-const E2E_WORKFLOW = `import { agent, decision, decisionEdge, defineWorkflow, shell } from "@osolmaz/pi-workflows";
+const E2E_WORKFLOW = `import { agent, decision, decisionEdge, defineWorkflow, shell } from "@ericjuta/omp-workflows";
 
 const choices = ["y", "n"] as const;
 
@@ -1810,7 +1810,8 @@ export default function captureFailureExtension(pi: unknown) {
       storeFile: hostControllerFile,
       runsDir: hostRunsDir,
       claimPollMs: 50,
-      piArgs: ["--provider", "mock", "--model", "mock-model"],
+      ompBin: PI_BIN,
+      ompArgs: ["--provider", "mock", "--model", "mock-model"],
       env: {
         PI_CODING_AGENT_DIR: hostAgentDir,
         PI_WORKFLOWS_RUNS_DIR: hostRunsDir,

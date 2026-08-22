@@ -717,11 +717,11 @@ describe("buildWidgetLines", () => {
       80,
       undefined,
       undefined,
-      "Ctrl+Shift+R piw",
+      "Ctrl+Shift+R ompw",
     );
 
     const controls = stripAnsi(view.lines.at(-1) ?? "");
-    expect(controls).toContain("shift+↑/↓ scroll · Ctrl+Shift+R piw");
+    expect(controls).toContain("shift+↑/↓ scroll · Ctrl+Shift+R ompw");
     expect(view.lines.length).toBeLessThanOrEqual(10);
     expect(view.lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
 
@@ -748,10 +748,10 @@ describe("buildWidgetLines", () => {
       80,
       undefined,
       undefined,
-      "Ctrl+Shift+R piw",
+      "Ctrl+Shift+R ompw",
     );
     expect(stripAnsi(exactView.lines.at(-1) ?? "")).toContain(
-      "shift+↑/↓ scroll · Ctrl+Shift+R piw",
+      "shift+↑/↓ scroll · Ctrl+Shift+R ompw",
     );
     expect(exactView.lines.length).toBe(10);
   });

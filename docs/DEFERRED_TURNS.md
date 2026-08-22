@@ -1,6 +1,6 @@
 # Deferred workflow turns
 
-This specification defines how Pi Workflows schedules one successor agent turn after a workflow event stops or strands the current turn. It covers cancellation, timeout, terminal failure, launch failure, controller interruption, and claim loss.
+This specification defines how OMP Workflows schedules one successor agent turn after a workflow event stops or strands the current turn. It covers cancellation, timeout, terminal failure, launch failure, controller interruption, and claim loss.
 
 The implementation plan is [Guarantee one successor turn after workflow interruption](plans/2026-08-21-deferred-turn-intents-plan.md).
 
@@ -23,7 +23,7 @@ Each eligible source event creates at most one turn intent. Exactly one of these
 
 All three paths claim the same intent before sending. A resolved intent cannot start another turn.
 
-Cancellation and process termination remain immediate. Pi Workflows does not keep the old assistant turn alive and does not wait for the successor before stopping active work.
+Cancellation and process termination remain immediate. OMP Workflows does not keep the old assistant turn alive and does not wait for the successor before stopping active work.
 
 ## Intent lifecycle
 
@@ -177,7 +177,7 @@ List operations require a positive bounded limit and deterministic ordering.
 
 ## Abort ordering
 
-For an eligible active-turn abort, Pi Workflows performs these steps in order:
+For an eligible active-turn abort, OMP Workflows performs these steps in order:
 
 1. Record abort provenance on the active run.
 2. Build the source event and intent ID.
@@ -185,7 +185,7 @@ For an eligible active-turn abort, Pi Workflows performs these steps in order:
 4. Record the intent ID in system-abort bookkeeping.
 5. Call `ctx.abort()`.
 
-The persistence attempt is synchronous because cancellation immediately crosses the turn boundary. A store failure does not prevent `ctx.abort()`. Terminal handling retries the same intent ID. If retry also fails, Pi Workflows reports that it could not preserve the successor-turn guarantee.
+The persistence attempt is synchronous because cancellation immediately crosses the turn boundary. A store failure does not prevent `ctx.abort()`. Terminal handling retries the same intent ID. If retry also fails, OMP Workflows reports that it could not preserve the successor-turn guarantee.
 
 ## Natural delivery
 
@@ -258,18 +258,18 @@ Workflow-authored `progress` and `final` notifications remain passive. They do n
 
 The `launch_failure` notification kind is removed. Queued launch failure creates an eligible turn intent instead.
 
-Pending `launch_failure` rows from the earlier alpha contract are incompatible. Pi Workflows must stop with a clear controller-store reset instruction. It must not reinterpret, migrate, or silently delete those rows.
+Pending `launch_failure` rows from the earlier alpha contract are incompatible. OMP Workflows must stop with a clear controller-store reset instruction. It must not reinterpret, migrate, or silently delete those rows.
 
 ## Availability limits
 
-Pi Workflows can guarantee only the facts under its control:
+OMP Workflows can guarantee only the facts under its control:
 
 - the intent was stored;
 - a claimant acquired it;
 - a custom message was sent or found in the session branch;
 - the local intent was resolved.
 
-Pi Workflows cannot guarantee model start or completion with the current Pi API. It also cannot deliver after permanent loss of the process, target session, controller store, machine, or model provider.
+OMP Workflows cannot guarantee model start or completion with the current Pi API. It also cannot deliver after permanent loss of the process, target session, controller store, machine, or model provider.
 
 Undelivered intents remain pending. The implementation does not add a service to process them outside a live Pi session.
 

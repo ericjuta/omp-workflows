@@ -7,7 +7,7 @@ The implementation plan is in
 [the human decision presentations plan](plans/2026-08-19-human-decision-presentations-plan.md).
 
 A human decision contains machine data and a separate message for the operator.
-pi-workflows stores and validates the machine data. Pi, OMP, and Telegram render
+omp-workflows stores and validates the machine data. Pi, OMP, and Telegram render
 only the operator message, and future channels follow the same rule.
 
 ## Minimal example
@@ -121,7 +121,7 @@ not contain nested blocks.
 {
   "kind": "fields",
   "items": [
-    { "label": "Repository", "value": "pi-workflows" },
+    { "label": "Repository", "value": "omp-workflows" },
     { "label": "Action", "value": "Update the decision contract" }
   ]
 }
@@ -229,7 +229,7 @@ text prompt. It wraps and scrolls while responding to resize, theme, cancellatio
 and `AbortSignal` events.
 
 When Telegram or another channel accepts the decision, the signal closes the Pi
-dialog. pi-workflows does not modify Pi core or use undocumented TUI state.
+dialog. omp-workflows does not modify Pi core or use undocumented TUI state.
 
 ### Other channels
 
@@ -239,7 +239,7 @@ for display.
 
 ## Plan presentation
 
-pi-workflows provides a reusable plan presenter for built-in workflows. It
+omp-workflows provides a reusable plan presenter for built-in workflows. It
 derives a presentation from the same typed plan stored as the subject.
 
 The presenter uses these sections when data exists:

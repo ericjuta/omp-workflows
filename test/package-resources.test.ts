@@ -8,8 +8,14 @@ const packageJsonPath = path.join(repoRoot, "package.json");
 const skillsRoot = path.join(repoRoot, "skills");
 
 interface PackageManifest {
+  name: string;
   version: string;
   files?: string[];
+  bin?: Record<string, string>;
+  omp?: {
+    extensions?: string[];
+    skills?: string[];
+  };
   pi?: {
     extensions?: string[];
     skills?: string[];
@@ -43,7 +49,7 @@ async function skillFiles(): Promise<string[]> {
     .sort();
 }
 
-describe("Pi package resources", () => {
+describe("OMP package resources", () => {
   it("ships one v1 schema for each human-decision record", async () => {
     const schemaFiles = (await fs.readdir(path.join(repoRoot, "schemas")))
       .filter((file) =>
@@ -64,16 +70,21 @@ describe("Pi package resources", () => {
   it("publishes the extension and skill directory", async () => {
     const manifest = JSON.parse(await fs.readFile(packageJsonPath, "utf8")) as PackageManifest;
 
+    expect(manifest.name).toBe("@ericjuta/omp-workflows");
+    expect(manifest.bin).toEqual({ "omp-workflows": "dist/viewer/cli.js" });
     expect(manifest.files).toContain("skills");
+    expect(manifest.files).toContain("assets");
     expect(manifest.files).toContain("plugins/herdr");
     expect(manifest.files).toContain("herdr-plugin.toml");
+    expect(manifest.omp?.extensions).toEqual(["./src/extension/index.ts"]);
+    expect(manifest.omp?.skills).toEqual(["./skills"]);
     expect(manifest.pi?.extensions).toEqual(["./src/extension/index.ts"]);
     expect(manifest.pi?.skills).toEqual(["./skills"]);
 
-    const extensionPath = manifest.pi?.extensions?.[0];
-    const skillPath = manifest.pi?.skills?.[0];
+    const extensionPath = manifest.omp?.extensions?.[0];
+    const skillPath = manifest.omp?.skills?.[0];
     if (extensionPath === undefined || skillPath === undefined) {
-      throw new Error("Pi package resources are missing from package.json.");
+      throw new Error("OMP resources are missing from package.json.");
     }
     await expect(fs.stat(path.join(repoRoot, extensionPath))).resolves.toBeDefined();
     await expect(fs.stat(path.join(repoRoot, skillPath))).resolves.toBeDefined();
@@ -83,7 +94,7 @@ describe("Pi package resources", () => {
     const manifest = JSON.parse(await fs.readFile(packageJsonPath, "utf8")) as PackageManifest;
     const herdrManifest = await fs.readFile(path.join(repoRoot, "herdr-plugin.toml"), "utf8");
 
-    expect(herdrManifest).toContain('id = "osolmaz.pi-workflows"');
+    expect(herdrManifest).toContain('id = "ericjuta.omp-workflows"');
     expect(herdrManifest).toContain(`version = "${manifest.version}"`);
     expect(herdrManifest).toContain('command = ["node", "plugins/herdr/viewer.mjs"]');
     await expect(fs.stat(path.join(repoRoot, "plugins/herdr/viewer.mjs"))).resolves.toBeDefined();
@@ -96,7 +107,7 @@ describe("Pi package resources", () => {
       "autoimplement/SKILL.md",
       "autoplan/SKILL.md",
       "monitor/SKILL.md",
-      "pi-workflows/SKILL.md",
+      "omp-workflows/SKILL.md",
       "sanity-check/SKILL.md",
     ]);
 
@@ -175,7 +186,7 @@ describe("Pi package resources", () => {
   });
 
   it("keeps local references in the workflow skill inside the package", async () => {
-    const skillPath = path.join(skillsRoot, "pi-workflows", "SKILL.md");
+    const skillPath = path.join(skillsRoot, "omp-workflows", "SKILL.md");
     const markdown = await fs.readFile(skillPath, "utf8");
     const links = [...markdown.matchAll(/\[[^\]]+\]\((\.\.\/\.\.\/[^)]+)\)/gu)]
       .map((match) => match[1])

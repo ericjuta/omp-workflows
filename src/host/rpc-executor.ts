@@ -11,7 +11,7 @@ import type { HostProcessRegistry } from "./processes.js";
 import { RPC_SUBMISSION_PREFIX } from "./rpc-bridge.js";
 
 // Production resolves the compiled .js; tests and dev checkouts load the .ts
-// source, which pi compiles itself when loading extensions.
+// source, which OMP compiles itself when loading extensions.
 const BRIDGE_PATH = ["./rpc-bridge.js", "./rpc-bridge.ts"]
   .map((candidate) => fileURLToPath(new URL(candidate, import.meta.url)))
   .find((candidate) => fs.existsSync(candidate));
@@ -37,16 +37,16 @@ type StepAction = StepSubmission | StepUpdate;
 export type RpcStepExecutorOptions = {
   cwd: string;
   registry: HostProcessRegistry;
-  /** Absolute path to the pi binary; defaults to the installed `pi`. */
-  piBin?: string;
+  /** Absolute path to the OMP binary; defaults to the installed `omp`. */
+  ompBin?: string;
   /** Extra environment for the child; the host's environment is inherited. */
   env?: Record<string, string>;
-  /** Extra pi arguments, for example a model override. */
-  piArgs?: string[];
+  /** Extra OMP arguments, for example a model override. */
+  ompArgs?: string[];
 };
 
 /**
- * Runs agent steps in a headless `pi --mode rpc` child. One child serves one
+ * Runs agent steps in a headless `omp --mode rpc` child. One child serves one
  * workflow run. The rpc-bridge extension inside the child registers the
  * `workflow` tool and reports submissions over stderr; this executor
  * validates them through `request.accept` and re-prompts on rejection, so
@@ -128,28 +128,28 @@ export class RpcStepExecutor implements AgentStepExecutor {
       const exited = this.currentExit();
       if (exited !== null) {
         throw new Error(
-          `Headless pi session exited (code ${exited.code}, signal ${exited.signal})`,
+          `Headless OMP session exited (code ${exited.code}, signal ${exited.signal})`,
         );
       }
       return;
     }
     if (BRIDGE_PATH === undefined) {
-      throw new Error("The pi-workflows rpc-bridge extension is missing from this installation");
+      throw new Error("The omp-workflows rpc-bridge extension is missing from this installation");
     }
-    const piBin = this.options.piBin ?? "pi";
+    const ompBin = this.options.ompBin ?? "omp";
     const child = spawn(
-      piBin,
+      ompBin,
       [
         "--mode",
         "rpc",
         "--no-session",
-        // Isolation is required: an installed pi-workflows extension would
+        // Isolation is required: an installed omp-workflows extension would
         // otherwise load beside the bridge, register a competing workflow
         // tool, and start its own resume and controller workers.
         "--no-extensions",
         "-e",
         BRIDGE_PATH,
-        ...(this.options.piArgs ?? []),
+        ...(this.options.ompArgs ?? []),
       ],
       {
         cwd: this.options.cwd,
@@ -218,14 +218,14 @@ export class RpcStepExecutor implements AgentStepExecutor {
   ): Promise<StepSubmission> {
     const child = this.child;
     if (child === null || this.childExited !== null) {
-      throw new Error("Headless pi session is not running");
+      throw new Error("Headless OMP session is not running");
     }
     child.stdin?.write(`${JSON.stringify({ type: "prompt", message: prompt })}\n`);
     for (;;) {
       throwIfAborted(signal);
       const exited = this.currentExit();
       if (exited !== null) {
-        throw new Error(`Headless pi session exited mid-step (code ${exited.code})`);
+        throw new Error(`Headless OMP session exited mid-step (code ${exited.code})`);
       }
       const found = this.takeMatchingAction(request);
       if (found?.action === "submit") return found;

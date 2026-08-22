@@ -1,7 +1,7 @@
 ---
 name: sanity-check
 description: Use when the user asks for a read-only sanity check of a repository contribution, including whether it is necessary, duplicates existing code, adds justified contracts, or has proportionate scope and tests. Starts the built-in sanity-check workflow and returns an evidence-backed keep, simplify, refactor, drop, or needs-evidence verdict.
-compatibility: Requires pi-workflows and the built-in sanity-check workflow.
+compatibility: Requires omp-workflows and the built-in sanity-check workflow.
 ---
 
 # Sanity Check

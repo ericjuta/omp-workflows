@@ -1,31 +1,31 @@
-# Rust TUI viewer (piw)
+# Rust TUI viewer (ompw)
 
-`tui/` contains `piw`, a Rust terminal viewer for workflow runs. It renders
+`tui/` contains `ompw`, a Rust terminal viewer for workflow runs. It renders
 the same graph as the bundled TypeScript viewer, pinned by the golden fixtures
 under `fixtures/layout/`, and adds live following, replay, detailed inspection,
 a recorded Pi conversation, themes, and remote viewing.
 
 ## Install
 
-The crates.io package uses the project name and installs the shorter `piw`
+The crates.io package uses the project name and installs the shorter `ompw`
 command:
 
 ```bash
-cargo install pi-workflows
+cargo install omp-workflows
 ```
 
 ## Modes
 
-- `piw` browses the local runs directory (`PI_WORKFLOWS_RUNS_DIR` or
+- `ompw` browses the local runs directory (`PI_WORKFLOWS_RUNS_DIR` or
   `~/.pi/agent/workflows/runs`).
-- `piw <runId|runDir>` opens one run. A bare run id resolves inside the default
+- `ompw <runId|runDir>` opens one run. A bare run id resolves inside the default
   runs directory.
-- `piw serve [--runs-dir <dir>] [--bind 127.0.0.1:9377]` exposes the runs
+- `ompw serve [--runs-dir <dir>] [--bind 127.0.0.1:9377]` exposes the runs
   directory over the [live replay protocol](live-replay-protocol.md). Only
   loopback addresses are accepted; use an SSH tunnel for remote viewing.
-- `piw --connect ws://…` reads from another `piw serve` process.
-- `piw --theme <name>` selects a theme for this invocation.
-- `piw --list-themes` prints the built-in theme names.
+- `ompw --connect ws://…` reads from another `ompw serve` process.
+- `ompw --theme <name>` selects a theme for this invocation.
+- `ompw --list-themes` prints the built-in theme names.
 
 Direct filesystem mode and connected mode use the same semantic run view.
 The protocol is the network form of that view.
@@ -33,9 +33,9 @@ The protocol is the network form of that view.
 ## Herdr
 
 The npm package contains a native Herdr plugin. Link the installed package with
-`pi-workflows herdr setup`. A workflow running in Pi inside Herdr then shows
-`Ctrl+Shift+R piw` in its widget. When rows are hidden, the call to action shares
-the scroll-controls line. The shortcut and `/piw` command open
+`omp-workflows herdr setup`. A workflow running in Pi inside Herdr then shows
+`Ctrl+Shift+R ompw` in its widget. When rows are hidden, the call to action shares
+the scroll-controls line. The shortcut and `/ompw` command open
 the current bundle directly in a managed Herdr pane. The placement menu supports
 right, below, left, above, a new tab, and a new workspace.
 
@@ -50,7 +50,7 @@ The normal layout contains a run browser, graph, inspector, and two-line replay
 timeline. Short terminals use a compact one-line transport. Terminals below 100
 columns start with the run browser collapsed to a status rail; `b` toggles it.
 Drag the run browser's right border to resize it. Drag the inspector's top
-border to resize the bottom panel. PIW saves both sizes in its viewer config and
+border to resize the bottom panel. `ompw` saves both sizes in its viewer config and
 clamps them when the terminal is smaller. A directly opened single run hides
 the browser.
 
@@ -165,7 +165,7 @@ selection in the picker disables automatic switching.
 A session-bound run uses the temporal session event journal as its replay
 track. `-1` means before capture and `None` means latest/live. Each event cursor
 folds text, thinking, tool calls, and tool execution through that event's
-sequence. PIW keeps a workflow-step selection beside the temporal cursor so
+sequence. `ompw` keeps a workflow-step selection beside the temporal cursor so
 the graph, trace, and attempt inspectors stay aligned. Runs without session
 events retain step-based replay.
 

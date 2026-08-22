@@ -70,10 +70,10 @@ export type PlanApprovalReplan = {
 };
 
 const planChoices = defineHumanChoices({
-  continue: choice({ label: "Yes, continue" }),
-  stop: choice({ label: "No, stop" }),
+  continue: choice({ label: "Approve" }),
+  stop: choice({ label: "Stop" }),
   replan: choice({
-    label: "Replan",
+    label: "Return for changes",
     input: textInput({
       name: "instructions",
       prompt: "What should change?",

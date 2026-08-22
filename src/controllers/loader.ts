@@ -48,8 +48,8 @@ export async function loadControllerFile(filePath: string): Promise<AnyControlle
     interopDefault: true,
     moduleCache: false,
     alias: {
-      "@osolmaz/pi-workflows/controllers": CONTROLLER_ENTRY,
-      "@osolmaz/pi-workflows": WORKFLOW_ENTRY,
+      "@ericjuta/omp-workflows/controllers": CONTROLLER_ENTRY,
+      "@ericjuta/omp-workflows": WORKFLOW_ENTRY,
     },
   });
   const loaded = (await jiti.import(absolutePath, { default: true })) as unknown;

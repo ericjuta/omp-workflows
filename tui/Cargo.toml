@@ -1,22 +1,22 @@
 [package]
-name = "pi-workflows"
+name = "omp-workflows"
 version = "0.12.0"
 edition = "2021"
-description = "Terminal viewer and live replay server for pi-workflows run bundles"
+description = "Terminal viewer and live replay server for omp-workflows run bundles"
 license = "MIT"
 readme = "README.md"
-repository = "https://github.com/osolmaz/pi-workflows"
-homepage = "https://github.com/osolmaz/pi-workflows"
-documentation = "https://docs.rs/pi-workflows"
-keywords = ["workflow", "terminal", "replay", "pi"]
+repository = "https://github.com/ericjuta/omp-workflows"
+homepage = "https://github.com/ericjuta/omp-workflows"
+documentation = "https://docs.rs/omp-workflows"
+keywords = ["workflow", "terminal", "replay", "omp"]
 categories = ["command-line-utilities", "development-tools"]
 
 [lib]
-name = "piw"
+name = "omp_workflows"
 path = "src/lib.rs"
 
 [[bin]]
-name = "piw"
+name = "ompw"
 path = "src/main.rs"
 
 [dependencies]

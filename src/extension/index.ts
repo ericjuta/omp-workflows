@@ -28,6 +28,7 @@ import type {
 } from "../controllers/sqlite.js";
 import type { JsonObject } from "../controllers/types.js";
 import type { WorkflowSchedulerResult } from "../controllers/workflows.js";
+import { HitlToolParameters, parseHitlToolInput } from "../host/hitl-tool.js";
 import { OmpDecisionChannel } from "../host/omp-decision-channel.js";
 import { compositionMetadata } from "../workflows/composition.js";
 import { humanDecisionChannelRequest } from "../workflows/decision-presentation.js";
@@ -91,8 +92,8 @@ import { ConversationStepExecutor } from "./executor.js";
 import {
   HerdrWorkflowViewer,
   parseViewerPlacement,
-  PIW_SHORTCUT,
-  PIW_SHORTCUT_HINT,
+  OMPW_SHORTCUT,
+  OMPW_SHORTCUT_HINT,
   VIEWER_PLACEMENTS,
   type HerdrCapability,
   type ViewerPlacement,
@@ -136,7 +137,7 @@ const RUN_CLAIM_RENEW_MS = 10_000;
 const RUN_SYNC_POLL_MS = 3_000;
 const NOTIFICATION_DELIVERY_LEASE_MS = 30_000;
 const TURN_INTENT_DELIVERY_LEASE_MS = 30_000;
-const WIDGET_KEY = "pi-workflows";
+const WIDGET_KEY = "omp-workflows";
 const PRESENTATION_MESSAGE_TYPE = "pi-workflows-presentation";
 const PRESENTATION_MESSAGE_SCHEMA = "pi-workflows.presentation-message.v1";
 const FINAL_WIDGET_TTL_MS = 60_000;
@@ -147,7 +148,7 @@ const MAX_WORKFLOW_LIST_ITEMS = 50;
 const MAX_WORKFLOW_LIST_NAME_CHARS = 3_500;
 const PRESENTATION_TIMEOUT_MS = 30_000;
 
-const PIW_PLACEMENT_LABELS: Readonly<Record<ViewerPlacement, string>> = {
+const OMPW_PLACEMENT_LABELS: Readonly<Record<ViewerPlacement, string>> = {
   right: "Split right",
   below: "Split below",
   left: "Split left",
@@ -155,8 +156,8 @@ const PIW_PLACEMENT_LABELS: Readonly<Record<ViewerPlacement, string>> = {
   tab: "New tab",
   workspace: "New workspace",
 };
-const PIW_PLACEMENT_BY_LABEL = new Map(
-  VIEWER_PLACEMENTS.map((placement) => [PIW_PLACEMENT_LABELS[placement], placement] as const),
+const OMPW_PLACEMENT_BY_LABEL = new Map(
+  VIEWER_PLACEMENTS.map((placement) => [OMPW_PLACEMENT_LABELS[placement], placement] as const),
 );
 
 class PresentationSupersededError extends Error {}
@@ -807,7 +808,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
           herdrEnabled &&
           herdrCapability.available &&
           workflowViewTarget?.runId === widgetSource.state.runId
-          ? PIW_SHORTCUT_HINT
+          ? OMPW_SHORTCUT_HINT
           : undefined,
       );
       widgetShownScroll = view.scroll;
@@ -871,24 +872,24 @@ export default function piWorkflows(pi: ExtensionAPI) {
     return capability;
   };
 
-  const selectPiwPlacement = async (
+  const selectOmpwPlacement = async (
     ctx: ExtensionContext,
   ): Promise<ViewerPlacement | undefined> => {
     if (!ctx.hasUI || ctx.mode !== "tui") return undefined;
     const label = await ctx.ui.select(
-      "Open workflow in piw",
-      VIEWER_PLACEMENTS.map((placement) => PIW_PLACEMENT_LABELS[placement]),
+      "Open workflow in ompw",
+      VIEWER_PLACEMENTS.map((placement) => OMPW_PLACEMENT_LABELS[placement]),
     );
-    return label === undefined ? undefined : PIW_PLACEMENT_BY_LABEL.get(label);
+    return label === undefined ? undefined : OMPW_PLACEMENT_BY_LABEL.get(label);
   };
 
-  const openPiw = async (
+  const openOmpw = async (
     ctx: ExtensionContext,
     requestedPlacement?: ViewerPlacement,
   ): Promise<void> => {
     const target = workflowViewTarget;
     if (target === null) {
-      notify(ctx, "No workflow run is available to open in piw.", "warning");
+      notify(ctx, "No workflow run is available to open in ompw.", "warning");
       return;
     }
     const capability = await refreshHerdrCapability(ctx);
@@ -898,20 +899,20 @@ export default function piWorkflows(pi: ExtensionAPI) {
     }
     try {
       if (await herdrViewer.focusExisting(target)) {
-        notify(ctx, `Focused the piw viewer for ${target.workflowName}.`);
+        notify(ctx, `Focused the ompw viewer for ${target.workflowName}.`);
         return;
       }
-      const placement = requestedPlacement ?? (await selectPiwPlacement(ctx));
+      const placement = requestedPlacement ?? (await selectOmpwPlacement(ctx));
       if (placement === undefined) {
         if (!ctx.hasUI || ctx.mode !== "tui") {
-          notify(ctx, "Specify a piw placement: right, below, left, above, tab, or workspace.");
+          notify(ctx, "Specify an ompw placement: right, below, left, above, tab, or workspace.");
         }
         return;
       }
       const opened = await herdrViewer.open(target, placement, ctx.cwd);
       if (opened.warning !== undefined) notify(ctx, opened.warning, "warning");
     } catch (error) {
-      notify(ctx, `Could not open piw: ${errorMessage(error)}`, "error");
+      notify(ctx, `Could not open ompw: ${errorMessage(error)}`, "error");
     }
   };
 
@@ -1467,7 +1468,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
     workflowViewTarget = null;
     startWidgetTicker(ctx, run);
     if (!options.quiet) {
-      notify(ctx, `Workflow ${workflow.name} started. Follow it live with: pi-workflows view`);
+      notify(ctx, `Workflow ${workflow.name} started. Follow it live with: omp-workflows view`);
     }
 
     run.completion = (
@@ -2021,9 +2022,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
       const rows = ensureRunQueueStore(ctx.cwd).listWorkflowRuns();
       const sessionId = ctx.sessionManager.getSessionId();
       const known = new Set(
-        rows
-          .filter((row) => row.originSessionId === null || row.originSessionId === sessionId)
-          .map((row) => row.runId),
+        rows.filter((row) => row.originSessionId === sessionId).map((row) => row.runId),
       );
       const continued = new Set(
         rows.map((row) => row.parentRunId).filter((parent): parent is string => parent !== null),
@@ -2041,13 +2040,13 @@ export default function piWorkflows(pi: ExtensionAPI) {
       throw new Error("No workflow is waiting for an answer.");
     }
     const queueRecord = ensureRunQueueStore(ctx.cwd).getWorkflowRun(parentRunId);
-    if (
-      !allowOtherSession &&
-      queueRecord?.originSessionId !== null &&
-      queueRecord?.originSessionId !== undefined &&
-      queueRecord.originSessionId !== ctx.sessionManager.getSessionId()
-    ) {
-      throw new Error(`Workflow run ${parentRunId} belongs to another Pi session.`);
+    if (!allowOtherSession) {
+      if (queueRecord === undefined) {
+        throw new Error(`Workflow run ${parentRunId} is not owned by this project.`);
+      }
+      if (queueRecord.originSessionId !== ctx.sessionManager.getSessionId()) {
+        throw new Error(`Workflow run ${parentRunId} belongs to another interactive session.`);
+      }
     }
     const parent = await readRunBundle(new WorkflowRunStore().runDirFor(parentRunId));
     if (
@@ -2120,7 +2119,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
       ) {
         await settleHumanDecisionChannels(accepted);
         return {
-          message: "Human decision accepted; its owning Pi session will continue the workflow.",
+          message: "Human decision accepted; its owning session will continue the workflow.",
           details: {
             action: "answer",
             parentRunId: waiting.parentRunId,
@@ -2255,6 +2254,96 @@ export default function piWorkflows(pi: ExtensionAPI) {
     }
   }
 
+  const presentHumanDecision = async (
+    ctx: ExtensionContext,
+    requestedRunId?: string,
+  ): Promise<WorkflowControlResult> => {
+    const waiting = await resolveWaitingWorkflow(ctx, requestedRunId);
+    const parent = await readRunBundle(new WorkflowRunStore().runDirFor(waiting.parentRunId));
+    if (parent === null) throw new Error(`Workflow run ${waiting.parentRunId} is unreadable.`);
+    const request = humanDecisionRequest(parent.state.finalOutput);
+    if (request === null) {
+      throw new Error(
+        `Workflow run ${waiting.parentRunId} is waiting at a plain checkpoint; use /workflow answer instead.`,
+      );
+    }
+    const decisionStore = new HumanDecisionStore(new WorkflowRunStore().outputRoot);
+    const settledResult = async (): Promise<WorkflowControlResult | null> => {
+      const resolved = await decisionStore.readResolved(request.decisionId);
+      if (resolved !== null) {
+        return resolved.provenance === "human"
+          ? {
+              message: `HITL decision ${request.title} was accepted through ${resolved.source.channel}.`,
+              details: {
+                action: "hitl",
+                runId: waiting.parentRunId,
+                accepted: true,
+                provenance: "human",
+              },
+            }
+          : {
+              message: `HITL decision ${request.title} was resolved by timeout.`,
+              details: {
+                action: "hitl",
+                runId: waiting.parentRunId,
+                accepted: false,
+                provenance: "timeout",
+              },
+              level: "warning",
+            };
+      }
+      const cancellation = await decisionStore.readCancellation(request.decisionId);
+      return cancellation === null
+        ? null
+        : {
+            message:
+              cancellation.reason === "expired"
+                ? `HITL decision ${request.title} has expired.`
+                : `HITL decision ${request.title} was cancelled.`,
+            details: {
+              action: "hitl",
+              runId: waiting.parentRunId,
+              accepted: false,
+              reason: cancellation.reason,
+            },
+            level: "warning",
+          };
+    };
+    const priorResult = await settledResult();
+    if (priorResult !== null) return priorResult;
+    const host = decisionHostKind({
+      mode: ctx.mode,
+      env: process.env,
+      ompRuntime: OMP_COMPATIBILITY_RUNTIME,
+    });
+    const alreadyOpen =
+      host === "omp"
+        ? activeOmpDecisionChannels.has(request.decisionId)
+        : host === "pi-tui"
+          ? activePiDecisionChannels.has(request.decisionId)
+          : false;
+    if (alreadyOpen) {
+      return {
+        message: `HITL decision ${request.title} is already open.`,
+        details: { action: "hitl", runId: waiting.parentRunId, active: true },
+      };
+    }
+    if (host === "omp") {
+      await promptOmpDecision(ctx, request);
+    } else if (host === "pi-tui") {
+      await promptHumanDecision(ctx, request);
+    } else {
+      throw new Error("This host has no interactive HITL channel.");
+    }
+    return (
+      (await settledResult()) ?? {
+        message: `HITL decision ${request.title} remains waiting.`,
+        details: { action: "hitl", runId: waiting.parentRunId, accepted: false },
+        level: "warning",
+      }
+    );
+  };
+
   const stopDecisionChannels = async (): Promise<void> => {
     await Promise.allSettled([
       ...[...activePiDecisionChannels.values()].map(async (channel) => channel.stop()),
@@ -2308,9 +2397,8 @@ export default function piWorkflows(pi: ExtensionAPI) {
       }
       const queueRecord = ensureRunQueueStore(ctx.cwd).getWorkflowRun(request.runId);
       const ownedBySession =
-        queueRecord !== undefined &&
-        (queueRecord.originSessionId === null ||
-          queueRecord.originSessionId === ctx.sessionManager.getSessionId());
+        queueRecord?.originSessionId === null ||
+        queueRecord?.originSessionId === ctx.sessionManager.getSessionId();
       let resolved = await store.readResolved(request.decisionId);
       if (resolved === null) {
         let cancellation = await store.readCancellation(request.decisionId);
@@ -2614,8 +2702,8 @@ export default function piWorkflows(pi: ExtensionAPI) {
     }
   };
 
-  pi.registerCommand("piw", {
-    description: "Open the current workflow run in piw through Herdr",
+  pi.registerCommand("ompw", {
+    description: "Open the current workflow run in ompw through Herdr",
     getArgumentCompletions: async (prefix: string) => {
       const items = VIEWER_PLACEMENTS.filter((placement) => placement.startsWith(prefix)).map(
         (placement) => ({ value: placement, label: placement }),
@@ -2626,10 +2714,28 @@ export default function piWorkflows(pi: ExtensionAPI) {
       const value = args.trim();
       const placement = value.length === 0 ? undefined : parseViewerPlacement(value);
       if (value.length > 0 && placement === undefined) {
-        notify(ctx, "piw placement must be right, below, left, above, tab, or workspace.", "error");
+        notify(
+          ctx,
+          "ompw placement must be right, below, left, above, tab, or workspace.",
+          "error",
+        );
         return;
       }
-      await openPiw(ctx, placement);
+      await openOmpw(ctx, placement);
+    },
+  });
+
+  pi.registerCommand("hitl", {
+    description: "Open the pending verified-human decision to approve or return it",
+    handler: async (args, ctx) => {
+      try {
+        const value = args.trim();
+        const input = parseHitlToolInput(value.length === 0 ? {} : { runId: value });
+        const result = await presentHumanDecision(ctx, input.runId);
+        notify(ctx, result.message, result.level);
+      } catch (error) {
+        notify(ctx, `Could not open HITL decision: ${errorMessage(error)}`, "error");
+      }
     },
   });
 
@@ -2720,10 +2826,18 @@ export default function piWorkflows(pi: ExtensionAPI) {
           return;
         }
         if (action === "status") {
+          const hostKind = decisionHostKind({
+            mode: ctx.mode,
+            env: process.env,
+            ompRuntime: OMP_COMPATIBILITY_RUNTIME,
+          });
+          const defaults = audienceChannels(null, "operator", { kind: hostKind });
           notify(
             ctx,
             decisionChannelConfig === null
-              ? "Human decisions use the Pi channel only."
+              ? defaults.length === 0
+                ? "This host has no default interactive human decision channel."
+                : `Human decisions use the ${defaults.join(" and ")} channel by default.`
               : `Human decision channels are configured for ${Object.keys(decisionChannelConfig.audiences).length} audience(s).`,
           );
           return;
@@ -2732,7 +2846,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
           throw new Error("Use /workflow-channel status, setup, or reload.");
         }
         if (!ctx.hasUI || ctx.mode !== "tui") {
-          throw new Error("Channel setup requires interactive Pi TUI mode.");
+          throw new Error("Channel setup requires interactive OMP or Pi TUI mode.");
         }
         const tokenFile = await ctx.ui.input(
           "Absolute path to the mode-0600 Telegram token file",
@@ -2843,10 +2957,26 @@ export default function piWorkflows(pi: ExtensionAPI) {
   });
 
   pi.registerTool({
+    name: "hitl",
+    label: "HITL",
+    description:
+      "Present the pending verified-human decision through host-owned UI so the person can approve or return it. This tool cannot select an answer.",
+    parameters: HitlToolParameters,
+    async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
+      const params = parseHitlToolInput(rawParams);
+      const control = await presentHumanDecision(ctx, params.runId);
+      return {
+        content: [{ type: "text", text: control.message }],
+        details: control.details,
+      };
+    },
+  });
+
+  pi.registerTool({
     name: "workflow",
     label: "Workflow",
     description: [
-      "List, start, inspect, pause, resume, cancel, answer, update, or complete pi-workflows runs.",
+      "List, start, inspect, pause, resume, cancel, answer, update, or complete OMP workflow runs.",
       "When the user asks to monitor, watch, poll, or check something repeatedly, start the built-in monitor workflow with input keys task, everyMinutes, stopWhen, and optional maxChecks.",
       "Use update or submit only when a workflow step contract asks for it, and pass the exact step and attempt ids.",
       "Do not start repeated work without the user's request, and keep monitoring observation-only unless the user authorizes mutations.",
@@ -2879,7 +3009,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
           const parent = await readRunBundle(new WorkflowRunStore().runDirFor(waiting.parentRunId));
           if (parent !== null && humanDecisionRequest(parent.state.finalOutput) !== null) {
             throw new Error(
-              "This checkpoint requires a verified human answer from Pi UI or a configured decision channel.",
+              "This checkpoint requires a verified human answer from host UI or a configured decision channel.",
             );
           }
           control = await queueToolLaunch(ctx, waiting.workflowRef, params.input, {
@@ -2941,9 +3071,9 @@ export default function piWorkflows(pi: ExtensionAPI) {
   });
 
   if (herdrEnabled) {
-    pi.registerShortcut(PIW_SHORTCUT, {
-      description: "Open the current workflow run in piw",
-      handler: async (ctx) => await openPiw(ctx),
+    pi.registerShortcut(OMPW_SHORTCUT, {
+      description: "Open the current workflow run in ompw",
+      handler: async (ctx) => await openOmpw(ctx),
     });
   }
 

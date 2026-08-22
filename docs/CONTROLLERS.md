@@ -1,10 +1,10 @@
 # Controller runtime specification
 
-pi-workflows runs finite TypeScript graphs. A graph starts with an input, follows explicit edges, and ends with a result or checkpoint. This works well for one bounded task.
+omp-workflows runs finite TypeScript graphs. A graph starts with an input, follows explicit edges, and ends with a result or checkpoint. This works well for one bounded task.
 
 Long-running automation has a different job. It must keep comparing a requested state with the current state of another system. Events can arrive more than once, processes can stop between an external request and its local receipt, and the external state can change while work is running.
 
-This specification adds a Kubernetes-style controller runtime to pi-workflows. The controller runtime sits beside the graph engine. Controllers manage durable resources, while workflows remain finite jobs that a controller can start and observe.
+This specification adds a Kubernetes-style controller runtime to omp-workflows. The controller runtime sits beside the graph engine. Controllers manage durable resources, while workflows remain finite jobs that a controller can start and observe.
 
 The design follows the Kubernetes [controller pattern](https://kubernetes.io/docs/concepts/architecture/controller/), its [`spec` and `status` split](https://kubernetes.io/docs/concepts/overview/working-with-objects/), and the [idempotent reconciliation guidance](https://book.kubebuilder.io/reference/good-practices).
 
@@ -79,7 +79,11 @@ export type ControllerCondition = {
 A controller receives the latest resource, a cancellation signal, and runtime services. It returns after one bounded reconciliation pass.
 
 ```ts
-import { conditionFalse, conditionTrue, defineController } from "@osolmaz/pi-workflows/controllers";
+import {
+  conditionFalse,
+  conditionTrue,
+  defineController,
+} from "@ericjuta/omp-workflows/controllers";
 
 export default defineController<PullRequestSpec, PullRequestStatus>({
   name: "pull-request",
@@ -183,7 +187,7 @@ The Pi extension starts local workers during `session_start` and closes them dur
 
 Every reconciliation emits structured records with the controller name, resource key, generation, reconcile ID, outcome and duration, plus the requeue reason. Effect state changes and child workflow links are also recorded. Logs and viewer projections remain secondary to the resource and effect stores.
 
-`pi-workflows controllers` lists resources and their current readiness condition. `pi-workflows controller <controller> <key>` prints one resource together with its effects, child workflows, and recent events. Existing run views continue to read immutable bundles.
+`omp-workflows controllers` lists resources and their current readiness condition. `omp-workflows controller <controller> <key>` prints one resource together with its effects, child workflows, and recent events. Existing run views continue to read immutable bundles.
 
 ## Safety rules
 
@@ -200,15 +204,15 @@ A production controller must follow these rules:
 
 ## Package and Pi integration
 
-The controller API is exported from `@osolmaz/pi-workflows/controllers`. Controller definitions use a `.controller.ts` suffix. Project definitions live under `.pi/controllers/`; global definitions live under `~/.pi/agent/controllers/`.
+The controller API is exported from `@ericjuta/omp-workflows/controllers`. Controller definitions use a `.controller.ts` suffix. Project definitions live under `.pi/controllers/`; global definitions live under `~/.pi/agent/controllers/`.
 
 The implementation uses documented Pi extension APIs only. Commands and tools use `registerCommand` and `registerTool`. Session lifecycle uses `session_start` and `session_shutdown`. Workflow prompts use `sendUserMessage`, while status uses `setWidget` and `setStatus`.
 
 The `/controller` command lists and inspects resources, applies specs, requests reconciliation or deletion, and starts or stops local workers. Stopping workers records an active child as interrupted, so starting workers again can create another attempt. Project stores live under `~/.pi/agent/workflows/controllers/projects/<scope>/controller.sqlite`. The scope is a hash of the canonical project directory. `PI_WORKFLOWS_CONTROLLER_DIR` overrides the controller root while preserving project scopes.
 
-The same store also backs the standalone host (`pi-workflows host`). The host reconciles controllers without a Pi session and claims parked interactive runs from the `workflow_run_queue` table. Conversation children execute in headless `pi --mode rpc` sessions. A Pi session and the host can share one store safely because claims and compare-and-swap writes arbitrate, but run only one set of controller workers at a time to avoid competing work. The host takes an advisory lock against other hosts; the embedded runner in Pi does not take it.
+The same store also backs the standalone host (`omp-workflows host`). The host reconciles controllers without an interactive session and claims parked runs from the `workflow_run_queue` table. Conversation children execute in headless `omp --mode rpc` sessions. An OMP or Pi session and the host can share one store safely because claims and compare-and-swap writes arbitrate, but run only one set of controller workers at a time to avoid competing work. The host takes an advisory lock against other hosts; the embedded runner does not take it. On startup, the host reaps recorded orphan child process groups before claiming new work.
 
-Normal workflow prompts, tool calls, and replies remain part of the Pi session. Controller resources, queue rows, and effects live in the controller store. No Pi internal type, private API, or persistent Pi schema changes.
+Normal workflow prompts, tool calls, and replies remain part of the originating session. Controller resources, queue rows, and effects live in the controller store. No OMP or Pi private API or persistent session schema changes.
 
 ## Exclusions
 

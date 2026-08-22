@@ -223,7 +223,7 @@ describe("controller discovery", () => {
     await fs.mkdir(projectDir, { recursive: true });
     await fs.mkdir(globalDir, { recursive: true });
     const source = `
-      import { defineController } from "@osolmaz/pi-workflows/controllers";
+      import { defineController } from "@ericjuta/omp-workflows/controllers";
       export default defineController({
         name: "demo",
         initialStatus: () => ({}),

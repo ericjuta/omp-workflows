@@ -1,1 +1,1 @@
-export { sanityCheckWorkflow as default } from "@osolmaz/pi-workflows/builtins";
+export { sanityCheckWorkflow as default } from "@ericjuta/omp-workflows/builtins";

@@ -1,4 +1,4 @@
-//! Reconnecting WebSocket client for remote mode (`piw --connect ws://…`).
+//! Reconnecting WebSocket client for remote mode (`ompw --connect ws://…`).
 //! The background task treats subscriptions and artifact requests as desired
 //! state, so reconnects cannot replay stale commands.
 

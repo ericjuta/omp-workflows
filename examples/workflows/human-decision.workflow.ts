@@ -6,7 +6,7 @@ import {
   humanDecision,
   humanDecisionEdge,
   textInput,
-} from "@osolmaz/pi-workflows";
+} from "@ericjuta/omp-workflows";
 
 const choices = defineHumanChoices({
   continue: choice({ label: "Yes, continue" }),

@@ -172,7 +172,7 @@ function parseSelectedAction<Output>(
   return parser(value);
 }
 
-function withoutHostInvocationIntent(value: unknown): unknown {
+export function withoutHostInvocationIntent(value: unknown): unknown {
   if (!isRecord(value) || !("i" in value)) return value;
   const { i: _intent, ...input } = value;
   return input;

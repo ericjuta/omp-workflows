@@ -1,6 +1,6 @@
-use piw::bundle::types::{SessionEntryRecord, SessionEventRecord};
-use piw::format::parse_timestamp_ms;
-use piw::session::{reduce_session_events, SessionReplayIndex};
+use omp_workflows::bundle::types::{SessionEntryRecord, SessionEventRecord};
+use omp_workflows::format::parse_timestamp_ms;
+use omp_workflows::session::{reduce_session_events, SessionReplayIndex};
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::PathBuf;

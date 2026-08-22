@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { openSqliteDatabase } from "../src/controllers/sqlite-database.js";
 import { SqliteControllerStore } from "../src/controllers/sqlite.js";
 import { projectControllerStorePath } from "../src/controllers/store.js";
 import {
@@ -9,7 +10,6 @@ import {
   deferredTurnSourceEventId,
 } from "../src/extension/deferred-turn.js";
 import piWorkflows from "../src/extension/index.js";
-import type { WorkflowToolInput } from "../src/extension/workflow-tool.js";
 import { createHumanDecisionRequest, HumanDecisionStore } from "../src/workflows/human-decision.js";
 import { listRunBundles, readRunBundle } from "../src/workflows/store.js";
 import { stripAnsi } from "../src/workflows/text.js";
@@ -23,14 +23,14 @@ type ToolResult = {
 
 type RegisteredTool = {
   name: string;
-  execute: (toolCallId: string, params: WorkflowToolInput) => Promise<ToolResult>;
+  execute: (toolCallId: string, params: unknown) => Promise<ToolResult>;
 };
 
 type RegisteredToolSpec = {
   name: string;
   execute: (
     toolCallId: string,
-    params: WorkflowToolInput,
+    params: unknown,
     signal: AbortSignal,
     onUpdate: (update: unknown) => void,
     ctx: FakeContext,
@@ -130,6 +130,7 @@ function makeHarness(options: {
   const shortcuts = new Map<string, (ctx: FakeContext) => void | Promise<void>>();
   const commands = new Map<string, RegisteredCommand>();
   let tool: RegisteredTool | null = null;
+  const tools = new Map<string, RegisteredTool>();
   let idle = true;
   let abortCalls = 0;
   let renderRequests = 0;
@@ -202,7 +203,7 @@ function makeHarness(options: {
       commands.set(name, spec);
     },
     registerTool: (spec: RegisteredToolSpec) => {
-      tool = {
+      const registered: RegisteredTool = {
         name: spec.name,
         execute: async (toolCallId, params) =>
           await spec.execute(
@@ -213,6 +214,8 @@ function makeHarness(options: {
             ctx,
           ),
       };
+      tools.set(spec.name, registered);
+      if (spec.name === "workflow") tool = registered;
     },
     registerShortcut: (
       key: string,
@@ -271,6 +274,7 @@ function makeHarness(options: {
     },
     command: workflowCommand,
     commands,
+    tools,
     tool: tool as RegisteredTool,
     shortcuts,
     emit: (event: string, payload?: unknown) => {
@@ -290,7 +294,7 @@ async function writeEchoWorkflow(cwd: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(
     path.join(dir, "mini.workflow.ts"),
-    `import { agent, defineWorkflow } from "@osolmaz/pi-workflows";
+    `import { agent, defineWorkflow } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   name: "mini",
@@ -313,7 +317,7 @@ async function writeTimeoutWorkflow(cwd: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(
     path.join(dir, "timeout.workflow.ts"),
-    `import { agent, defineWorkflow } from "@osolmaz/pi-workflows";
+    `import { agent, defineWorkflow } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   name: "timeout",
@@ -337,7 +341,7 @@ async function writeControllerWithChild(cwd: string): Promise<void> {
     `import {
   conditionTrue,
   defineController,
-} from "@osolmaz/pi-workflows/controllers";
+} from "@ericjuta/omp-workflows/controllers";
 
 export default defineController({
   name: "demo",
@@ -371,7 +375,7 @@ export default defineController({
   );
   await fs.writeFile(
     path.join(workflowDir, "child.workflow.ts"),
-    `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+    `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "child",
   startAt: "work",
@@ -387,7 +391,7 @@ async function writeHumanDecisionWorkflow(cwd: string, timeoutMs?: number): Prom
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(
     path.join(dir, "human.workflow.ts"),
-    `import { choice, compute, defineHumanChoices, defineWorkflow, humanDecision, humanDecisionEdge, textInput } from "@osolmaz/pi-workflows";
+    `import { choice, compute, defineHumanChoices, defineWorkflow, humanDecision, humanDecisionEdge, textInput } from "@ericjuta/omp-workflows";
 const choices = defineHumanChoices({
   continue: choice({ label: "Continue" }),
   replan: choice({ label: "Replan", input: textInput({ name: "instructions", prompt: "What should change?" }) }),
@@ -425,13 +429,131 @@ async function waitFor(
   }
 }
 
-describe("pi-workflows extension", () => {
+describe("omp-workflows extension", () => {
   beforeEach(async () => {
     // Interactive runs are tracked in the project run queue; keep that
     // store inside a temp dir so tests never touch the real home state.
     vi.stubEnv("PI_WORKFLOWS_CONTROLLER_DIR", await makeTempDir("pi-workflows-ext-controllers"));
     vi.stubEnv("PI_WORKFLOWS_CONFIG_DIR", await makeTempDir("pi-workflows-ext-config"));
+
     vi.stubEnv("HERDR_ENV", "0");
+  });
+  it("registers native HITL command and tool surfaces without accepting model answers", async () => {
+    const cwd = await makeTempDir("omp-workflows-hitl");
+    const harness = makeHarness({ cwd, respond: () => {} });
+    const hitl = harness.tools.get("hitl");
+
+    expect(harness.commands.has("hitl")).toBe(true);
+    expect(hitl).toBeDefined();
+    await expect(hitl?.execute("hitl-1", { i: "Opening HITL" })).rejects.toThrow(
+      /No workflow is waiting for an answer/,
+    );
+
+    await harness.commands.get("hitl")?.handler("", harness.ctx);
+    expect(harness.notifications.at(-1)).toContain("No workflow is waiting for an answer");
+  });
+
+  it("rejects named HITL requests outside the owning project and session", async () => {
+    const ownerCwd = await makeTempDir("omp-workflows-hitl-owner");
+    const foreignCwd = await makeTempDir("omp-workflows-hitl-foreign");
+    const runsDir = await makeTempDir("omp-workflows-hitl-owned-runs");
+    vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
+    await writeHumanDecisionWorkflow(ownerCwd);
+    const owner = makeHarness({
+      cwd: ownerCwd,
+      mode: "rpc",
+      sessionId: "owner-session",
+      respond: () => {},
+    });
+
+    await owner.command.handler("human", owner.ctx);
+    await waitFor(() => owner.notifications.some((note) => note.includes("verified human")));
+    const waiting = (await listRunBundles(runsDir)).find(
+      (bundle) => bundle.state.status === "waiting",
+    );
+    const request = waiting?.state.finalOutput as HumanDecisionRequest | undefined;
+    if (request === undefined) throw new Error("missing owned human decision request");
+
+    const otherProject = makeHarness({
+      cwd: foreignCwd,
+      mode: "rpc",
+      sessionId: "owner-session",
+      respond: () => {},
+    });
+    await expect(
+      otherProject.tools.get("hitl")?.execute("foreign-project-hitl", {
+        runId: request.runId,
+      }),
+    ).rejects.toThrow(/not owned by this project/);
+
+    const otherSession = makeHarness({
+      cwd: ownerCwd,
+      mode: "rpc",
+      sessionId: "other-session",
+      respond: () => {},
+    });
+    await expect(
+      otherSession.tools.get("hitl")?.execute("foreign-session-hitl", {
+        runId: request.runId,
+      }),
+    ).rejects.toThrow(/belongs to another interactive session/);
+    await expect(new HumanDecisionStore(runsDir).readResolved(request.decisionId)).resolves.toBe(
+      null,
+    );
+  });
+
+  it("recovers a waiting decision whose queue origin session is detached", async () => {
+    const cwd = await makeTempDir("omp-workflows-hitl-null-origin");
+    const runsDir = await makeTempDir("omp-workflows-hitl-null-origin-runs");
+    vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
+    vi.stubEnv("OMPCODE", "1");
+    await writeHumanDecisionWorkflow(cwd);
+    const owner = makeHarness({
+      cwd,
+      mode: "rpc",
+      sessionId: "owner-session",
+      respond: () => {},
+    });
+    await owner.command.handler("human", owner.ctx);
+    await waitFor(() => owner.notifications.some((note) => note.includes("verified human")));
+    const waiting = (await listRunBundles(runsDir)).find(
+      (bundle) => bundle.state.status === "waiting",
+    );
+    const request = waiting?.state.finalOutput as HumanDecisionRequest | undefined;
+    if (request === undefined) throw new Error("missing detached human decision request");
+
+    const db = openSqliteDatabase(projectControllerStorePath(cwd));
+    try {
+      db.prepare("UPDATE workflow_run_queue SET origin_session_id = NULL WHERE run_id = ?").run(
+        request.runId,
+      );
+    } finally {
+      db.close();
+    }
+    const bindingPath = path.join(runsDir, request.runId, "session", "binding.json");
+    await fs.rm(bindingPath, { force: true });
+
+    const recovered = makeHarness({
+      cwd,
+      mode: "rpc",
+      sessionId: "later-session",
+      respond: () => {},
+      select: async (_title, choices) =>
+        choices.find((choice) => choice.includes("Continue")) ?? choices[0],
+    });
+    await recovered.emitAsync("session_start", {});
+    await waitFor(async () =>
+      (await listRunBundles(runsDir)).some(
+        (bundle) =>
+          bundle.state.parentRunId === request.runId && bundle.state.status === "completed",
+      ),
+    );
+    const completed = (await listRunBundles(runsDir)).find(
+      (bundle) => bundle.state.parentRunId === request.runId,
+    );
+    expect(completed?.state.finalOutput).toMatchObject({
+      answer: { choice: "continue" },
+    });
   });
 
   it("runs a workflow end to end through the command and tool", async () => {
@@ -728,9 +850,13 @@ describe("pi-workflows extension", () => {
     await expect(
       new HumanDecisionStore(runsDir).readContinuation(request.decisionId),
     ).resolves.toMatchObject({ provenance: "timeout", parentRunId: parent?.state.runId });
+    const hitl = await harness.tools.get("hitl")?.execute("hitl-after-timeout", {
+      runId: request.runId,
+    });
+    expect(hitl?.content[0]?.text).toContain("resolved by timeout");
   });
 
-  it("shows the native Herdr shortcut and opens the exact run bundle in piw", async () => {
+  it("shows the native Herdr shortcut and opens the exact run bundle in ompw", async () => {
     const cwd = await makeTempDir("pi-workflows-herdr-ext");
     const runsDir = await makeTempDir("pi-workflows-herdr-ext-runs");
     vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", path.relative(process.cwd(), runsDir));
@@ -744,8 +870,8 @@ describe("pi-workflows extension", () => {
         exec: async (command, args) => {
           execCalls.push({ command, args: [...args] });
           const key = `${command} ${args.join(" ")}`;
-          if (key === "piw --version") {
-            return { stdout: "piw 0.1.0\n", stderr: "", code: 0, killed: false };
+          if (key === "ompw --version") {
+            return { stdout: "ompw 0.1.0\n", stderr: "", code: 0, killed: false };
           }
           if (key === "herdr pane current --current") {
             return {
@@ -763,7 +889,7 @@ describe("pi-workflows extension", () => {
             return {
               stdout: JSON.stringify({
                 result: {
-                  plugins: [{ plugin_id: "osolmaz.pi-workflows", enabled: true }],
+                  plugins: [{ plugin_id: "ericjuta.omp-workflows", enabled: true }],
                 },
               }),
               stderr: "",
@@ -814,11 +940,11 @@ describe("pi-workflows extension", () => {
         const widget = [...harness.widgets].reverse().find((entry) => typeof entry === "function");
         if (typeof widget !== "function") return false;
         return stripAnsi(widget(undefined, TEST_THEME).render(120).join("\n")).includes(
-          "Ctrl+Shift+R piw",
+          "Ctrl+Shift+R ompw",
         );
       });
 
-      expect(harness.commands.has("piw")).toBe(true);
+      expect(harness.commands.has("ompw")).toBe(true);
       expect(harness.shortcuts.has("ctrl+shift+r")).toBe(true);
       await harness.shortcuts.get("ctrl+shift+r")?.(harness.ctx);
       const opened = execCalls.find(
@@ -839,7 +965,7 @@ describe("pi-workflows extension", () => {
   it("does not register the Herdr shortcut outside Herdr", async () => {
     const cwd = await makeTempDir("pi-workflows-no-herdr-ext");
     const harness = makeHarness({ cwd, respond: () => {} });
-    expect(harness.commands.has("piw")).toBe(true);
+    expect(harness.commands.has("ompw")).toBe(true);
     expect(harness.shortcuts.has("ctrl+shift+r")).toBe(false);
   });
 
@@ -1162,7 +1288,7 @@ describe("pi-workflows extension", () => {
     const childPath = path.join(workflowDir, "launch-child.workflow.ts");
     await fs.writeFile(
       childPath,
-      `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+      `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   source: import.meta.url,
   name: "launch-child",
@@ -1176,7 +1302,7 @@ export default defineWorkflow({
     );
     await fs.writeFile(
       path.join(workflowDir, "launch-parent.workflow.ts"),
-      `import { compute, defineWorkflow, includeWorkflow } from "@osolmaz/pi-workflows";
+      `import { compute, defineWorkflow, includeWorkflow } from "@ericjuta/omp-workflows";
 import child from "./launch-child.workflow.ts";
 export default defineWorkflow({
   source: import.meta.url,
@@ -1292,7 +1418,7 @@ export default defineWorkflow({
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "crash.workflow.ts"),
-        `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "crash",
   startAt: "validate",
@@ -1368,7 +1494,7 @@ export default defineWorkflow({
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "claim-transfer.workflow.ts"),
-        `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "claim-transfer",
   startAt: "fail",
@@ -1463,7 +1589,7 @@ export default defineWorkflow({
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "fail.workflow.ts"),
-        `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "fail",
   startAt: "fail",
@@ -1494,7 +1620,7 @@ export default defineWorkflow({
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "present.workflow.ts"),
-        `import { agent, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { agent, defineWorkflow } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   name: "present",
@@ -1541,7 +1667,7 @@ export default defineWorkflow({
 
       await fs.writeFile(
         path.join(dir, "next.workflow.ts"),
-        `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "next",
   startAt: "finish",
@@ -1573,7 +1699,7 @@ export default defineWorkflow({
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "present-waiting.workflow.ts"),
-        `import { checkpoint, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { checkpoint, defineWorkflow } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   name: "present-waiting",
@@ -1613,7 +1739,7 @@ export default defineWorkflow({
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "delayed.workflow.ts"),
-        `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   name: "delayed",
@@ -1630,7 +1756,7 @@ export default defineWorkflow({
       );
       await fs.writeFile(
         path.join(dir, "newer.workflow.ts"),
-        `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   name: "newer",
@@ -1669,7 +1795,7 @@ export default defineWorkflow({
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "delayed-turn.workflow.ts"),
-        `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   name: "delayed-turn",
@@ -1709,7 +1835,7 @@ export default defineWorkflow({
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "bad-presentation.workflow.ts"),
-        `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   name: "bad-presentation",
@@ -1810,7 +1936,7 @@ export default defineWorkflow({
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "timeout-recovery.workflow.ts"),
-        `import { agent, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { agent, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "timeout-recovery",
   startAt: "wait",
@@ -1874,7 +2000,7 @@ export default defineWorkflow({
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "timeout-presentation.workflow.ts"),
-        `import { agent, compute, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { agent, compute, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "timeout-presentation",
   presentationPrompt: "Explain that recovery completed.",
@@ -1972,7 +2098,7 @@ export default defineWorkflow({
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "cancel-presentation.workflow.ts"),
-        `import { agent, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { agent, defineWorkflow } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   name: "cancel-presentation",
@@ -2043,7 +2169,7 @@ export default defineWorkflow({
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "parked.workflow.ts"),
-        `import { checkpoint, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { checkpoint, defineWorkflow } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   name: "parked",
@@ -2311,7 +2437,7 @@ export default defineWorkflow({
       await writeControllerWithChild(cwd);
       await fs.writeFile(
         path.join(cwd, ".pi", "workflows", "child.workflow.ts"),
-        `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "child",
   startAt: "work",
@@ -2395,7 +2521,7 @@ export default defineWorkflow({
       await fs.mkdir(path.join(cwd, ".pi", "workflows"), { recursive: true });
       await fs.writeFile(
         path.join(cwd, ".pi", "workflows", "slow.workflow.ts"),
-        `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "slow",
   startAt: "work",
@@ -2465,7 +2591,7 @@ export default defineWorkflow({
       await fs.mkdir(path.join(cwd, ".pi", "workflows"), { recursive: true });
       await fs.writeFile(
         path.join(cwd, ".pi", "workflows", "gate.workflow.ts"),
-        `import { checkpoint, compute, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { checkpoint, compute, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "gate",
   startAt: "approval",
@@ -2586,7 +2712,7 @@ export default defineWorkflow({
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
         path.join(dir, "mini-present.workflow.ts"),
-        `import { agent, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { agent, defineWorkflow } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   name: "mini-present",
@@ -2685,7 +2811,7 @@ export default defineWorkflow({
         await fs.mkdir(path.join(cwd, ".pi", "workflows"), { recursive: true });
         await fs.writeFile(
           path.join(cwd, ".pi", "workflows", "slow.workflow.ts"),
-          `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+          `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "slow",
   startAt: "work",
@@ -2759,7 +2885,7 @@ export default defineWorkflow({
         await fs.mkdir(path.join(cwd, ".pi", "workflows"), { recursive: true });
         await fs.writeFile(
           path.join(cwd, ".pi", "workflows", "slow.workflow.ts"),
-          `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+          `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "slow",
   startAt: "work",
@@ -2822,7 +2948,7 @@ export default defineWorkflow({
     await workflow?.handler('answer {"x":1}', harness.ctx);
     expect(harness.notifications.at(-1)).toContain("No workflow is waiting for an answer");
     await workflow?.handler('answer missing-run {"x":1}', harness.ctx);
-    expect(harness.notifications.at(-1)).toContain("no longer waiting");
+    expect(harness.notifications.at(-1)).toContain("not owned by this project");
     await controller?.handler("list", harness.ctx);
     expect(harness.notifications.at(-1)).toContain("No controllers found");
     await harness.emitAsync("session_shutdown");
@@ -2836,7 +2962,7 @@ export default defineWorkflow({
       await fs.mkdir(path.join(cwd, ".pi", "workflows"), { recursive: true });
       await fs.writeFile(
         path.join(cwd, ".pi", "workflows", "slow.workflow.ts"),
-        `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "slow",
   startAt: "work",
@@ -2896,7 +3022,7 @@ export default defineWorkflow({
       await fs.mkdir(path.join(cwd, ".pi", "workflows"), { recursive: true });
       await fs.writeFile(
         path.join(cwd, ".pi", "workflows", "slow.workflow.ts"),
-        `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "slow",
   startAt: "work",
@@ -2992,7 +3118,7 @@ export default defineWorkflow({
       await fs.mkdir(path.join(cwd, ".pi", "workflows"), { recursive: true });
       await fs.writeFile(
         path.join(cwd, ".pi", "workflows", "gate.workflow.ts"),
-        `import { checkpoint, compute, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { checkpoint, compute, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "gate",
   startAt: "approval",
@@ -3052,7 +3178,7 @@ export default defineWorkflow({
         const workflowFile = path.join(cwd, ".pi", "workflows", "gate.workflow.ts");
         await fs.writeFile(
           workflowFile,
-          `import { checkpoint, compute, defineWorkflow } from "@osolmaz/pi-workflows";
+          `import { checkpoint, compute, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "gate",
   startAt: "approval",
@@ -3104,7 +3230,7 @@ export default defineWorkflow({
       await fs.mkdir(path.join(cwd, ".pi", "workflows"), { recursive: true });
       await fs.writeFile(
         path.join(cwd, ".pi", "workflows", "gate.workflow.ts"),
-        `import { checkpoint, compute, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { checkpoint, compute, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "gate",
   startAt: "approval",
@@ -3173,7 +3299,7 @@ export default defineWorkflow({
       const workflowFile = path.join(cwd, ".pi", "workflows", "slow.workflow.ts");
       await fs.writeFile(
         workflowFile,
-        `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "slow",
   startAt: "work",
@@ -3237,7 +3363,7 @@ export default defineWorkflow({
         const workflowFile = path.join(cwd, ".pi", "workflows", "gate.workflow.ts");
         await fs.writeFile(
           workflowFile,
-          `import { checkpoint, defineWorkflow } from "@osolmaz/pi-workflows";
+          `import { checkpoint, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "gate",
   startAt: "approval",
@@ -3299,7 +3425,7 @@ export default defineWorkflow({
       await fs.mkdir(path.join(cwd, ".pi", "workflows"), { recursive: true });
       await fs.writeFile(
         path.join(cwd, ".pi", "workflows", "slow.workflow.ts"),
-        `import { compute, defineWorkflow } from "@osolmaz/pi-workflows";
+        `import { compute, defineWorkflow } from "@ericjuta/omp-workflows";
 export default defineWorkflow({
   name: "slow",
   startAt: "work",

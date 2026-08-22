@@ -1,4 +1,4 @@
-//! `piw serve`: a WebSocket server exposing run views over the live replay
+//! `ompw serve`: a WebSocket server exposing run views over the live replay
 //! protocol. The server is a bundle reader like any other — it never writes
 //! bundles — and binds to localhost by default because bundles contain
 //! private data.
@@ -40,7 +40,7 @@ pub async fn serve(options: ServeOptions) -> Result<()> {
         .await
         .with_context(|| format!("binding {}", options.bind))?;
     eprintln!(
-        "piw serve: watching {} on ws://{}/ws",
+        "ompw serve: watching {} on ws://{}/ws",
         options.runs_dir.display(),
         listener.local_addr()?
     );

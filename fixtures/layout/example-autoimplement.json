@@ -471,13 +471,13 @@
           "dynamicAudience": true,
           "choices": {
             "continue": {
-              "label": "Yes, continue"
+              "label": "Approve"
             },
             "stop": {
-              "label": "No, stop"
+              "label": "Stop"
             },
             "replan": {
-              "label": "Replan",
+              "label": "Return for changes",
               "input": {
                 "kind": "text",
                 "name": "instructions",

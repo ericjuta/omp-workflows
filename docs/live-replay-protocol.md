@@ -2,7 +2,7 @@
 
 The Rust viewer (`tui/`) can watch runs in two ways: by reading run bundles
 directly from the filesystem (the default, in-process) or by connecting to a
-`piw serve` WebSocket server. Both paths produce the same semantic state; the
+`ompw serve` WebSocket server. Both paths produce the same semantic state; the
 protocol below is the network form of that state. Protocol id:
 `pi-workflows.replay.v1`.
 

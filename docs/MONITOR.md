@@ -142,9 +142,9 @@ A check may use available tools to read current state. It must use the target's 
 
 ## Progress ownership boundary
 
-The regular Pi model running the check is the observation adapter. It uses the target-specific tools authorized by the task, converts observed facts into `pi-workflows.progress.v1` tracks, and publishes them through the existing `workflow` tool. pi-workflows validates, stores, estimates, and displays those tracks.
+The regular Pi model running the check is the observation adapter. It uses the target-specific tools authorized by the task, converts observed facts into `pi-workflows.progress.v1` tracks, and publishes them through the existing `workflow` tool. omp-workflows validates, stores, estimates, and displays those tracks.
 
-The monitored target stays independent of pi-workflows. A monitor must not require a target Job or application to import pi-workflows, emit a Pi schema, write a Pi progress file, expose a Pi endpoint, create a progress store, or add a progress reader command solely for monitoring. Provider-specific clients and credentials do not belong in pi-workflows.
+The monitored target stays independent of omp-workflows. A monitor must not require a target Job or application to import omp-workflows, emit a Pi schema, write a Pi progress file, expose a Pi endpoint, create a progress store, or add a progress reader command solely for monitoring. Provider-specific clients and credentials do not belong in omp-workflows.
 
 When a target does not expose a factual count, total, or source estimate, the check reports that ETA is unavailable. Better application telemetry is separate work. It should expose normal operational facts for all operators, not a Pi-specific reporting protocol.
 
@@ -258,7 +258,7 @@ Between checks, the existing one-second widget ticker may update:
 
 It does not advance observed `completed`, publish updates, write bundle state, or call a model.
 
-When an ETA expires, the widget shows that the estimate passed and waits for the next sample. `piw` shows the complete track list, update history, estimate basis, confidence, and source timestamps.
+When an ETA expires, the widget shows that the estimate passed and waits for the next sample. `ompw` shows the complete track list, update history, estimate basis, confidence, and source timestamps.
 
 ## Several monitored processes
 

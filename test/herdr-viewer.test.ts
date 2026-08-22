@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   HerdrWorkflowViewer,
   parseViewerPlacement,
-  PIW_SHORTCUT,
+  OMPW_SHORTCUT,
   viewerPaneLabel,
   type WorkflowViewTarget,
 } from "../src/extension/herdr-viewer.js";
@@ -78,7 +78,7 @@ describe("HerdrWorkflowViewer", () => {
     expect(harness.calls).toEqual([]);
   });
 
-  it("checks the caller, linked plugin, and piw", async () => {
+  it("checks the caller, linked plugin, and ompw", async () => {
     const harness = execHarness((call) => {
       const key = commandKey(call);
       if (key === "herdr pane current --current") return { stdout: json(currentPane()) };
@@ -86,12 +86,12 @@ describe("HerdrWorkflowViewer", () => {
         return {
           stdout: json({
             result: {
-              plugins: [{ plugin_id: "osolmaz.pi-workflows", enabled: true }],
+              plugins: [{ plugin_id: "ericjuta.omp-workflows", enabled: true }],
             },
           }),
         };
       }
-      if (key === "piw --version") return { stdout: "piw 0.1.0\n" };
+      if (key === "ompw --version") return { stdout: "ompw 0.1.0\n" };
       throw new Error(`Unexpected command: ${key}`);
     });
     const viewer = new HerdrWorkflowViewer(harness.exec, { HERDR_ENV: "1" });
@@ -99,12 +99,12 @@ describe("HerdrWorkflowViewer", () => {
     await expect(viewer.probe()).resolves.toEqual({ available: true });
     expect(harness.calls.map(commandKey)).toEqual([
       "herdr pane current --current",
-      "herdr plugin list --plugin osolmaz.pi-workflows --json",
-      "piw --version",
+      "herdr plugin list --plugin ericjuta.omp-workflows --json",
+      "ompw --version",
     ]);
   });
 
-  it("reports unavailable plugin, piw, and malformed Herdr responses", async () => {
+  it("reports unavailable plugin, ompw, and malformed Herdr responses", async () => {
     const missingPlugin = execHarness((call) => {
       const key = commandKey(call);
       if (key === "herdr pane current --current") return { stdout: json(currentPane()) };
@@ -113,7 +113,7 @@ describe("HerdrWorkflowViewer", () => {
           stdout: json({
             result: {
               plugins: [
-                { plugin_id: "osolmaz.pi-workflows", enabled: false },
+                { plugin_id: "ericjuta.omp-workflows", enabled: false },
                 { plugin_id: "other.plugin", enabled: true },
                 null,
               ],
@@ -127,7 +127,7 @@ describe("HerdrWorkflowViewer", () => {
       new HerdrWorkflowViewer(missingPlugin.exec, { HERDR_ENV: "1" }).probe(),
     ).resolves.toEqual({
       available: false,
-      reason: "Herdr plugin osolmaz.pi-workflows is not linked and enabled.",
+      reason: "Herdr plugin ericjuta.omp-workflows is not linked and enabled.",
     });
 
     const missingPiw = execHarness((call) => {
@@ -136,16 +136,16 @@ describe("HerdrWorkflowViewer", () => {
       if (key.includes("plugin list")) {
         return {
           stdout: json({
-            result: { plugins: [{ plugin_id: "osolmaz.pi-workflows", enabled: true }] },
+            result: { plugins: [{ plugin_id: "ericjuta.omp-workflows", enabled: true }] },
           }),
         };
       }
-      if (key === "piw --version") return { code: 1, stderr: "piw missing" };
+      if (key === "ompw --version") return { code: 1, stderr: "ompw missing" };
       throw new Error(`Unexpected command: ${key}`);
     });
     await expect(
       new HerdrWorkflowViewer(missingPiw.exec, { HERDR_ENV: "1" }).probe(),
-    ).resolves.toEqual({ available: false, reason: "piw failed: piw missing" });
+    ).resolves.toEqual({ available: false, reason: "ompw failed: ompw missing" });
 
     const malformed = execHarness(() => ({ stdout: "not json" }));
     await expect(
@@ -490,6 +490,6 @@ describe("HerdrWorkflowViewer", () => {
   it("parses placements and uses the requested Ctrl+Shift shortcut", () => {
     expect(parseViewerPlacement("workspace")).toBe("workspace");
     expect(parseViewerPlacement("diagonal")).toBeUndefined();
-    expect(PIW_SHORTCUT).toBe("ctrl+shift+r");
+    expect(OMPW_SHORTCUT).toBe("ctrl+shift+r");
   });
 });

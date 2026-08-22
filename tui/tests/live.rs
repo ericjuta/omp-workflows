@@ -1,12 +1,12 @@
 //! Live-update tests: the run source's snapshot/patch invariant (applying
 //! the patch stream to an old view reproduces the current view), and an
-//! end-to-end WebSocket round trip through `piw serve` and the client.
+//! end-to-end WebSocket round trip through `ompw serve` and the client.
 
 mod common;
 
 use common::{append_trace, state_value, write_bundle};
-use piw::protocol::apply_patch;
-use piw::source::RunSource;
+use omp_workflows::protocol::apply_patch;
+use omp_workflows::source::RunSource;
 use serde_json::json;
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -211,7 +211,7 @@ fn manifest_paths_escaping_the_bundle_are_rejected() {
         serde_json::to_string(&manifest).unwrap(),
     )
     .unwrap();
-    assert!(piw::bundle::reader::read_manifest(&dir).is_err());
+    assert!(omp_workflows::bundle::reader::read_manifest(&dir).is_err());
     let source = RunSource::new(runs.path());
     assert!(source.get("run-evil").is_none(), "bundle must be skipped");
 }
@@ -242,12 +242,13 @@ fn server_round_trip_with_live_updates() {
         runtime.block_on(async move {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             addr_tx.send(listener.local_addr().unwrap()).unwrap();
-            let _ = piw::server::serve_on(listener, runs_dir).await;
+            let _ = omp_workflows::server::serve_on(listener, runs_dir).await;
         });
     });
     let addr = addr_rx.recv_timeout(Duration::from_secs(10)).unwrap();
 
-    let mut client = piw::client::RemoteRuns::connect(&format!("ws://{addr}/ws")).unwrap();
+    let mut client =
+        omp_workflows::client::RemoteRuns::connect(&format!("ws://{addr}/ws")).unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     while client.summaries().is_empty() {
         assert!(Instant::now() < deadline, "no run listing before timeout");
@@ -347,7 +348,7 @@ fn remote_client_reconnects_and_restores_selected_run() {
                 let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
                 ready_tx.send(()).unwrap();
                 tokio::select! {
-                    _ = piw::server::serve_on(listener, runs_dir) => {}
+                    _ = omp_workflows::server::serve_on(listener, runs_dir) => {}
                     _ = tokio::task::spawn_blocking(move || stop_rx.recv()) => {}
                 }
             });
@@ -363,7 +364,8 @@ fn remote_client_reconnects_and_restores_selected_run() {
     drop(probe);
 
     let (stop, worker) = start_server(addr, runs.path().to_path_buf());
-    let mut client = piw::client::RemoteRuns::connect(&format!("ws://{addr}/ws")).unwrap();
+    let mut client =
+        omp_workflows::client::RemoteRuns::connect(&format!("ws://{addr}/ws")).unwrap();
     client.watch("run-reconnect");
     let first_deadline = Instant::now() + Duration::from_secs(10);
     while client.view("run-reconnect").is_none() {
@@ -406,10 +408,9 @@ fn remote_client_reconnects_and_restores_selected_run() {
         std::thread::sleep(Duration::from_millis(25));
     }
     loop {
-        if client
-            .view("run-reconnect")
-            .is_some_and(|view| view.state.status == piw::bundle::types::RunStatus::Completed)
-        {
+        if client.view("run-reconnect").is_some_and(|view| {
+            view.state.status == omp_workflows::bundle::types::RunStatus::Completed
+        }) {
             break;
         }
         assert!(
@@ -599,13 +600,13 @@ fn artifact_reads_enforce_the_actual_file_size() {
             "bytes": 5, "sha256": "0".repeat(64),
         },
     });
-    let resolved = piw::bundle::reader::resolve_artifacts(&value, &dir, 10);
+    let resolved = omp_workflows::bundle::reader::resolve_artifacts(&value, &dir, 10);
     assert_eq!(
         resolved,
         json!("«artifact 5B artifacts/blob.txt»"),
         "an oversized artifact must fall back to a placeholder"
     );
-    let resolved = piw::bundle::reader::resolve_artifacts(&value, &dir, 1000);
+    let resolved = omp_workflows::bundle::reader::resolve_artifacts(&value, &dir, 1000);
     assert_eq!(resolved, json!("x".repeat(100)));
 }
 
@@ -626,11 +627,11 @@ fn escaped_artifact_sentinels_stay_literal() {
     });
     let value = json!({ "$escaped": literal });
     assert_eq!(
-        piw::bundle::reader::resolve_artifacts(&value, &dir, 1024),
+        omp_workflows::bundle::reader::resolve_artifacts(&value, &dir, 1024),
         literal
     );
     assert_eq!(
-        piw::bundle::reader::with_artifact_placeholders(&value),
+        omp_workflows::bundle::reader::with_artifact_placeholders(&value),
         literal
     );
 }
@@ -644,10 +645,12 @@ fn non_loopback_binds_are_refused() {
         .unwrap();
     // On loopback, serve() runs forever; a non-loopback bind must instead
     // return an error immediately because the protocol is unauthenticated.
-    let result = runtime.block_on(piw::server::serve(piw::server::ServeOptions {
-        runs_dir: runs.path().to_path_buf(),
-        bind: "0.0.0.0:0".to_string(),
-    }));
+    let result = runtime.block_on(omp_workflows::server::serve(
+        omp_workflows::server::ServeOptions {
+            runs_dir: runs.path().to_path_buf(),
+            bind: "0.0.0.0:0".to_string(),
+        },
+    ));
     let error = result.unwrap_err().to_string();
     assert!(error.contains("non-loopback"), "unexpected error: {error}");
 }

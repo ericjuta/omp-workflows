@@ -1,23 +1,25 @@
 {
-  "name": "@osolmaz/pi-workflows",
+  "name": "@ericjuta/omp-workflows",
   "version": "0.12.0",
-  "description": "Workflow and controller runtime with a live terminal viewer for the pi coding agent",
+  "description": "Workflow and controller runtime with native OMP integration and a live terminal viewer",
   "keywords": [
+    "omp-plugin",
     "pi-package"
   ],
-  "homepage": "https://github.com/osolmaz/pi-workflows#readme",
+  "homepage": "https://github.com/ericjuta/omp-workflows#readme",
   "bugs": {
-    "url": "https://github.com/osolmaz/pi-workflows/issues"
+    "url": "https://github.com/ericjuta/omp-workflows/issues"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/osolmaz/pi-workflows.git"
+    "url": "git+https://github.com/ericjuta/omp-workflows.git"
   },
   "bin": {
-    "pi-workflows": "dist/viewer/cli.js"
+    "omp-workflows": "dist/viewer/cli.js"
   },
   "files": [
+    "assets",
     "dist",
     "src",
     "skills",
@@ -88,6 +90,14 @@
   },
   "engines": {
     "node": ">=22.18.0"
+  },
+  "omp": {
+    "extensions": [
+      "./src/extension/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
   },
   "pi": {
     "extensions": [

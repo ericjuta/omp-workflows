@@ -1,6 +1,6 @@
 # Workflow composition
 
-pi-workflows can include one workflow inside another without copying nodes, prompts, or routing logic. The included workflow still runs on its own. The parent supplies input and connects the included workflow's named exits to later parent steps.
+omp-workflows can include one workflow inside another without copying nodes, prompts, or routing logic. The included workflow still runs on its own. The parent supplies input and connects the included workflow's named exits to later parent steps.
 
 Composition keeps one run, trace, pause state, cancellation state, and final presentation. Controllers remain the correct tool for independent or indefinitely reconciled child runs.
 
@@ -11,7 +11,7 @@ Work is tracked in the [workflow composition plan](plans/2026-08-19-workflow-com
 A TypeScript workflow definition is both executable code and a typed contract. Its input parser and exit parsers provide runtime validation and TypeScript inference from one declaration.
 
 ```typescript
-import { agent, compute, defineWorkflow } from "@osolmaz/pi-workflows";
+import { agent, compute, defineWorkflow } from "@ericjuta/omp-workflows";
 
 type RepairInput = { task: string };
 type Fixed = { summary: string };
@@ -66,7 +66,7 @@ export default defineWorkflow({
 Direct imports are the normal TypeScript interface. `includeWorkflow()` checks the mapped input and makes the child exit names available to the parent definition.
 
 ```typescript
-import { agent, compute, defineWorkflow, includeWorkflow } from "@osolmaz/pi-workflows";
+import { agent, compute, defineWorkflow, includeWorkflow } from "@ericjuta/omp-workflows";
 import repair from "./repair.workflow.js";
 
 export default defineWorkflow({
@@ -307,7 +307,7 @@ This is a compatible public API addition under the project's pre-1.0 policy. It 
 - **Other persistent data:** additive source and mount data, definition digests, and include events in existing run bundles.
 - **Pi internals:** none.
 - **Public Pi API:** existing extension APIs only.
-- **Public pi-workflows API:** typed workflow inputs and exits, `includeWorkflow()`, direct imports, dynamic references, and `defineWorkflowRegistry()`.
+- **Public omp-workflows API:** typed workflow inputs and exits, `includeWorkflow()`, direct imports, dynamic references, and `defineWorkflowRegistry()`.
 
 ## Required tests
 

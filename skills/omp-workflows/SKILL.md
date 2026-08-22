@@ -1,18 +1,18 @@
 ---
-name: pi-workflows
+name: omp-workflows
 description: >-
-  Operate and author pi-workflows. Use when the user starts, lists, pauses,
-  resumes, cancels, answers, or inspects a workflow; says /workflow or /piw;
-  wants the live graph, snapshot CLI, or always-on host; or needs a durable
+  Operate and author OMP workflows. Use when the user starts, lists, pauses,
+  resumes, cancels, answers, or inspects a workflow; says /workflow, /hitl, or
+  /ompw; wants the live graph, snapshot CLI, or always-on host; or needs a durable
   multi-step supervisor. This plugin is that supervisor.
-compatibility: Requires the pi-workflows extension. Herdr viewer needs piw on PATH.
+compatibility: Requires the omp-workflows extension. Herdr viewer needs ompw on PATH.
 ---
 
-# pi-workflows
+# omp-workflows
 
-Natural-language intent is enough. Users do not need `/workflow`, `/piw`, or
-`/skill`. When the tools can list, start, pause, resume, cancel, answer, or
-open the viewer, do those steps.
+Natural-language intent is enough. Users do not need `/workflow`, `/hitl`,
+`/ompw`, or `/skill`. When the tools can list, start, pause, resume, cancel,
+present HITL, answer, or open the viewer, do those steps.
 
 This session has **one supervisor**: the `workflow` tool plus the run bundle.
 Herdr worker panes are not the supervisor. Do not add a second supervisor for
@@ -27,17 +27,17 @@ output. Do not guess those values from an earlier attempt.
 
 ## Decide the surface
 
-| User intent                      | Do this                                                                                                                             |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| What workflows exist?            | `workflow` `list`. `/workflow` with no args is the same.                                                                            |
-| Run this / keep going on a graph | `start` once. Trailing text is `{ task: "..." }`. Use `--input-json` or structured `input` when the shape is not a task string.     |
-| How is it doing?                 | `status`. Prefer the known `runId`.                                                                                                 |
-| I want the conversation back     | `pause`. Escape already pauses; say so and wait for `resume`.                                                                       |
-| Continue                         | `resume`. Re-delivers the pending step.                                                                                             |
-| Stop / clear leftover widget     | `cancel`.                                                                                                                           |
-| Checkpoint is waiting            | `answer` with the requested JSON. Cannot satisfy a protected `humanDecision()` gate.                                                |
-| Show the graph                   | In Herdr: widget `Ctrl+Shift+R piw`, `/piw`, or `/piw right\|below\|left\|above\|tab\|workspace`. Outside: `piw` or `piw <runDir>`. |
-| Snapshot / host / sync plugin    | CLI below.                                                                                                                          |
+| User intent                      | Do this                                                                                                                                  |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| What workflows exist?            | `workflow` `list`. `/workflow` with no args is the same.                                                                                 |
+| Run this / keep going on a graph | `start` once. Trailing text is `{ task: "..." }`. Use `--input-json` or structured `input` when the shape is not a task string.          |
+| How is it doing?                 | `status`. Prefer the known `runId`.                                                                                                      |
+| I want the conversation back     | `pause`. Escape already pauses; say so and wait for `resume`.                                                                            |
+| Continue                         | `resume`. Re-delivers the pending step.                                                                                                  |
+| Stop / clear leftover widget     | `cancel`.                                                                                                                                |
+| Protected decision is waiting    | Call `hitl` or use `/hitl` to present host-owned UI. Never send the answer through a model tool.                                         |
+| Show the graph                   | In Herdr: widget `Ctrl+Shift+R ompw`, `/ompw`, or `/ompw right\|below\|left\|above\|tab\|workspace`. Outside: `ompw` or `ompw <runDir>`. |
+| Snapshot / host / sync plugin    | CLI below.                                                                                                                               |
 
 One active workflow per session. Do not start a second run until the first is
 paused, cancelled, waiting at a checkpoint you will answer, or finished.
@@ -73,18 +73,21 @@ immediately.
 
 ## Protected human decisions
 
-Do not use `workflow answer` for a waiting `humanDecision()` node. A verified
-person must answer through a host-owned channel:
+Do not use `workflow answer` for a waiting `humanDecision()` node. Call `hitl`
+or use `/hitl` to present the host-owned decision UI. The `hitl` tool accepts
+only an optional `runId`; it cannot carry a choice, approval, or return text.
+A verified person answers through the channel:
 
 - Pi TUI uses its interactive decision view.
 - OMP TUI uses the native custom decision component.
-- OMP RPC clients must handle `extension_ui_request` frames for `select` and,
-  when requested, `input`, then return the matching `extension_ui_response`.
+- OMP RPC clients handle `extension_ui_request` frames for `select` and, when
+  requested, `input`, then return the matching `extension_ui_response`.
 - JSON, print, and non-OMP RPC hosts have no local interactive channel. They
   wait for a configured external channel or a saved timeout policy.
 
-An accepted OMP RPC response is recorded as `source.channel: "omp"` and starts
-the normal continuation run. The model-facing workflow tool cannot forge it.
+Plan approval presents **Approve**, **Return for changes**, and **Stop**. An
+accepted OMP response is recorded as `source.channel: "omp"` and starts the
+normal continuation run. No model-facing tool can forge it.
 
 ## Complete agent steps
 
@@ -105,22 +108,22 @@ active; it does not complete the step. Progress updates use
 
 ## Watch, CLI, and parks
 
-`piw` is the live graph. In Herdr, open it from the widget or `/piw`. If a
+`ompw` is the live graph. In Herdr, open it from the widget or `/ompw`. If a
 viewer for that run already exists, focus it.
 
 Published CLI:
 
 ```text
-pi-workflows herdr sync
-pi-workflows runs
-pi-workflows view [runId]
-pi-workflows view [runId] --once
-pi-workflows host --project /path/to/project
-piw
-piw ~/.pi/agent/workflows/runs/<runId>
+omp-workflows herdr sync
+omp-workflows runs
+omp-workflows view [runId]
+omp-workflows view [runId] --once
+omp-workflows host --project /path/to/project
+ompw
+ompw ~/.pi/agent/workflows/runs/<runId>
 ```
 
-From a clone, or if `pi-workflows` is not on `PATH`, run the same commands
+From a clone, or if `omp-workflows` is not on `PATH`, run the same commands
 through `node dist/viewer/cli.js`. `herdr setup` is an alias for `herdr sync`.
 
 Runs live under `~/.pi/agent/workflows/runs/<runId>/`. Closing the session

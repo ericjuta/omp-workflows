@@ -86,9 +86,9 @@ export async function loadWorkflowFile(filePath: string): Promise<WorkflowDefini
     interopDefault: true,
     moduleCache: false,
     alias: {
-      "@osolmaz/pi-workflows/builtins": BUILTINS_ENTRY,
-      "@osolmaz/pi-workflows": SELF_ENTRY,
-      "pi-workflows": SELF_ENTRY,
+      "@ericjuta/omp-workflows/builtins": BUILTINS_ENTRY,
+      "@ericjuta/omp-workflows": SELF_ENTRY,
+      "omp-workflows": SELF_ENTRY,
     },
   });
   const loaded = (await jiti.import(absolutePath, { default: true })) as unknown;

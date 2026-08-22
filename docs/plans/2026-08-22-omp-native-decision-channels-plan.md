@@ -1,9 +1,9 @@
 ---
-title: Make human decisions OMP-native without breaking Pi
+title: Make workflows OMP-native without breaking Pi compatibility
 date: 2026-08-22
 ---
 
-# Make human decisions OMP-native without breaking Pi
+# Make workflows OMP-native without breaking Pi compatibility
 
 The engine already parks a run at `humanDecision()` and accepts one verified
 answer. Channel types, config, and `audienceChannels()` live in
@@ -12,24 +12,31 @@ audiences always resolve to `["pi"]`. A headless OMP pane therefore waits on a
 TUI that is not there. `src/herdr` is `allow: []`, so an OMP adapter cannot
 implement that interface in herdr.
 
+The fork also still exposes the upstream npm, Cargo, CLI, Herdr, and skill
+names. Those are user-facing Pi identities even when OMP owns the session.
+This plan therefore includes a clean OMP naming cutover while preserving the
+existing run-bundle protocol and storage.
+
 This plan is the selected implementation. Autoimplement must not invent another
-reviewer, another decision node, or a plugin rename.
+reviewer or another decision node.
 
 ## Outcome
 
 - Channel contract, config, and Telegram are pi-agnostic.
 - Pi TUI HITL still works with no `channels.json`.
 - OMP TUI and RPC hosts are first-class channels for audience `operator`.
+- `/hitl` and the `hitl` tool present the same host-owned decision UI; neither accepts an answer payload.
 - JSON, print, and non-OMP RPC hosts remain headless and fail loudly when they have no channel.
 - Autoimplement still shells `pi-reviewer --base <branch>`.
-- Herdr plugin id stays `osolmaz.pi-workflows`.
+- The npm package, Node CLI, Rust viewer, Herdr plugin, and shipped workflow
+  skill use OMP-native names.
 
 ## Non-goals
 
-- Do not rename the npm package `@osolmaz/pi-workflows`.
-- Do not rename herdr plugin id `osolmaz.pi-workflows` or entrypoint `piw`.
-  This checkout is a fallback fork (`ericjuta/omp-workflows`). A new id would
-  orphan existing herdr installs and break `syncHerdrPlugin`.
+- Do not rename persisted `pi-workflows.*` schemas, `PI_WORKFLOWS_*`
+  environment variables, `.pi` storage paths, or the existing `PIW_*` viewer
+  config contract. They remain compatibility protocol and data identifiers.
+- Do not retain legacy package, CLI, Herdr plugin, or skill aliases.
 - Do not route review or approval through OMP review or OMP ask.
 - Do not change Ask Gina / `nextjs-ai-chatbot`.
 - Do not push to `origin` (`osolmaz/pi-workflows`). Publish only to remote
@@ -124,6 +131,26 @@ and `docs/HUMAN_DECISIONS.md`:
 
 No new spawn wrappers in the repository.
 
+### OMP-native user-facing identity
+
+Use one clean set of names:
+
+- npm package `@ericjuta/omp-workflows` with primary `omp` plugin metadata and
+  the `omp-workflows` executable;
+- retain the package's `pi` extension metadata only as the supported Pi host
+  adapter, not as a user-facing package or command alias;
+- crates.io package `omp-workflows`, Rust library `omp_workflows`, and viewer
+  executable `ompw`;
+- Herdr plugin id `ericjuta.omp-workflows`, display name `omp-workflows`, and
+  pane entrypoint `ompw`;
+- shipped skill `omp-workflows`, available as `/skill:omp-workflows`, plus the
+  extension commands `/ompw` and `/hitl` and the model-facing `hitl` presenter;
+
+Dynamic workflow and controller loaders accept only the new package imports.
+The Herdr launcher starts `ompw` directly. Existing installations must unlink
+`osolmaz.pi-workflows` once before linking `ericjuta.omp-workflows`; the new
+sync command does not preserve or silently mutate the old registration.
+
 ### OMP extension-loader compatibility
 
 The extension module graph must not statically request Pi exports that OMP's
@@ -160,21 +187,26 @@ this.
 4. Implement `OmpDecisionChannel` in `src/host` with a fake UI port in tests
    (mirror `test/pi-decision-channel.test.ts` without Pi types).
 5. Wire the extension to start the OMP channel when the host is OMP, deliver
-   pending decisions to it, and settle it with Pi/Telegram.
+   pending decisions to it, and settle it with Pi/Telegram. Add `/hitl` and a
+   `hitl` tool that can present that channel but cannot provide its answer.
 6. Update `docs/HUMAN_DECISIONS.md`, `docs/HUMAN_DECISION_PRESENTATIONS.md`,
-   `docs/workflows.md`, `skills/pi-workflows/SKILL.md`, and
+   `docs/workflows.md`, `skills/omp-workflows/SKILL.md`, and
    `skills/autoimplement/SKILL.md` for host-derived defaults and the `omp`
-   channel. Mention the spawn contract. State that the herdr plugin id is unchanged.
+   channel. Mention the spawn contract.
 7. Remove the static `ModelRuntime` requirement from the extension module
    graph. Keep Pi's runtime path and add the restricted OMP SDK path. Verify in
    a fresh Herdr OMP session.
 8. Export the sqlite wrapper and test a fake statement returning `null`.
-9. Verify: `npm run check`, `npm run test:e2e`,
-   `npx slophammer-ts@latest dry .`,
-   `npx slophammer-ts@latest check . --only ts.dependency-boundaries-required`.
-10. Commit with Conventional Commits. Push `main` or the task branch to
-    remote `ericjuta` only. Open or update a PR on `ericjuta/omp-workflows`
-    if publication needs a PR. Do not push `origin`.
+9. Rename the npm and Cargo packages, CLIs, Herdr plugin, extension command,
+   dynamic loader imports, and shipped workflow skill to the OMP identities.
+   Update active documentation, tests, package metadata, and release workflows.
+10. Verify: `npm run check`, `npm run test:e2e`, `cargo fmt`, `cargo clippy`,
+    `cargo test`, package dry runs, live `omp-workflows` / `ompw` / Herdr / OMP
+    skill smoke tests, `npx slophammer-ts@latest dry .`, and the dependency
+    boundary check.
+11. Commit with Conventional Commits. Push the task branch to remote
+    `ericjuta` only if authorized. Open or update a PR on
+    `ericjuta/omp-workflows` if publication needs a PR. Do not push `origin`.
 
 ## Verification
 
@@ -188,8 +220,14 @@ this.
 - `src/herdr` still has no engine or channel imports.
 - `src/workflows` still has `allow: []`.
 - Reviewer command is still `pi-reviewer` with args `--base <branch>`.
-- Plugin id in `herdr-plugin.toml` and `src/herdr/constants.ts` is still
-  `osolmaz.pi-workflows`.
+- The npm package is `@ericjuta/omp-workflows`; `omp-workflows --help` works
+  and no `pi-workflows` executable is packaged.
+- The Cargo package is `omp-workflows`; `ompw --help` works and no `piw`
+  executable is built.
+- Herdr plugin id is `ericjuta.omp-workflows`, entrypoint is `ompw`, and its
+  launcher starts `ompw`.
+- The installed skill is `omp-workflows` and resolves as
+  `/skill:omp-workflows`; the extension command is `/ompw`.
 - A fresh OMP session loads the extension without requiring `ModelRuntime`,
   lists workflows when the host supplies `i`, and an isolated agent exposes
   only the mapped read-only tools.
@@ -206,9 +244,15 @@ this.
 - Change `audienceChannels` to require host kind. This is an alpha in-place
   change. Update all callers and tests. No compatibility shim.
 - Persist the same human-decision v1 records. No new schema generation.
+- Rename user-facing package, CLI, plugin, and skill contracts in place. No
+  legacy command, package-import, plugin-id, or skill aliases.
 
 ## Recovery
 
 Existing waiting runs keep their request digest. After this change, an
 unconfigured operator decision in an OMP pane delivers to `omp` instead of
 warning that `pi` is unavailable. Pi TUI behavior is unchanged.
+
+The naming cutover does not rewrite existing run bundles. Local installations
+unlink the old Herdr plugin and install the new npm and Cargo package names;
+workflow definitions must import `@ericjuta/omp-workflows` after the cutover.

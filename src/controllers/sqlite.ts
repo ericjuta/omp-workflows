@@ -137,7 +137,7 @@ export type WorkflowRunQueueRecord = {
   claimToken: string | null;
   claimExpiresAt: string | null;
   affinityRunnerId: string | null;
-  /** Pi session that owns delivery and interactive execution, or null for detached runs. */
+  /** Interactive session that owns delivery and execution, or null for detached runs. */
   originSessionId: string | null;
   parentRunId: string | null;
   errorCode: string | null;

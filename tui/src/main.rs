@@ -1,17 +1,17 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use piw::{server, ui};
+use omp_workflows::{server, ui};
 use std::path::PathBuf;
 
-/// Terminal viewer and live replay server for pi-workflows run bundles.
+/// Terminal viewer and live replay server for omp-workflows run bundles.
 #[derive(Parser)]
-#[command(name = "piw", version, about)]
+#[command(name = "ompw", version, about)]
 struct Cli {
     /// Runs directory or a single run bundle directory
     /// (default: ~/.pi/agent/workflows/runs).
     path: Option<PathBuf>,
 
-    /// Connect to a `piw serve` server instead of reading the filesystem.
+    /// Connect to an `ompw serve` server instead of reading the filesystem.
     #[arg(long, value_name = "URL", conflicts_with = "path")]
     connect: Option<String>,
 
@@ -55,7 +55,7 @@ fn default_runs_dir() -> PathBuf {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     if cli.list_themes {
-        for name in piw::theme::THEME_NAMES {
+        for name in omp_workflows::theme::THEME_NAMES {
             println!("{name}");
         }
         return Ok(());

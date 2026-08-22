@@ -7,7 +7,7 @@ import {
 export const RPC_SUBMISSION_PREFIX = "PI_WORKFLOWS_STEP_SUBMISSION ";
 
 /**
- * Loaded into headless `pi --mode rpc` children spawned by the standalone
+ * Loaded into headless `omp --mode rpc` children spawned by the standalone
  * host. The child has no workflow engine, so this bridge only registers the
  * `workflow` tool and reports every submission to the host over stderr; the
  * host validates against the engine and re-prompts on rejection.

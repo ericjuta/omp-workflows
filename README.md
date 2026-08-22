@@ -1,19 +1,19 @@
-# pi-workflows
+# omp-workflows
 
 <p align="center">
-  <img src="assets/cover.svg" alt="pi-workflows: a representative multi-step workflow graph with plan, implement, verify, review, a fix loop, and a clean finish" width="880">
+  <img src="assets/cover.svg" alt="omp-workflows: a representative multi-step workflow graph with plan, implement, verify, review, a fix loop, and a clean finish" width="880">
 </p>
 
-pi-workflows is a workflow extension for the [pi coding agent](https://pi.dev).
-It lets you define multi-step agent workflows as TypeScript graphs, trigger
-them at any point in a pi conversation with `/workflow`, and watch them run
-live in a standalone terminal viewer.
+omp-workflows is the workflow and controller plugin for
+[Oh My Pi](https://github.com/can1357/oh-my-pi), with a supported Pi host
+adapter. It defines multi-step agent workflows as TypeScript graphs, triggers
+them from an OMP conversation with `/workflow`, and renders live runs in a
+standalone terminal viewer.
 
-The workflow model is a port of [openclaw/acpx](https://github.com/openclaw/acpx)
-flows into pi itself. Agent steps run inside your current pi conversation, so
-the model keeps everything it already knows from the discussion. The model
-completes each step by calling a JSON `workflow` tool, which gives the engine
-structured, validated output to route on. See the
+The workflow model ports [openclaw/acpx](https://github.com/openclaw/acpx)
+flows into OMP. Agent steps run inside the current conversation, so the model
+keeps the discussion context. Each step completes through a structured,
+validated `workflow` tool result that the engine uses for routing. See the
 [design philosophy](docs/DESIGN_PHILOSOPHY.md) for the principles behind the
 engine and its public parts. Running steps can publish durable [workflow
 updates](docs/WORKFLOW_UPDATES.md), including progress counts and ETA data.
@@ -25,31 +25,31 @@ assistant turn.
 ## Install
 
 ```bash
-pi install npm:@osolmaz/pi-workflows
+omp install npm:@ericjuta/omp-workflows
 ```
 
 You can also install directly from GitHub:
 
 ```bash
-pi install git:github.com/osolmaz/pi-workflows
+omp install git:github.com/ericjuta/omp-workflows
 ```
 
-Or try the npm package without installing it:
+Or load the extension for one OMP session:
 
 ```bash
-pi -e npm:@osolmaz/pi-workflows
+omp -e npm:@ericjuta/omp-workflows
 ```
 
-The Pi package includes the extension and six optional skills:
+The OMP package includes the extension and six optional skills:
 
-- `pi-workflows` teaches the agent how to operate and author workflows.
+- `omp-workflows` teaches the agent how to operate and author workflows.
 - `monitor` starts and operates the built-in monitor workflow.
 - `autoplan` selects the best practical solution and writes an implementation plan.
 - `autodoc` records an existing plan in canonical documentation.
 - `autoimplement` implements an existing plan and verifies the result.
 - `sanity-check` reviews whether a contribution is necessary, focused, and well supported.
 
-Pi discovers these skills when it loads the package. Use `pi config` to disable
+OMP discovers these skills when it loads the package. Use `omp config` to disable
 the extension, all bundled skills, or one skill independently. The equivalent
 settings entry below keeps the extension and disables only `monitor`:
 
@@ -57,7 +57,7 @@ settings entry below keeps the extension and disables only `monitor`:
 {
   "packages": [
     {
-      "source": "npm:@osolmaz/pi-workflows",
+      "source": "npm:@ericjuta/omp-workflows",
       "skills": ["-skills/monitor"]
     }
   ]
@@ -65,41 +65,43 @@ settings entry below keeps the extension and disables only `monitor`:
 ```
 
 Set `"skills": []` to disable all bundled skills while keeping the extension.
-Set `"extensions": []` to keep the skills without loading the extension.
+Set `"extensions": []` to keep the skills without loading the extension. The
+same package retains Pi metadata as a supported host adapter and can be installed
+there with `pi install npm:@ericjuta/omp-workflows`.
 
 Install the interactive terminal viewer separately from crates.io. The crate
-is named `pi-workflows`; its command is `piw`:
+is named `omp-workflows`; its command is `ompw`:
 
 ```bash
-cargo install pi-workflows
-piw
+cargo install omp-workflows
+ompw
 ```
 
-The npm package also includes the simpler `pi-workflows` snapshot viewer. To
+The npm package also includes the simpler `omp-workflows` snapshot viewer. To
 link that command from a clone, run `npm install && npm run build && npm link`,
 or run it in place with `npx tsx src/viewer/cli.ts`.
 
 ## Herdr integration
 
-pi-workflows also ships as a [Herdr](https://herdr.dev) plugin. After installing
-`piw` and pi-workflows, synchronize the bundled plugin:
+omp-workflows also ships as a [Herdr](https://herdr.dev) plugin. After installing
+`ompw` and omp-workflows, synchronize the bundled plugin:
 
 ```bash
-pi-workflows herdr sync
+omp-workflows herdr sync
 ```
 
-Run the same command after a pi-workflows update. It finds the package that
+Run the same command after an omp-workflows update. It finds the package that
 provides the running CLI and repairs a Herdr link when npm moved that package.
-`pi-workflows herdr setup` remains an alias for existing installations. Use
+`omp-workflows herdr setup` remains an alias for existing installations. Use
 `--json` for versioned machine-readable output. The [Herdr plugin sync
 plan](docs/plans/2026-08-20-herdr-plugin-sync-plan.md) defines update and
 recovery behavior.
 
-When Pi runs inside Herdr, a workflow widget shows `Ctrl+Shift+R piw`. When the widget has hidden rows, this call to action shares the existing scroll-controls line instead of taking another line.
+When OMP runs inside Herdr, a workflow widget shows `Ctrl+Shift+R ompw`. When the widget has hidden rows, this call to action shares the existing scroll-controls line instead of taking another line.
 The shortcut opens the exact run bundle and lets you choose a split, tab, or new
-workspace. `/piw` opens the same menu, and `/piw right`, `/piw below`, `/piw
-left`, `/piw above`, `/piw tab`, or `/piw workspace` selects a placement
-directly. If a viewer for that run already exists, pi-workflows focuses it
+workspace. `/ompw` opens the same menu, and `/ompw right`, `/ompw below`, `/ompw
+left`, `/ompw above`, `/ompw tab`, or `/ompw workspace` selects a placement
+directly. If a viewer for that run already exists, omp-workflows focuses it
 instead of opening a duplicate.
 
 The plugin uses Herdr's public pane APIs and runs no service or polling loop. It
@@ -112,7 +114,7 @@ Put a workflow file in `.pi/workflows/` (project) or `~/.pi/agent/workflows/`
 
 ```typescript
 // .pi/workflows/echo.workflow.ts
-import { agent, defineWorkflow } from "@osolmaz/pi-workflows";
+import { agent, defineWorkflow } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   name: "echo",
@@ -135,7 +137,7 @@ Then, from any pi conversation:
 ```
 
 A model-started workflow is saved before the tool reports it as queued. The returned run ID works
-with `workflow status` and `workflow cancel` before execution starts. pi-workflows waits for the
+with `workflow status` and `workflow cancel` before execution starts. omp-workflows waits for the
 current agent turn to settle before activation. If activation fails, it saves the failure and sends
 one follow-up turn so the model can correct the cause and start a new run.
 
@@ -151,10 +153,15 @@ widget instead. Trailing text becomes `{ task: "..." }`; pass arbitrary input
 with `--input-json {"key": "value"}`. The names `answer`, `cancel`, `list`, `pause`, `resume`, and `status` are
 reserved and rejected as workflow names.
 
+Protected `humanDecision()` checkpoints use native HITL. `/hitl` reopens the
+pending decision; the `hitl` tool can present the same prompt but cannot select
+an answer. Approval or return-for-changes still comes from the host-owned Pi or
+OMP UI and is persisted as a verified human response.
+
 While a run is on screen, the footer status bar shows a compact
 `wf <name> [status] <node>` indicator alongside the widget.
 
-`presentationPrompt` is optional. When present, pi-workflows uses it after the
+`presentationPrompt` is optional. When present, omp-workflows uses it after the
 structured run ends to request one normal, human-readable assistant response.
 Workflows without it remain silent after their final structured output, which
 keeps shell-only and machine-consumed workflows model-free.
@@ -164,7 +171,7 @@ keeps shell-only and machine-consumed workflows model-free.
 A workflow can import another workflow and connect its named exits without copying its nodes:
 
 ```typescript
-import { compute, defineWorkflow, includeWorkflow } from "@osolmaz/pi-workflows";
+import { compute, defineWorkflow, includeWorkflow } from "@ericjuta/omp-workflows";
 import autoplan from "./autoplan.workflow.js";
 
 export default defineWorkflow({
@@ -196,7 +203,7 @@ The model can use the same `workflow` tool to list, start, inspect, pause,
 resume, cancel, and answer workflows. Step contracts use the tool's `submit`
 action. Slash commands and model actions share one lifecycle implementation.
 
-pi-workflows includes a `monitor` workflow for plain-language requests such as:
+omp-workflows includes a `monitor` workflow for plain-language requests such as:
 
 > Monitor PR 123 every 30 minutes. Report failed checks. Stop when it is merged or closed.
 
@@ -227,10 +234,10 @@ Runs persist to `~/.pi/agent/workflows/runs/` as they execute. The viewer
 tails that directory and re-renders on every state change:
 
 ```bash
-pi-workflows view          # interactive picker, live updates
-pi-workflows view <runId>  # jump straight to one run
-pi-workflows runs          # plain list of recent runs
-pi-workflows view --once   # print a snapshot and exit (good for scripts)
+omp-workflows view          # interactive picker, live updates
+omp-workflows view <runId>  # jump straight to one run
+omp-workflows runs          # plain list of recent runs
+omp-workflows view --once   # print a snapshot and exit (good for scripts)
 ```
 
 The run detail view draws the workflow as a boxed graph, like the acpx replay
@@ -246,14 +253,14 @@ backwards and forwards through the recorded steps and re-derives every node's
 status as of that step, with the selected step's full output shown below;
 scrubbing to the end snaps back to following the run live.
 
-The Rust `piw` viewer under `tui/` adds a Catppuccin interface, selectable
+The Rust `ompw` viewer under `tui/` adds a Catppuccin interface, selectable
 themes, centered active-node following, draggable browser and inspector sizes,
 detailed trace and conversation inspection, temporal replay, and reconnecting
 remote viewing. Full cards have one fixed graph-wide size, so streaming,
 selection, timer ticks, and replay never move nodes or edges. Live conversation
 capture shows text, thinking, tool calls, and tool execution as they happen,
 then reconciles settled messages to verbatim Pi entries. See
-[the piw guide](docs/tui-viewer.md).
+[the ompw guide](docs/tui-viewer.md).
 
 ```
   ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -275,7 +282,7 @@ line when they apply. Pi's current theme highlights the full active-node line,
 while status glyphs keep every state readable without color. Long workflows are
 windowed around the active node.
 Scroll the list with `shift+↑` / `shift+↓`; it snaps back to following the
-active node whenever the workflow advances a step. Use `piw` when you need the
+active node whenever the workflow advances a step. Use `ompw` when you need the
 full boxed graph and its edges.
 
 ## Node types
@@ -286,7 +293,7 @@ finishes with a JSON output, and edges decide what runs next.
 An `agent` node sends a prompt into the pi conversation and waits for the
 model to submit its output through the `workflow` tool. A `compute` node runs
 a pure TypeScript function. A `notify` node writes a durable message for the
-Pi session that started the run. An `action` node performs a side effect,
+originating OMP or Pi session. An `action` node performs a side effect,
 either a TypeScript function (`action({ run })`) or a runtime-owned shell
 command (`shell({ exec, parse })`). A `checkpoint` node ends the run in a
 `waiting` state so a human can pick it up. On top of `agent`, the `decision` helper asks
@@ -300,10 +307,10 @@ and [docs/run-bundles.md](docs/run-bundles.md) for the on-disk run format.
 
 Controllers keep long-running automation aligned with current external state. They store desired state in `spec`, report observed state through conditions and `status`, and reconcile a deduplicated resource key whenever an event or retry makes it ready.
 
-Put `*.controller.ts` files in `.pi/controllers/` or `~/.pi/agent/controllers/`. Import the API from `@osolmaz/pi-workflows/controllers`:
+Put `*.controller.ts` files in `.pi/controllers/` or `~/.pi/agent/controllers/`. Import the API from `@ericjuta/omp-workflows/controllers`:
 
 ```typescript
-import { conditionTrue, defineController } from "@osolmaz/pi-workflows/controllers";
+import { conditionTrue, defineController } from "@ericjuta/omp-workflows/controllers";
 
 export default defineController({
   name: "example",
@@ -324,7 +331,7 @@ Apply and inspect resources from Pi:
 /controller reconcile example item-1
 ```
 
-The standalone CLI provides read-only views with `pi-workflows controllers` and `pi-workflows controller <controller> <key>`. See [docs/CONTROLLERS.md](docs/CONTROLLERS.md) for reconciliation, queue, effect, and child workflow semantics.
+The standalone CLI provides read-only views with `omp-workflows controllers` and `omp-workflows controller <controller> <key>`. See [docs/CONTROLLERS.md](docs/CONTROLLERS.md) for reconciliation, queue, effect, and child workflow semantics.
 
 ## Always-on workflows
 
@@ -335,10 +342,10 @@ Workflow reports use a durable session-addressed outbox. A report waits while it
 For runs that must continue while Pi is closed, keep the standalone host running:
 
 ```bash
-pi-workflows host --project /path/to/project
+omp-workflows host --project /path/to/project
 ```
 
-The host claims parked runs and reconciles controllers without a Pi session. Conversation nodes execute in headless `pi --mode rpc` children that expose the same `workflow` tool contract. It is a foreground process — stop it with Ctrl-C; a crashed host's leftovers are reaped by the next one. See [docs/workflows.md](docs/workflows.md#durable-runs-parking-and-resume) for the model and [docs/run-bundles.md](docs/run-bundles.md) for the on-disk rules.
+The host claims parked runs and reconciles controllers without an interactive session. Conversation nodes execute in headless `omp --mode rpc` children that expose the same `workflow` tool contract. It is a foreground process — stop it with Ctrl-C; a crashed host's leftovers are reaped by the next one. See [docs/workflows.md](docs/workflows.md#durable-runs-parking-and-resume) for the model and [docs/run-bundles.md](docs/run-bundles.md) for the on-disk rules.
 
 ## Examples
 

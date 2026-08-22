@@ -10,29 +10,29 @@ const viewerScript = path.resolve(
   "../plugins/herdr/viewer.mjs",
 );
 
-describe("Herdr piw plugin launcher", () => {
+describe("Herdr ompw plugin launcher", () => {
   it("sets a discoverable title and opens the exact run bundle with argv", async () => {
     const temp = await makeTempDir("pi-workflows-herdr-viewer");
     const bin = path.join(temp, "bin");
     const runId = "20260818T120000Z-monitor-a1b2c3d4";
     const runDir = path.join(temp, runId);
     const herdrArgs = path.join(temp, "herdr-args.json");
-    const piwArgs = path.join(temp, "piw-args.json");
+    const ompwArgs = path.join(temp, "ompw-args.json");
     await fs.mkdir(bin);
     await fs.mkdir(runDir);
     await fs.writeFile(path.join(runDir, "manifest.json"), "{}\n");
     const herdr = path.join(bin, "herdr");
-    const piw = path.join(bin, "piw");
+    const ompw = path.join(bin, "ompw");
     await fs.writeFile(
       herdr,
       `#!/usr/bin/env node\nrequire("node:fs").writeFileSync(process.env.HERDR_ARGS_FILE, JSON.stringify(process.argv.slice(2)));\n`,
     );
     await fs.writeFile(
-      piw,
-      `#!/usr/bin/env node\nrequire("node:fs").writeFileSync(process.env.PIW_ARGS_FILE, JSON.stringify(process.argv.slice(2)));\n`,
+      ompw,
+      `#!/usr/bin/env node\nrequire("node:fs").writeFileSync(process.env.OMPW_ARGS_FILE, JSON.stringify(process.argv.slice(2)));\n`,
     );
     await fs.chmod(herdr, 0o755);
-    await fs.chmod(piw, 0o755);
+    await fs.chmod(ompw, 0o755);
 
     const result = spawnSync(process.execPath, [viewerScript], {
       encoding: "utf8",
@@ -42,7 +42,7 @@ describe("Herdr piw plugin launcher", () => {
         HERDR_BIN_PATH: herdr,
         HERDR_PANE_ID: "w1:p2",
         HERDR_ARGS_FILE: herdrArgs,
-        PIW_ARGS_FILE: piwArgs,
+        OMPW_ARGS_FILE: ompwArgs,
         PI_WORKFLOWS_RUN_ID: runId,
         PI_WORKFLOWS_RUN_DIR: runDir,
       },
@@ -53,9 +53,9 @@ describe("Herdr piw plugin launcher", () => {
       "pane",
       "rename",
       "w1:p2",
-      `piw · ${runId}`,
+      `ompw · ${runId}`,
     ]);
-    await expect(fs.readFile(piwArgs, "utf8").then(JSON.parse)).resolves.toEqual([runDir]);
+    await expect(fs.readFile(ompwArgs, "utf8").then(JSON.parse)).resolves.toEqual([runDir]);
   });
 
   it("rejects a run directory that does not match the run id", async () => {

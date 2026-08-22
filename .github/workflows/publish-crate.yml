@@ -42,8 +42,8 @@ jobs:
           version="$(jq -r '.packages[0].version' <<<"$metadata")"
           expected_tag="v${version}"
 
-          if [[ "$package_name" != "pi-workflows" ]]; then
-            echo "Cargo package is $package_name, expected pi-workflows." >&2
+          if [[ "$package_name" != "omp-workflows" ]]; then
+            echo "Cargo package is $package_name, expected omp-workflows." >&2
             exit 1
           fi
           if [[ "$RELEASE_TAG" != "$expected_tag" ]]; then
@@ -65,7 +65,7 @@ jobs:
               --retry-all-errors \
               --output /tmp/crates-io-version.json \
               --write-out '%{http_code}' \
-              --user-agent 'pi-workflows-release-workflow (https://github.com/osolmaz/pi-workflows)' \
+              --user-agent 'omp-workflows-release-workflow (https://github.com/ericjuta/omp-workflows)' \
               "https://crates.io/api/v1/crates/${package_name}/${version}"
           )"
           case "$registry_status" in
@@ -107,13 +107,13 @@ jobs:
                 --show-error \
                 --output /tmp/crates-io-version.json \
                 --write-out '%{http_code}' \
-                --user-agent 'pi-workflows-release-workflow (https://github.com/osolmaz/pi-workflows)' \
-                "https://crates.io/api/v1/crates/pi-workflows/${version}"
+                --user-agent 'omp-workflows-release-workflow (https://github.com/ericjuta/omp-workflows)' \
+                "https://crates.io/api/v1/crates/omp-workflows/${version}"
             )"
             if [[ "$status" == "200" ]]; then
               exit 0
             fi
             sleep 10
           done
-          echo "crates.io did not report pi-workflows ${version} after publication." >&2
+          echo "crates.io did not report omp-workflows ${version} after publication." >&2
           exit 1

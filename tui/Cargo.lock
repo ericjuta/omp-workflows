@@ -1089,6 +1089,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "omp-workflows"
+version = "0.12.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "crossterm",
+ "futures-util",
+ "notify",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-tungstenite",
+ "toml",
+ "toml_edit",
+ "unicode-width",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1248,29 +1271,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67eabc2ef2a60eb7faa00097bd1ffdb5bd28e62bf39990626a582201b7a754e5"
 dependencies = [
  "siphasher",
-]
-
-[[package]]
-name = "pi-workflows"
-version = "0.12.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "crossterm",
- "futures-util",
- "notify",
- "ratatui",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "tokio-tungstenite",
- "toml",
- "toml_edit",
- "unicode-width",
 ]
 
 [[package]]

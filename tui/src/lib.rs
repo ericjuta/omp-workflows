@@ -1,4 +1,4 @@
-//! piw: terminal viewer and live replay server for pi-workflows run bundles.
+//! ompw: terminal viewer and live replay server for omp-workflows run bundles.
 //! The library form exists for integration tests; `main.rs` is the CLI.
 
 pub mod bundle;

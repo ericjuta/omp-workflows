@@ -56,7 +56,7 @@ are replaced. Use the same headings and field language across the built-in workf
 
 ## Alpha compatibility policy
 
-pi-workflows is in alpha. Until the repository explicitly leaves alpha:
+omp-workflows is in alpha. Until the repository explicitly leaves alpha:
 
 - Do not preserve backward compatibility unless the user explicitly requires it for a task.
 - Change persisted schemas and public contracts in place. Keep their current version identifiers.

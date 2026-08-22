@@ -1,6 +1,6 @@
 # Workflow authoring reference
 
-This document is the authoring reference for pi-workflows definitions. It
+This document is the authoring reference for omp-workflows definitions. It
 covers the file format, every node type, edge routing, the step contract the
 model sees, and how runs behave at runtime. For the on-disk run format, see
 [run-bundles.md](run-bundles.md).
@@ -13,9 +13,9 @@ Files are discovered by suffix (`.workflow.ts`, `.workflow.js`, `.workflow.mts`,
 
 1. `.pi/workflows/` in the project (highest precedence on name collisions)
 2. `~/.pi/agent/workflows/` globally
-3. Workflows built into Pi Workflows
+3. Workflows built into OMP Workflows
 
-Pi Workflows includes built-in `autoplan`, `autodoc`, `autoimplement`,
+OMP Workflows includes built-in `autoplan`, `autodoc`, `autoimplement`,
 `plan-approval`, `sanity-check`, and `monitor` workflows. `autoplan` is the current name for the
 planning workflow that was first released as `autodevise`; the old command and
 export are not retained. A project or global file named `monitor.workflow.ts`
@@ -31,11 +31,11 @@ each run and use their path and SHA-256 hash as their source identity.
 The workflow's command name is the file stem, so `.pi/workflows/triage.workflow.ts`
 runs as `/workflow triage`. A direct path also works: `/workflow ./somewhere/x.workflow.ts`.
 Files are loaded with [jiti](https://github.com/unjs/jiti), so plain TypeScript
-works without a build step, and `import ... from "@osolmaz/pi-workflows"` resolves to
+works without a build step, and `import ... from "@ericjuta/omp-workflows"` resolves to
 the engine that loaded the file.
 
 ```typescript
-import { agent, compute, defineWorkflow } from "@osolmaz/pi-workflows";
+import { agent, compute, defineWorkflow } from "@ericjuta/omp-workflows";
 
 export default defineWorkflow({
   name: "example",
@@ -108,23 +108,23 @@ Every interactive `/workflow` run is tracked in the project run queue (see
 claims it and owns it while it executes; every bundle write proves the claim
 first (write fencing).
 
-Closing the Pi session mid-run no longer cancels the run. The engine **parks**:
-it stops without a terminal event, releases the claim, and leaves the bundle
-resumable. When a runner is available again (a reopened Pi session or the
-standalone host), the run **resumes** at the node it stopped on. Completed
+Closing the interactive OMP or Pi session mid-run no longer cancels the run. The
+engine **parks**: it stops without a terminal event, releases the claim, and
+leaves the bundle resumable. When a runner is available again (a reopened
+interactive session or the standalone host), the run **resumes** where it stopped. Completed
 nodes replay from the recorded state; only the interrupted node and everything
 downstream rerun. Resume repairs a torn trace tail, drops trace events the
 state projection never recorded, and refuses to continue if the workflow
 source changed since the run started (a forced resume records the mismatch).
 
-The standalone host runs without any Pi session:
+The standalone host runs without an interactive session:
 
 ```bash
-pi-workflows host --project /path/to/project
+omp-workflows host --project /path/to/project
 ```
 
 The host claims parked runs, resumes them, and reconciles durable controllers.
-Conversation nodes execute in headless `pi --mode rpc` children that load a
+Conversation nodes execute in headless `omp --mode rpc` children that load a
 small bridge extension; the model sees the same `workflow` tool contract as an
 in-session run. The host is a foreground process: start it in a terminal and
 stop it with Ctrl-C. A second host for the same project refuses to start, and
@@ -179,9 +179,9 @@ compute({ run: ({ outputs }) => ({ merged: { ...outputs } }) });
 
 ### notify
 
-Queues a durable plain-text message for the Pi session that started the run.
-The runner does not write the message into its own conversation. A standalone
-host can execute this node, and the message still waits for the origin session.
+Queues a durable plain-text message for the session that started the run. The
+runner does not write the message into its own conversation. A standalone host
+can execute this node, and the message still waits for the origin session.
 
 ```typescript
 notify({
@@ -309,9 +309,14 @@ humanDecision({
 
 The waiting run stores a versioned request and asks every channel configured for the logical audience. The structured `subject` remains machine data. Channels receive only the normalized `presentation`, title, choices, input prompts, and any deadline policy. The first valid verified human answer wins. When `onTimeout` is present and no human answer wins before the saved deadline, recovery applies the validated response with `timeout` provenance. This policy can continue without a configured channel. A continuation preserves the original workflow input and exposes the resolved response as the checkpoint output. `humanDecisionEdge()` provides exhaustive routing for the choices. Existing `body` requests remain a legacy compatibility form and use deterministic readable formatting.
 
-Unconfigured audience `operator` is host-derived: Pi TUI uses `pi`; OMP TUI and RPC use `omp`; JSON, print, and non-OMP RPC hosts use no channel. Configured audiences stay as written. Herdr plugin id remains `osolmaz.pi-workflows`.
+Unconfigured audience `operator` is host-derived: Pi TUI uses `pi`; OMP TUI and RPC use `omp`; JSON, print, and non-OMP RPC hosts use no channel. Configured audiences stay as written. Herdr plugin id remains `ericjuta.omp-workflows`.
 
 The model-facing workflow tool cannot answer a protected human decision. Pi interactive UI, OMP's custom TUI component, OMP RPC `select`/`input` requests, and configured external channels use a host-owned answer path. Ordinary checkpoints keep the existing `/workflow answer` behavior.
+
+Use `/hitl` to reopen the pending protected decision. The `hitl` tool presents
+that same host-owned UI and may target a waiting `runId`; it cannot carry an
+answer. The person approves or returns the proposal through the native UI, and
+only that host response enters the verified-human acceptance path.
 
 See [Human decisions](HUMAN_DECISIONS.md) for channels, recovery, persistence, and plan approval.
 
@@ -433,7 +438,7 @@ Autoimplement runs independent commands through bounded command batches. A batch
 
 `runCommandBatch` items may include optional `env` and `envUnset`. `env` is a string map overlaid on the process environment. `envUnset` is an array of names deleted after that overlay so the child does not inherit them. Workflow snapshots cannot store `undefined`, so deletion uses `envUnset` rather than a missing map value. Items still cannot set `stdin`, `shell`, or `allowNonZeroExit`. Commands run without a shell.
 
-Host login PATH must include `$HOME/.local/bin` and `$HOME/.bun/bin`. Reviewer children unset `GOOGLE_GENAI_USE_VERTEXAI` and `GOOGLE_CLOUD_LOCATION` via `envUnset` to prevent environment confusion during authentication. Isolated `runPiAgentGroup` sessions pin the agent-dir catalog so they execute predictably. Pi uses `ModelRuntime`; OMP capability-detects that missing legacy export and uses its native restricted session path, mapping legacy `find` and `ls` access to `glob` without enabling ambient tools or resources. For TUI hosts only, the same capability detection selects OMP-native decisions when `OMPCODE` is visible only to tool children rather than the extension process; RPC, JSON, and other non-TUI modes remain headless. The workflow tool removes OMP's host-only `i` invocation intent before validating the domain action; other extra fields remain invalid. The herdr plugin ID remains `osolmaz.pi-workflows`.
+Host login PATH must include `$HOME/.local/bin` and `$HOME/.bun/bin`. Reviewer children unset `GOOGLE_GENAI_USE_VERTEXAI` and `GOOGLE_CLOUD_LOCATION` via `envUnset` to prevent environment confusion during authentication. Isolated `runPiAgentGroup` sessions pin the agent-dir catalog so they execute predictably. Pi uses `ModelRuntime`; OMP capability-detects that missing legacy export and uses its native restricted session path, mapping legacy `find` and `ls` access to `glob` without enabling ambient tools or resources. For TUI hosts only, the same capability detection selects OMP-native decisions when `OMPCODE` is visible only to tool children rather than the extension process; RPC, JSON, and other non-TUI modes remain headless. The workflow tool removes OMP's host-only `i` invocation intent before validating the domain action; other extra fields remain invalid. The herdr plugin ID remains `ericjuta.omp-workflows`.
 
 `runShellAction` applies the same overlay: an `undefined` override removes that key from the child environment.
 
@@ -477,9 +482,9 @@ The workflow collects pull request intent and repository diff evidence before mo
 
 Sanity Check revision 2 creates child sessions directly through the documented Pi SDK. A private built-in runner uses `createAgentSession` with `SessionManager.inMemory`, one independent context per child, and only `read`, `grep`, `find`, and `ls`. Child sessions load no extensions, skills, prompt templates, themes, or context files. They do not receive the workflow tool and do not save Pi session files. The sessions share the parent Node process, so they do not provide OS process isolation.
 
-The runner uses an explicit model and thinking override when supplied. Otherwise, it pins `settings.json` defaults, then the first model in the agent-dir `models.json` catalog, and only then process defaults. A host Vertex or Google env key does not win over that catalog. It does not promise to inherit a model selected temporarily in the origin Pi TUI. Only bounded final assistant text and safe operational facts leave a live child session. Pi Workflows does not persist child prompts, reasoning, intermediate messages, tool arguments, tool results, or message history.
+The runner uses an explicit model and thinking override when supplied. Otherwise, it pins `settings.json` defaults, then the first model in the agent-dir `models.json` catalog, and only then process defaults. A host Vertex or Google env key does not win over that catalog. It does not promise to inherit a model selected temporarily in the origin Pi TUI. Only bounded final assistant text and safe operational facts leave a live child session. OMP Workflows does not persist child prompts, reasoning, intermediate messages, tool arguments, tool results, or message history.
 
-The workflow publishes aggregate and per-agent `pi-workflows.progress.v1` tracks under `agents/review/*` and `agents/verification/*`. Progress contains role, actual model when known, state, elapsed facts, and safe phases such as `thinking` or `tool: read`. The Pi widget shows the aggregate plus failed and active children within its ten-line limit. `piw` shows every durable child track and its samples. Both views use existing progress records, so no child workflow run or new persisted schema is needed.
+The workflow publishes aggregate and per-agent `pi-workflows.progress.v1` tracks under `agents/review/*` and `agents/verification/*`. Progress contains role, actual model when known, state, elapsed facts, and safe phases such as `thinking` or `tool: read`. The Pi widget shows the aggregate plus failed and active children within its ten-line limit. `ompw` shows every durable child track and its samples. Both views use existing progress records, so no child workflow run or new persisted schema is needed.
 
 The workflow sends the final report through a final notification with `triggerTurn: false`, so the origin model does not produce another response. The CLI, JSON or RPC stream, temporary prompt file, standard-output cap, and subprocess fallback are not retained. See [the Sanity Check plan](plans/2026-08-21-sanity-check-plan.md) for the selected implementation and test boundaries.
 
@@ -505,9 +510,9 @@ The first check runs immediately. Omit `repair` for observation-only monitoring.
 runtime queues that report as a workflow notification with `triggerTurn:
 false`, so it does not cause an assistant reply. A check can also provide
 independent progress tracks. The regular Pi model running the check observes
-the target and submits those facts. Pi Workflows validates the counts and
+the target and submits those facts. OMP Workflows validates the counts and
 calculates rates, confidence, and ETA deterministically. The target does not
-need a Pi Workflows dependency or reporting protocol.
+need a OMP Workflows dependency or reporting protocol.
 
 Intervals must be whole minutes from 1 through 1,440. When `stopWhen` is
 omitted, the monitor stops only after an explicit user request. `maxChecks`
@@ -626,7 +631,7 @@ possible. Defaults worth knowing:
 - If deferred activation fails, the queue stores a bounded safe error, releases the session
   reservation, and creates one deferred-turn intent for the initiating session. A workflow that
   reports `started` and then crashes before its first prompt follows the same path. The model gets
-  one factual follow-up after settlement and can make a new explicit start call. Pi Workflows does
+  one factual follow-up after settlement and can make a new explicit start call. OMP Workflows does
   not retry blindly.
 - An agent-issued `workflow cancel` aborts the current node and the current Pi turn, then creates
   one deferred-turn intent. The next natural workflow message resolves it when possible; otherwise
@@ -671,7 +676,7 @@ The engine is pi-agnostic. `WorkflowEngine` takes any `AgentStepExecutor`, so
 tests (and other hosts) can script agent steps:
 
 ```typescript
-import { WorkflowEngine, type AgentStepExecutor } from "@osolmaz/pi-workflows";
+import { WorkflowEngine, type AgentStepExecutor } from "@ericjuta/omp-workflows";
 
 const executor: AgentStepExecutor = {
   async runAgentStep(request) {

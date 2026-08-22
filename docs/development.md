@@ -1,6 +1,6 @@
 # Development guide
 
-This document covers the standards for working on pi-workflows itself. For
+This document covers the standards for working on omp-workflows itself. For
 authoring workflows, see [workflows.md](workflows.md).
 
 ## Layout and boundaries
@@ -11,7 +11,7 @@ src/builtins/    default workflows shipped at lowest discovery precedence
 src/controllers/ durable resources, queue, reconciliation, effects, child runs
 src/extension/   pi integration: commands, workflow tool, controller host, widget
 src/viewer/      standalone read-only views over runs and controller resources
-tui/             Rust piw viewer and live replay server
+tui/             Rust ompw viewer and live replay server
 ```
 
 The dependency direction is enforced by `slophammer.yml`. `src/workflows`
@@ -127,16 +127,16 @@ Nothing outside the temp directories is touched, and no real model is called.
 
 ## Publishing
 
-The npm package is `@osolmaz/pi-workflows`. The crates.io package is
-`pi-workflows`, and it installs the `piw` executable. Keep both package versions
+The npm package is `@ericjuta/omp-workflows`. The crates.io package is
+`omp-workflows`, and it installs the `ompw` executable. Keep both package versions
 in sync so one GitHub Release can publish both artifacts.
 
 Trusted publishing uses separate GitHub environments and workflows. Neither
 workflow stores a long-lived registry token:
 
-- npm: repository `osolmaz/pi-workflows`, workflow
+- npm: repository `ericjuta/omp-workflows`, workflow
   `.github/workflows/publish.yml`, environment `npm`;
-- crates.io: repository owner `osolmaz`, repository `pi-workflows`, workflow
+- crates.io: repository owner `ericjuta`, repository `omp-workflows`, workflow
   `publish-crate.yml`, environment `crates-io`.
 
 For later versions:

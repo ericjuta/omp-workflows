@@ -1,4 +1,4 @@
-import { compute, defineWorkflow, shell } from "@osolmaz/pi-workflows";
+import { compute, defineWorkflow, shell } from "@ericjuta/omp-workflows";
 
 type ShellInput = {
   text?: string;
@@ -12,7 +12,7 @@ export default defineWorkflow({
     echo_text: shell({
       exec: ({ input }) => ({
         command: "printf",
-        args: ["%s", (input as ShellInput).text ?? "hello from pi-workflows"],
+        args: ["%s", (input as ShellInput).text ?? "hello from omp-workflows"],
         timeoutMs: 10_000,
       }),
       parse: (result) => ({

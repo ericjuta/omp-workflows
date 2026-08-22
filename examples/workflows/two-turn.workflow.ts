@@ -1,4 +1,4 @@
-import { agent, compute, defineWorkflow } from "@osolmaz/pi-workflows";
+import { agent, compute, defineWorkflow } from "@ericjuta/omp-workflows";
 
 type TwoTurnInput = {
   topic?: string;

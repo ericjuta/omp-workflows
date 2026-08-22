@@ -109,11 +109,14 @@ describe.sequential("Pi package resource discovery", () => {
     expect(command(commands, "workflow")?.sourceInfo?.path).toBe(
       path.join(repoRoot, "src", "extension", "index.ts"),
     );
+    expect(command(commands, "hitl")?.sourceInfo?.path).toBe(
+      path.join(repoRoot, "src", "extension", "index.ts"),
+    );
     expect(command(commands, "skill:monitor")?.sourceInfo?.path).toBe(
       path.join(repoRoot, "skills", "monitor", "SKILL.md"),
     );
-    expect(command(commands, "skill:pi-workflows")?.sourceInfo?.path).toBe(
-      path.join(repoRoot, "skills", "pi-workflows", "SKILL.md"),
+    expect(command(commands, "skill:omp-workflows")?.sourceInfo?.path).toBe(
+      path.join(repoRoot, "skills", "omp-workflows", "SKILL.md"),
     );
     expect(command(commands, "skill:sanity-check")?.sourceInfo?.path).toBe(
       path.join(repoRoot, "skills", "sanity-check", "SKILL.md"),
@@ -138,7 +141,7 @@ describe.sequential("Pi package resource discovery", () => {
     const commands = await getCommands([], tempDir);
 
     expect(command(commands, "workflow")).toBeDefined();
-    expect(command(commands, "skill:pi-workflows")).toBeDefined();
+    expect(command(commands, "skill:omp-workflows")).toBeDefined();
     expect(command(commands, "skill:monitor")).toBeUndefined();
   });
 
@@ -154,7 +157,7 @@ describe.sequential("Pi package resource discovery", () => {
     const commands = await getCommands([], tempDir);
 
     expect(command(commands, "workflow")).toBeDefined();
-    expect(command(commands, "skill:pi-workflows")).toBeUndefined();
+    expect(command(commands, "skill:omp-workflows")).toBeUndefined();
     expect(command(commands, "skill:monitor")).toBeUndefined();
   });
 
@@ -170,7 +173,7 @@ describe.sequential("Pi package resource discovery", () => {
     const commands = await getCommands([], tempDir);
 
     expect(command(commands, "workflow")).toBeUndefined();
-    expect(command(commands, "skill:pi-workflows")).toBeDefined();
+    expect(command(commands, "skill:omp-workflows")).toBeDefined();
     expect(command(commands, "skill:monitor")).toBeDefined();
   });
 });

@@ -1,12 +1,12 @@
 ---
 name: monitor
-description: Use when the user asks to monitor, watch, track, or periodically check a running command, remote Job, CI run, deployment, publication, or other long-running objective. Starts the built-in Pi monitor workflow immediately in the current session and drives the objective autonomously, including routine recovery, until verified completion or a material blocker.
-compatibility: Requires pi-workflows and the built-in monitor workflow.
+description: Use when the user asks to monitor, watch, track, or periodically check a running command, remote Job, CI run, deployment, publication, or other long-running objective. Starts the built-in OMP monitor workflow immediately in the current session and drives the objective autonomously, including routine recovery, until verified completion or a material blocker.
+compatibility: Requires omp-workflows and the built-in monitor workflow.
 ---
 
 # Monitor
 
-Use the built-in Pi `monitor` workflow as an autopilot for the requested objective. Monitoring is not passive status polling. The agent must maintain nominal operation, repair recoverable failures, resume durable work, and continue until the complete objective is verified or a material blocker makes safe continuation impossible.
+Use the built-in OMP `monitor` workflow as an autopilot for the requested objective. Monitoring is not passive status polling. The agent must maintain nominal operation, repair recoverable failures, resume durable work, and continue until the complete objective is verified or a material blocker makes safe continuation impossible.
 
 A monitor request authorizes routine, bounded work needed to preserve and finish the stated objective, subject to the conversation and repository approval boundaries. Apply other skills as safety and operating instructions. Do not turn their normal checks into new approval requests when the monitored objective and an existing approval already cover the action. Monitoring does not authorize changing the objective, method, model, data source, production selection, or other consequential contract.
 
@@ -155,11 +155,11 @@ Each track uses `pi-workflows.progress.v1` and can include:
 
 Submit observed facts. The workflow computes rates, confidence, remaining work, and measured ETA from durable samples. Do not guess a count, rate, or ETA. A changed phase, total, unit, or lower completed count starts a new estimation epoch.
 
-For several concurrent processes, publish one stable track per process. The Pi widget and viewers show them separately and keep each ETA independent.
+For several concurrent processes, publish one stable track per process. The OMP widget and viewers show them separately and keep each ETA independent.
 
-Keep the monitored target independent of pi-workflows. Do not require a target Job or application to import pi-workflows, emit a Pi schema, write a Pi progress file, expose a Pi endpoint, create a progress store, or add a progress reader command solely for monitoring. Do not add provider-specific clients or credentials to pi-workflows. Target-specific observation belongs in the check task and is performed by the regular Pi model with already authorized tools.
+Keep the monitored target independent of omp-workflows. Do not require a target Job or application to import omp-workflows, emit a workflow-specific schema, write an OMP progress file, expose an OMP endpoint, create a progress store, or add a progress reader command solely for monitoring. Do not add provider-specific clients or credentials to omp-workflows. Target-specific observation belongs in the check task and is performed by the regular model with already authorized tools.
 
-Before proposing a new progress API, transport, schema, or persistence layer, prove that the model cannot observe the needed facts and publish them through the existing `workflow update` and `submit` path. If the target does not expose enough facts for ETA, report `ETA unavailable`. Application telemetry changes require separate scope and should expose normal operational facts rather than a Pi-specific protocol.
+Before proposing a new progress API, transport, schema, or persistence layer, prove that the model cannot observe the needed facts and publish them through the existing `workflow update` and `submit` path. If the target does not expose enough facts for ETA, report `ETA unavailable`. Application telemetry changes require separate scope and should expose normal operational facts rather than a workflow-specific protocol.
 
 ## Apply finish rules
 

@@ -1,11 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { HERDR_PLUGIN_ENTRYPOINT, HERDR_PLUGIN_ID } from "../herdr/constants.js";
-export const PIW_SHORTCUT = "ctrl+shift+r";
-export const PIW_SHORTCUT_HINT = "Ctrl+Shift+R piw";
+export const OMPW_SHORTCUT = "ctrl+shift+r";
+export const OMPW_SHORTCUT_HINT = "Ctrl+Shift+R ompw";
 
 const COMMAND_TIMEOUT_MS = 5_000;
 const MAX_JSON_CHARS = 1_000_000;
-const VIEWER_LABEL_PREFIX = "piw · ";
+const VIEWER_LABEL_PREFIX = "ompw · ";
 
 export const VIEWER_PLACEMENTS = ["right", "below", "left", "above", "tab", "workspace"] as const;
 
@@ -68,7 +68,7 @@ export class HerdrWorkflowViewer {
           reason: `Herdr plugin ${HERDR_PLUGIN_ID} is not linked and enabled.`,
         };
       }
-      await this.run("piw", ["--version"]);
+      await this.run("ompw", ["--version"]);
       return { available: true };
     } catch (error) {
       return { available: false, reason: errorMessage(error) };
@@ -245,7 +245,7 @@ export class HerdrWorkflowViewer {
     } catch (error) {
       return {
         paneId: opened.paneId,
-        warning: `The piw viewer opened, but its empty bootstrap tab could not be closed: ${errorMessage(error)}`,
+        warning: `The ompw viewer opened, but its empty bootstrap tab could not be closed: ${errorMessage(error)}`,
       };
     }
   }
@@ -350,7 +350,7 @@ function paneFromValue(value: unknown): HerdrPane {
 
 function workspaceLabel(workflowName: string): string {
   const compact = workflowName.replace(/[\r\n\t]+/gu, " ").trim();
-  return `piw · ${(compact || "workflow").slice(0, 60)}`;
+  return `ompw · ${(compact || "workflow").slice(0, 60)}`;
 }
 
 function requiredRecord(value: unknown, key: string, label: string): Record<string, unknown> {

@@ -3,9 +3,9 @@
 //! ANSI-stripped render output; the Rust port must reproduce both exactly.
 //! Regenerate fixtures with `npm run fixtures` and update both sides together.
 
-use piw::bundle::types::{DefinitionSnapshot, RunState};
-use piw::render::{render_graph_lines, GraphNodeStyle, GraphView};
-use piw::{format, layout};
+use omp_workflows::bundle::types::{DefinitionSnapshot, RunState};
+use omp_workflows::render::{render_graph_lines, GraphNodeStyle, GraphView};
+use omp_workflows::{format, layout};
 use serde_json::Value;
 use std::path::PathBuf;
 

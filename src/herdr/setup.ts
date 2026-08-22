@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { HERDR_PLUGIN_ID } from "./constants.js";
 
-const PACKAGE_NAME = "@osolmaz/pi-workflows";
+const PACKAGE_NAME = "@ericjuta/omp-workflows";
 const MANIFEST_NAME = "herdr-plugin.toml";
 const VIEWER_PATH = "plugins/herdr/viewer.mjs";
 const RESULT_SCHEMA = "pi-workflows.herdr-sync.v1" as const;
@@ -115,20 +115,20 @@ function preflightPackage(packageRoot: string): PluginPackage {
   try {
     root = fs.realpathSync(requestedRoot);
   } catch (error) {
-    throw new Error(`pi-workflows package root is missing: ${requestedRoot}`, { cause: error });
+    throw new Error(`omp-workflows package root is missing: ${requestedRoot}`, { cause: error });
   }
   if (!fs.statSync(root).isDirectory()) {
-    throw new Error(`pi-workflows package root is not a directory: ${requestedRoot}`);
+    throw new Error(`omp-workflows package root is not a directory: ${requestedRoot}`);
   }
   const packagePath = checkedRegularFile(root, "package.json");
   const manifestPath = checkedRegularFile(root, MANIFEST_NAME);
   const packageJson = parseJsonObject(fs.readFileSync(packagePath, "utf8"), "package.json");
   if (packageJson["name"] !== PACKAGE_NAME) {
-    throw new Error(`Unexpected pi-workflows package name in ${packagePath}.`);
+    throw new Error(`Unexpected omp-workflows package name in ${packagePath}.`);
   }
   const packageVersion = packageJson["version"];
   if (typeof packageVersion !== "string" || packageVersion.length === 0) {
-    throw new Error(`pi-workflows package version is missing in ${packagePath}.`);
+    throw new Error(`omp-workflows package version is missing in ${packagePath}.`);
   }
 
   const manifest = fs.readFileSync(manifestPath, "utf8");

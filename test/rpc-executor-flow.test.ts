@@ -15,18 +15,18 @@ function requestFor(nodeId: string, attemptId: string, accept?: AgentStepRequest
 }
 
 /** A fake pi that speaks the bridge protocol from a small script. */
-async function makeFakePi(
+async function makeFakeOmp(
   script: string,
-): Promise<{ dir: string; fakePi: string; stdinLog: string }> {
-  const dir = await makeTempDir("pi-rpc-flow");
-  const fakePi = path.join(dir, "fake-pi.sh");
+): Promise<{ dir: string; fakeOmp: string; stdinLog: string }> {
+  const dir = await makeTempDir("omp-rpc-flow");
+  const fakeOmp = path.join(dir, "fake-omp.sh");
   const stdinLog = path.join(dir, "stdin.log");
   await fs.writeFile(
-    fakePi,
+    fakeOmp,
     `#!/bin/sh\nSTDIN_LOG=${JSON.stringify(stdinLog)}\nexec 3<&0\ncat <&3 > "$STDIN_LOG" &\nCATPID=$!\n${script}\nwait $CATPID\n`,
     { encoding: "utf8", mode: 0o755 },
   );
-  return { dir, fakePi, stdinLog };
+  return { dir, fakeOmp, stdinLog };
 }
 
 function submissionLine(step: string, attempt: string, output: unknown): string {
@@ -45,13 +45,13 @@ function updateLine(step: string, attempt: string): string {
 
 describe("RpcStepExecutor submissions", () => {
   it("resolves a submission reported over stderr", async () => {
-    const { fakePi } = await makeFakePi(
+    const { fakeOmp } = await makeFakeOmp(
       `sleep 0.2\nprintf '${submissionLine("work", "a1", { done: true })}' >&2\nsleep 2\n`,
     );
     const executor = new RpcStepExecutor({
       cwd: "/tmp",
       registry: new HostProcessRegistry("/tmp"),
-      piBin: fakePi,
+      ompBin: fakeOmp,
     });
     const submission = await executor.runAgentStep(
       requestFor("work", "a1"),
@@ -62,13 +62,13 @@ describe("RpcStepExecutor submissions", () => {
   });
 
   it("reports a rejected update to the headless agent and keeps the step open", async () => {
-    const { fakePi, stdinLog } = await makeFakePi(
+    const { fakeOmp, stdinLog } = await makeFakeOmp(
       `sleep 0.2\nprintf '${updateLine("work", "a1")}' >&2\nfor _ in 1 2 3 4 5 6 7 8 9 10; do\n  grep -q 'Workflow update rejected' "$STDIN_LOG" && break\n  sleep 0.1\ndone\ngrep -q 'Workflow update rejected' "$STDIN_LOG" || exit 4\nprintf '${submissionLine("work", "a1", { done: true })}' >&2\nsleep 2\n`,
     );
     const executor = new RpcStepExecutor({
       cwd: "/tmp",
       registry: new HostProcessRegistry("/tmp"),
-      piBin: fakePi,
+      ompBin: fakeOmp,
     });
     const request = requestFor("work", "a1") as AgentStepRequest;
     request.publishUpdate = async () => {
@@ -86,14 +86,14 @@ describe("RpcStepExecutor submissions", () => {
   });
 
   it("re-prompts with the validation error and accepts a corrected submission", async () => {
-    const { fakePi, stdinLog } = await makeFakePi(
+    const { fakeOmp, stdinLog } = await makeFakeOmp(
       `sleep 0.2\nprintf '${submissionLine("work", "a1", { bad: 1 })}' >&2\nsleep 0.2\nprintf '${submissionLine("work", "a1", { good: 2 })}' >&2\nsleep 2\n`,
     );
     let calls = 0;
     const executor = new RpcStepExecutor({
       cwd: "/tmp",
       registry: new HostProcessRegistry("/tmp"),
-      piBin: fakePi,
+      ompBin: fakeOmp,
     });
     const submission = await executor.runAgentStep(
       requestFor("work", "a1", async (output) => {
@@ -113,7 +113,7 @@ describe("RpcStepExecutor submissions", () => {
   });
 
   it("returns a submission that arrived before the prompt was sent", async () => {
-    const { fakePi } = await makeFakePi(
+    const { fakeOmp } = await makeFakeOmp(
       `printf '${submissionLine("work", "a1", { early: true })}' >&2
 sleep 2
 `,
@@ -121,7 +121,7 @@ sleep 2
     const executor = new RpcStepExecutor({
       cwd: "/tmp",
       registry: new HostProcessRegistry("/tmp"),
-      piBin: fakePi,
+      ompBin: fakeOmp,
     });
     // The marker is already waiting when the step starts; the executor
     // resolves without waiting for more.
@@ -134,13 +134,13 @@ sleep 2
   });
 
   it("ignores malformed markers and submissions for other attempts", async () => {
-    const { fakePi } = await makeFakePi(
+    const { fakeOmp } = await makeFakeOmp(
       `sleep 0.2\nprintf 'PI_WORKFLOWS_STEP_SUBMISSION {broken\\n' >&2\nprintf '${submissionLine("work", "other", 1)}' >&2\nsleep 0.2\nprintf '${submissionLine("work", "a1", "mine")}' >&2\nsleep 2\n`,
     );
     const executor = new RpcStepExecutor({
       cwd: "/tmp",
       registry: new HostProcessRegistry("/tmp"),
-      piBin: fakePi,
+      ompBin: fakeOmp,
     });
     const submission = await executor.runAgentStep(
       requestFor("work", "a1"),
@@ -151,11 +151,11 @@ sleep 2
   });
 
   it("rejects the step when the abort signal fires", async () => {
-    const { fakePi } = await makeFakePi("sleep 30\n");
+    const { fakeOmp } = await makeFakeOmp("sleep 30\n");
     const executor = new RpcStepExecutor({
       cwd: "/tmp",
       registry: new HostProcessRegistry("/tmp"),
-      piBin: fakePi,
+      ompBin: fakeOmp,
     });
     const abort = new AbortController();
     const step = executor.runAgentStep(requestFor("work", "a1"), abort.signal);
@@ -166,11 +166,11 @@ sleep 2
   });
 
   it("rejects the step when the child exits mid-step", async () => {
-    const { fakePi } = await makeFakePi("exit 3\n");
+    const { fakeOmp } = await makeFakeOmp("exit 3\n");
     const executor = new RpcStepExecutor({
       cwd: "/tmp",
       registry: new HostProcessRegistry("/tmp"),
-      piBin: fakePi,
+      ompBin: fakeOmp,
     });
     await expect(
       executor.runAgentStep(requestFor("work", "a1"), new AbortController().signal),

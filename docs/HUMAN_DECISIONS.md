@@ -1,12 +1,12 @@
 # Human decisions
 
-pi-workflows needs a reusable way to stop at a proposal and wait for a person. The same decision must appear in Pi, OMP, and Telegram, and any of those channels must be able to continue the run. Workflows must be able to offer plain choices, choices that collect text, and choices that route back to planning.
+omp-workflows needs a reusable way to stop at a proposal and wait for a person. The same decision must appear in Pi, OMP, and Telegram, and any of those channels must be able to continue the run. Workflows must be able to offer plain choices, choices that collect text, and choices that route back to planning.
 
 This document defines that behavior. The implementation is tracked in the [human decision gates plan](plans/2026-08-19-human-decision-gates-plan.md).
 
 The [human decision presentation contract](HUMAN_DECISION_PRESENTATIONS.md)
-separates canonical subject data from the complete readable message shown in Pi
-and Telegram. Its [implementation plan](plans/2026-08-19-human-decision-presentations-plan.md)
+separates canonical subject data from the complete readable message shown in Pi,
+OMP, and Telegram. Its [implementation plan](plans/2026-08-19-human-decision-presentations-plan.md)
 preserves v1 records without rewriting them.
 
 ## Goals
@@ -33,13 +33,13 @@ import {
   humanDecision,
   humanDecisionEdge,
   textInput,
-} from "@osolmaz/pi-workflows";
+} from "@ericjuta/omp-workflows";
 
 const planChoices = defineHumanChoices({
-  continue: choice({ label: "Yes, continue" }),
-  stop: choice({ label: "No, stop" }),
+  continue: choice({ label: "Approve" }),
+  stop: choice({ label: "Stop" }),
   replan: choice({
-    label: "Replan",
+    label: "Return for changes",
     input: textInput({
       name: "instructions",
       prompt: "What should change?",
@@ -171,6 +171,12 @@ The accepted human sources are:
 
 The host assigns the source. A workflow or model cannot claim that an answer came from a person. OMP RPC accepts an answer only through its extension UI response protocol. JSON, print, and non-OMP RPC hosts can wait for Telegram, but they cannot manufacture a Pi or OMP UI answer.
 
+`/hitl` reopens the current session's pending protected decision. The model-facing
+`hitl` tool can request the same host-owned prompt, optionally for a named run,
+but neither surface accepts a choice or answer payload. The person still selects
+**Approve**, **Return for changes**, or another workflow-defined choice in the
+native Pi/OMP UI, so the accepted source remains verifiably human.
+
 ## Audiences and channel profiles
 
 Workflows address a logical audience:
@@ -210,7 +216,7 @@ OMP TUI renders the complete decision in a custom component. OMP RPC sends a nat
 
 The workflow never receives a bot token, user ID, chat ID, Telegram message ID, or Pi session detail. Channel profiles are private host configuration and are excluded from run presentation.
 
-pi-workflows keeps credential references in a separate private file. A Telegram credential points to an existing absolute mode-`0600` token file:
+omp-workflows keeps credential references in a separate private file. A Telegram credential points to an existing absolute mode-`0600` token file:
 
 ```json
 {
@@ -223,7 +229,7 @@ pi-workflows keeps credential references in a separate private file. A Telegram 
 }
 ```
 
-Run `/workflow-channel setup` in Pi TUI to verify and install a profile, `/workflow-channel status` to inspect whether profiles are active, and `/workflow-channel reload` after a private configuration change. Setup asks for the token file path, not the token. It updates mode-`0600` private files and does not copy the token. Token values never enter source files, workflow inputs, run bundles, logs, child environments, or model-visible tool results.
+Run `/workflow-channel setup` in an OMP or Pi TUI to verify and install a profile, `/workflow-channel status` to inspect whether profiles are active, and `/workflow-channel reload` after a private configuration change. Setup asks for the token file path, not the token. It updates mode-`0600` private files and does not copy the token. Token values never enter source files, workflow inputs, run bundles, logs, child environments, or model-visible tool results.
 
 The same Unix account can read a local credential file. This design prevents accidental propagation, not a hostile same-account process. A separately owned connector can implement the same channel interface later if stronger isolation becomes necessary.
 
@@ -243,13 +249,13 @@ interface HumanDecisionChannel {
 
 The context exposes a narrow answer submission function. It does not expose the workflow engine, arbitrary run mutation, or another channel's credentials.
 
-Channel delivery is independent from workflow routing. A failed Telegram delivery leaves the decision available in Pi. Audience policy decides whether one successful channel is enough or whether all configured channels are required before the request is considered delivered.
+Channel delivery is independent from workflow routing. A failed Telegram delivery leaves the decision available in the native OMP or Pi UI. Audience policy decides whether one successful channel is enough or whether all configured channels are required before the request is considered delivered.
 
 ### Pi channel
 
 The Pi channel uses documented extension UI APIs. It shows the request, lists the choices, and opens a text editor when the selected choice requires input. The host records the interactive session as the answer source.
 
-The waiting workflow remains durable before the UI opens. Closing Pi or cancelling the view cannot lose the checkpoint. A later Pi session can reopen pending decisions.
+The waiting workflow remains durable before the UI opens. Closing OMP or Pi, or cancelling the view, cannot lose the checkpoint. A later invocation of the owning project and interactive session can reopen the pending decision. Named local `/hitl` and `hitl` tool requests fail closed unless the project queue proves that same session ownership; Telegram acceptance uses its separately verified cross-session path and leaves continuation to the owner.
 
 ### Telegram channel
 
@@ -265,13 +271,13 @@ A choice without input submits from its button. A text choice such as `replan` w
 
 The adapter does not infer a choice from ordinary chat text. Callback payloads contain short opaque IDs because Telegram limits callback data. The private channel store maps each opaque ID to the full decision request.
 
-Telegram permits one long-polling consumer for a bot profile. Active Pi processes use a shared lease so one process owns polling and the others use the same private channel state. The lease owner can accept a verified reply, but only the Pi session that owns the waiting run creates its continuation. Active sessions inspect the durable accepted-answer fence and recover their own continuation. If no Pi process is running, Telegram delivery and reply collection resume when Pi starts again. Running an always-on service is outside this design.
+Telegram permits one long-polling consumer for a bot profile. Active host processes use a shared lease so one process owns polling and the others use the same private channel state. The lease owner can accept a verified reply, but only the interactive session that owns the waiting run creates its continuation. Active sessions inspect the durable accepted-answer fence and recover their own continuation. If no host process is running, Telegram delivery and reply collection resume when OMP or Pi starts again. Running an always-on service is outside this design.
 
-The Bot API does not provide an idempotency key for `sendMessage`. pi-workflows therefore writes a delivery intent before sending and never blindly retries an ambiguous send. A timed-out send is recorded as `unknown`; Pi remains available and an operator can request another delivery. This avoids automatic duplicate messages while keeping decision acceptance exactly once.
+The Bot API does not provide an idempotency key for `sendMessage`. omp-workflows therefore writes a delivery intent before sending and never blindly retries an ambiguous send. A timed-out send is recorded as `unknown`; the native host UI remains available and an operator can request another delivery. This avoids automatic duplicate messages while keeping decision acceptance exactly once.
 
 ## Durable decision records
 
-Decision records live next to workflow run bundles under the pi-workflows state root. They are additive and linked by run ID. A decision directory contains immutable records for:
+Decision records live next to workflow run bundles under the omp-workflows state root. They are additive and linked by run ID. A decision directory contains immutable records for:
 
 - the request;
 - channel delivery intents and results;
@@ -289,7 +295,7 @@ SQLite may index pending decisions and channel leases, but immutable decision fi
 
 ## Planning workflow composition
 
-pi-workflows keeps solution choice, documentation, and implementation in separate built-ins:
+omp-workflows keeps solution choice, documentation, and implementation in separate built-ins:
 
 - `autoplan` chooses a solution or revises one after new evidence.
 - `autodoc` records an already selected solution in the canonical specification and implementation plan. It does not choose a solution or implement it.
@@ -303,7 +309,7 @@ If later implementation, verification, review, comments, or CI evidence invalida
 
 ## Reusable plan approval workflow
 
-pi-workflows ships a typed `plan-approval` workflow built on `humanDecision()`. Its policy has three modes:
+omp-workflows ships a typed `plan-approval` workflow built on `humanDecision()`. Its policy has three modes:
 
 - `auto` asks the configured audience and continues after the configured deadline. It defaults to audience `operator` and 10 minutes.
 - `required` waits for an explicit human answer.
@@ -340,11 +346,11 @@ The engine remains independent from Pi, OMP, and Telegram. Core code owns decisi
 
 ## Contract impact
 
-- **Session state:** Pi records normal workflow messages and interactive decision results.
+- **Session state:** OMP and Pi record normal workflow messages and interactive decision results.
 - **Other persistent data:** decision requests and resolutions can carry a deadline, automatic response, and resolution provenance in the existing decision store. The private channel index remains rebuildable.
-- **Pi internals:** none.
-- **Public Pi API:** documented extension lifecycle and UI methods only.
-- **Public pi-workflows API:** typed human choices, `humanDecision().onTimeout`, `humanDecisionEdge()`, the channel interface, the plan approval policy, and the shared plan-change workflow.
+- **OMP/Pi internals:** none.
+- **Public host API:** documented extension lifecycle and UI methods only.
+- **Public omp-workflows API:** typed human choices, `humanDecision().onTimeout`, `humanDecisionEdge()`, the channel interface, the plan approval policy, and the shared plan-change workflow.
 
 ## Verification requirements
 
@@ -355,16 +361,16 @@ The implementation must test:
 - runtime choice and input validation;
 - legacy checkpoint continuation;
 - model-tool answer rejection;
-- Pi interactive answers;
+- OMP and Pi interactive answers;
 - Telegram callbacks and reply binding with a fake Bot API;
 - unauthorized users and chats;
 - stale request digests;
-- concurrent Pi and Telegram answers;
+- concurrent OMP/Pi and Telegram answers;
 - identical and conflicting retries;
 - crashes before and after answer acceptance and continuation creation;
 - ambiguous Telegram sends;
-- long-poll lease handoff between Pi processes;
+- long-poll lease handoff between host processes;
 - decision cancellation and expiry;
 - included `plan-approval` routes and bounded replan loops;
 - viewer redaction; and
-- real Pi execution without real Telegram credentials or network calls.
+- real OMP and Pi execution without real Telegram credentials or network calls.

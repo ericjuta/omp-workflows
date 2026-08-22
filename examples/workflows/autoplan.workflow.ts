@@ -1,1 +1,1 @@
-export { autoplanWorkflow as default } from "@osolmaz/pi-workflows/builtins";
+export { autoplanWorkflow as default } from "@ericjuta/omp-workflows/builtins";

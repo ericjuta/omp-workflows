@@ -37,7 +37,9 @@ export type WorkflowHostOptions = {
   /** Explicit run-bundle root; defaults to the shared runs directory. */
   runsDir?: string;
   registry?: HostProcessRegistry;
-  piArgs?: string[];
+  /** Explicit compatible RPC host binary; production defaults to `omp`. */
+  ompBin?: string;
+  ompArgs?: string[];
   /** Extra environment for headless children (for example a test provider). */
   env?: Record<string, string>;
   /** Poll interval for the claim loop; tests use a faster cadence. */
@@ -47,9 +49,9 @@ export type WorkflowHostOptions = {
 
 /**
  * The always-on runner: claims parked workflow runs and reconciles durable
- * controllers without a Pi session. Conversation nodes execute in headless
- * `pi --mode rpc` children. Everything the host does is recoverable: claims
- * expire, bundles fence stale writers, and child processes are reaped by
+ * controllers without an interactive session. Conversation nodes execute in
+ * headless `omp --mode rpc` children. Everything the host does is recoverable:
+ * claims expire, bundles fence stale writers, and child processes are reaped by
  * the next host.
  */
 export class WorkflowHost {
@@ -123,7 +125,8 @@ export class WorkflowHost {
           const executor = new RpcStepExecutor({
             cwd: this.options.cwd,
             registry: this.registry,
-            ...(this.options.piArgs !== undefined ? { piArgs: this.options.piArgs } : {}),
+            ...(this.options.ompBin !== undefined ? { ompBin: this.options.ompBin } : {}),
+            ...(this.options.ompArgs !== undefined ? { ompArgs: this.options.ompArgs } : {}),
             ...(this.options.env !== undefined ? { env: this.options.env } : {}),
           });
           const engine = new WorkflowEngine({ executor, store: this.childRunStore });
@@ -266,7 +269,8 @@ export class WorkflowHost {
     const executor = new RpcStepExecutor({
       cwd: this.options.cwd,
       registry: this.registry,
-      ...(this.options.piArgs !== undefined ? { piArgs: this.options.piArgs } : {}),
+      ...(this.options.ompBin !== undefined ? { ompBin: this.options.ompBin } : {}),
+      ...(this.options.ompArgs !== undefined ? { ompArgs: this.options.ompArgs } : {}),
       ...(this.options.env !== undefined ? { env: this.options.env } : {}),
     });
     const engine = new WorkflowEngine({
@@ -410,7 +414,7 @@ function hostLockPath(stateDir: string): string {
 
 /**
  * The advisory lock guards host-versus-host only: the embedded runner in a
- * Pi session does not take it. A second host refuses to start while the
+ * live interactive session does not take it. A second host refuses to start while the
  * recorded PID is alive.
  */
 function acquireHostLock(stateDir: string, runnerId: string, cwd: string): void {

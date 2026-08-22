@@ -7,11 +7,11 @@ import { makeTempDir } from "./helpers.js";
 
 describe("RpcStepExecutor spawn", () => {
   it("spawns children with extension isolation", async () => {
-    const dir = await makeTempDir("pi-rpc-args");
+    const dir = await makeTempDir("omp-rpc-args");
     const argsFile = path.join(dir, "argv.txt");
-    const fakePi = path.join(dir, "fake-pi.sh");
+    const fakeOmp = path.join(dir, "omp");
     await fs.writeFile(
-      fakePi,
+      fakeOmp,
       `#!/bin/sh
 printf '%s\n' "$@" > ${JSON.stringify(argsFile)}
 sleep 60
@@ -19,7 +19,11 @@ sleep 60
       { encoding: "utf8", mode: 0o755 },
     );
     const registry = new HostProcessRegistry(dir);
-    const executor = new RpcStepExecutor({ cwd: dir, registry, piBin: fakePi });
+    const executor = new RpcStepExecutor({
+      cwd: dir,
+      registry,
+      env: { PATH: `${dir}:${process.env.PATH ?? ""}` },
+    });
     const abort = new AbortController();
     const stepPromise = executor
       .runAgentStep(
@@ -46,13 +50,13 @@ sleep 60
     expect(bridgeIndex).toBeGreaterThan(noExtensionsIndex);
   });
 
-  it("fails the step instead of crashing when pi is missing", async () => {
-    const dir = await makeTempDir("pi-rpc-missing");
+  it("fails the step instead of crashing when omp is missing", async () => {
+    const dir = await makeTempDir("omp-rpc-missing");
     const registry = new HostProcessRegistry(dir);
     const executor = new RpcStepExecutor({
       cwd: dir,
       registry,
-      piBin: path.join(dir, "definitely-not-a-real-pi-binary"),
+      ompBin: path.join(dir, "definitely-not-a-real-omp-binary"),
     });
     const abort = new AbortController();
     const result = await executor
@@ -75,16 +79,16 @@ sleep 60
 
 describe("RpcStepExecutor.close", () => {
   it("kills the whole process group, including grandchildren", async () => {
-    const dir = await makeTempDir("pi-rpc-close");
-    // A fake pi that leaves a grandchild behind: the parent sleeps while a
-    // child sleeps in the same group.
-    const fakePi = path.join(dir, "fake-pi.sh");
-    await fs.writeFile(fakePi, "#!/bin/sh\nsleep 60 &\nexec sleep 60\n", {
+    const dir = await makeTempDir("omp-rpc-close");
+    // A fake OMP process that leaves a grandchild behind: the parent sleeps
+    // while a child sleeps in the same group.
+    const fakeOmp = path.join(dir, "fake-omp.sh");
+    await fs.writeFile(fakeOmp, "#!/bin/sh\nsleep 60 &\nexec sleep 60\n", {
       encoding: "utf8",
       mode: 0o755,
     });
     const registry = new HostProcessRegistry(dir);
-    const executor = new RpcStepExecutor({ cwd: dir, registry, piBin: fakePi });
+    const executor = new RpcStepExecutor({ cwd: dir, registry, ompBin: fakeOmp });
     const abort = new AbortController();
     const stepPromise = executor
       .runAgentStep(

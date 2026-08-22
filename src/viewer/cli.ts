@@ -16,16 +16,16 @@ import {
 } from "./render.js";
 import { runViewer } from "./tui.js";
 
-const USAGE = `pi-workflows — workflow runs and controller resources
+const USAGE = `omp-workflows — workflow runs and controller resources
 
 Usage:
-  pi-workflows view [runId] [--dir <runsDir>] [--once]
-  pi-workflows runs [--dir <runsDir>]
-  pi-workflows controllers [--controller-dir <dir>]
-  pi-workflows controller <controller> <key> [--controller-dir <dir>]
-  pi-workflows host [--project <dir>] [-- <extra pi args>]
-  pi-workflows herdr sync [--json]
-  pi-workflows herdr setup [--json]
+  omp-workflows view [runId] [--dir <runsDir>] [--once]
+  omp-workflows runs [--dir <runsDir>]
+  omp-workflows controllers [--controller-dir <dir>]
+  omp-workflows controller <controller> <key> [--controller-dir <dir>]
+  omp-workflows host [--project <dir>] [-- <extra agent args>]
+  omp-workflows herdr sync [--json]
+  omp-workflows herdr setup [--json]
 
 Commands:
   view          Open the live workflow TUI. With --once, print a snapshot.
@@ -54,7 +54,7 @@ export type CliArgs = {
   once: boolean;
   json: boolean;
   project?: string | undefined;
-  piArgs?: string[] | undefined;
+  ompArgs?: string[] | undefined;
 };
 
 export function parseCliArgs(argv: string[]): CliArgs {
@@ -66,7 +66,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
   let json = false;
   const positionals: string[] = [];
   let project: string | undefined;
-  const piArgs: string[] = [];
+  const ompArgs: string[] = [];
 
   while (args.length > 0) {
     const arg = args.shift() as string;
@@ -83,7 +83,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
     } else if (arg === "--help" || arg === "-h") {
       return { command: "help", dir, controllerDir, once, json };
     } else if (arg === "--") {
-      piArgs.push(...args.splice(0));
+      ompArgs.push(...args.splice(0));
     } else if (arg.startsWith("-")) {
       throw new Error(`Unknown argument: ${arg}`);
     } else {
@@ -96,7 +96,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
   }
 
   if (command === "host") {
-    return { command, dir, controllerDir, once, json, project, piArgs };
+    return { command, dir, controllerDir, once, json, project, ompArgs: ompArgs };
   }
 
   if (command === "controller") {
@@ -249,7 +249,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       return 0;
     }
     if (args.command === "host") {
-      return await runHost(args.project ?? process.cwd(), args.piArgs);
+      return await runHost(args.project ?? process.cwd(), args.ompArgs);
     }
     if (args.command === "herdr") {
       const result = syncHerdrPlugin(packageRoot());
@@ -272,11 +272,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 }
 
-async function runHost(project: string, piArgs: string[] | undefined): Promise<number> {
+async function runHost(project: string, ompArgs: string[] | undefined): Promise<number> {
   const { WorkflowHost } = await import("../host/runner.js");
   const host = new WorkflowHost({
     cwd: project,
-    piArgs: piArgs ?? [],
+    ompArgs: ompArgs ?? [],
     onLog: (message) => process.stdout.write(`[host] ${message}\n`),
   });
   await host.start();

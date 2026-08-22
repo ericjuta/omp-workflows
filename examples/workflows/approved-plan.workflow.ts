@@ -1,4 +1,4 @@
-import { compute, defineWorkflow, includeWorkflow } from "@osolmaz/pi-workflows";
+import { compute, defineWorkflow, includeWorkflow } from "@ericjuta/omp-workflows";
 import planChange from "../../src/builtins/plan-change.workflow.js";
 
 export default defineWorkflow({

@@ -1,12 +1,12 @@
-id = "osolmaz.pi-workflows"
-name = "pi-workflows"
+id = "ericjuta.omp-workflows"
+name = "omp-workflows"
 version = "0.12.0"
 min_herdr_version = "0.7.0"
-description = "Open the active pi-workflows run in piw from a managed Herdr pane."
+description = "Open the active OMP workflow run in ompw from a managed Herdr pane."
 platforms = ["linux", "macos"]
 
 [[panes]]
-id = "piw"
-title = "piw"
+id = "ompw"
+title = "ompw"
 placement = "split"
 command = ["node", "plugins/herdr/viewer.mjs"]

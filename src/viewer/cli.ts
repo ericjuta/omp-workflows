@@ -5,6 +5,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { SqliteControllerStore } from "../controllers/sqlite.js";
 import { projectControllerStoreBaseDir } from "../controllers/store.js";
 import { syncHerdrPlugin } from "../herdr/setup.js";
+import { readHostStatus, type HostStatus } from "../host/ownership.js";
+import {
+  installHostService,
+  restartHostService,
+  startHostService,
+  stopHostService,
+  uninstallHostService,
+} from "../host/service.js";
 import { sanitizeText } from "../render/ansi.js";
 import { validateHumanDecisionRequestIntegrity } from "../workflows/decision-presentation.js";
 import { HumanDecisionStore } from "../workflows/human-decision.js";
@@ -25,7 +33,7 @@ const USAGE = `omp-workflows — workflow runs and controller resources
   omp-workflows cancel <runId> [--dir <runsDir>]
   omp-workflows controllers [--controller-dir <dir>]
   omp-workflows controller <controller> <key> [--controller-dir <dir>]
-  omp-workflows host [--project <dir>] [-- <extra agent args>]
+  omp-workflows host [foreground|install|start|stop|restart|status|uninstall] [--project <dir>] [--json]
   omp-workflows herdr sync [--json]
   omp-workflows herdr setup [--json]
 
@@ -35,7 +43,7 @@ Commands:
   cancel        Abandon a waiting human decision without an interactive session.
   controllers   List durable controller resources.
   controller    Show one resource, its effects, child workflows, and events.
-  host          Run the always-on workflow host in the foreground.
+  host          Run, install, control, or inspect the project workflow host.
   herdr         Synchronize the bundled Herdr plugin. setup is an alias for sync.
 
 Options:
@@ -43,7 +51,7 @@ Options:
   --controller-dir <dir>  Controller directory (default: project-scoped local store)
   --once                   Render once without the interactive TUI
   --project <dir>          Project directory for the host (default: cwd)
-  --json                   Print a versioned JSON result for herdr sync
+  --json                   Print versioned JSON for host status or herdr sync
 `;
 
 export type CliArgs = {
@@ -52,6 +60,7 @@ export type CliArgs = {
   controllerName?: string;
   resourceKey?: string;
   herdrAction?: string;
+  hostAction?: string;
   dir: string;
   controllerDir: string;
   once: boolean;
@@ -94,12 +103,30 @@ export function parseCliArgs(argv: string[]): CliArgs {
     }
   }
 
-  if (command !== "herdr" && json) {
-    throw new Error("--json is available only for herdr sync");
+  const hostAction = command === "host" ? (positionals[0] ?? "foreground") : undefined;
+  if (json && command !== "herdr" && !(command === "host" && hostAction === "status")) {
+    throw new Error("--json is available only for host status or herdr sync");
   }
 
   if (command === "host") {
-    return { command, dir, controllerDir, once, json, project, ompArgs: ompArgs };
+    const actions = new Set([
+      "foreground",
+      "install",
+      "start",
+      "stop",
+      "restart",
+      "status",
+      "uninstall",
+    ]);
+    if (positionals.length > 1 || hostAction === undefined || !actions.has(hostAction)) {
+      throw new Error(
+        "host requires foreground, install, start, stop, restart, status, or uninstall",
+      );
+    }
+    if (hostAction !== "foreground" && ompArgs.length > 0) {
+      throw new Error("Extra agent arguments are available only for host foreground");
+    }
+    return { command, hostAction, dir, controllerDir, once, json, project, ompArgs };
   }
 
   if (command === "controller") {
@@ -295,7 +322,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       return 0;
     }
     if (args.command === "host") {
-      return await runHost(args.project ?? process.cwd(), args.ompArgs);
+      return await runHostCommand(args);
     }
     if (args.command === "herdr") {
       const result = syncHerdrPlugin(packageRoot());
@@ -325,6 +352,70 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 }
 
+async function runHostCommand(args: CliArgs): Promise<number> {
+  const project = args.project ?? process.cwd();
+  switch (args.hostAction ?? "foreground") {
+    case "foreground":
+      return await runHost(project, args.ompArgs);
+    case "install": {
+      const service = installHostService(project);
+      const status = readHostStatus(project);
+      process.stdout.write(
+        `Installed ${service.name} for ${service.project}; lingering is ${status.lingeringEnabled ? "enabled" : "disabled"}.\n`,
+      );
+      return 0;
+    }
+    case "start": {
+      const service = startHostService(project);
+      process.stdout.write(`Started ${service.name}.\n`);
+      return 0;
+    }
+    case "stop": {
+      const service = stopHostService(project);
+      process.stdout.write(`Stopped ${service.name}.\n`);
+      return 0;
+    }
+    case "restart": {
+      const service = restartHostService(project);
+      process.stdout.write(`Restarted ${service.name}.\n`);
+      return 0;
+    }
+    case "uninstall": {
+      const service = uninstallHostService(project);
+      process.stdout.write(`Uninstalled ${service.name}; durable workflow state was preserved.\n`);
+      return 0;
+    }
+    case "status": {
+      const status = readHostStatus(project);
+      if (args.json) {
+        process.stdout.write(`${JSON.stringify(status)}\n`);
+        return 0;
+      }
+      process.stdout.write(`${renderHostStatus(status)}\n`);
+      return 0;
+    }
+    default:
+      throw new Error(`Unknown host action: ${args.hostAction}`);
+  }
+}
+
+function renderHostStatus(status: HostStatus): string {
+  const counts = status.counts;
+  const lines = [
+    `Host: ${status.classification}`,
+    `Project digest: ${status.projectDigest}`,
+    `Lingering: ${status.lingeringEnabled ? "enabled" : "disabled"}`,
+    `Detail: ${status.detail}`,
+  ];
+  if (status.owner !== null && status.heartbeatAt !== null) {
+    lines.push(`Owner: pid ${status.owner.pid}, heartbeat ${status.heartbeatAt}`);
+  }
+  lines.push(
+    `Work: active=${counts.active} waiting=${counts.waiting} parked=${counts.parked} failed=${counts.failed} controllers=${counts.controllers}`,
+    `Pending decisions: ${status.pendingDecisionCount}`,
+  );
+  return lines.join("\n");
+}
 async function runHost(project: string, ompArgs: string[] | undefined): Promise<number> {
   const { WorkflowHost } = await import("../host/runner.js");
   const host = new WorkflowHost({
@@ -332,14 +423,16 @@ async function runHost(project: string, ompArgs: string[] | undefined): Promise<
     ompArgs: ompArgs ?? [],
     onLog: (message) => process.stdout.write(`[host] ${message}\n`),
   });
+  let shuttingDown = false;
+  const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    void host.stop().finally(() => process.exit(0));
+  };
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
   await host.start();
-  await new Promise<void>((resolve) => {
-    const shutdown = () => {
-      void host.stop().then(() => resolve());
-    };
-    process.once("SIGTERM", shutdown);
-    process.once("SIGINT", shutdown);
-  });
+  await new Promise<void>(() => undefined);
   return 0;
 }
 

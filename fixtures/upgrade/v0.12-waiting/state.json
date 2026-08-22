@@ -1,0 +1,18 @@
+{
+  "schema": "pi-workflows.run-state.v1",
+  "traceSeq": 2,
+  "runId": "v012-waiting-fixture",
+  "workflowName": "v012-upgrade-fixture",
+  "startedAt": "2026-08-01T00:00:00.000Z",
+  "updatedAt": "2026-08-01T00:00:01.000Z",
+  "status": "waiting",
+  "input": {
+    "fixture": "sanitized-v0.12"
+  },
+  "outputs": {},
+  "results": {},
+  "steps": [],
+  "currentNode": "review",
+  "waitingOn": "review",
+  "finalOutput": null
+}

@@ -342,13 +342,34 @@ Runs do not depend on the Pi window. Every `/workflow` run is claimed through a 
 
 Workflow reports use a durable session-addressed outbox. A report waits while its starting session is closed and is delivered only to that session when it opens again. Runs in the same directory do not broadcast messages to each other's conversations.
 
-For runs that must continue while Pi is closed, keep the standalone host running:
+For runs that must continue while an interactive session is closed, keep one
+project host running. The host is a single supervisor: install the user service
+or start the foreground process, then inspect it without starting another host.
+
+```bash
+omp-workflows host install --project /path/to/project
+omp-workflows host start --project /path/to/project
+omp-workflows host status --project /path/to/project --json
+journalctl --user -u omp-workflows-<project-digest>.service -f
+```
+
+`host status` classifies `healthy`, `stale`, `stopped`, or `inconsistent` and
+reports lingering without enabling it. A live duplicate host is rejected. Normal
+stop and uninstall remove only the generated user unit and transient lease;
+durable runs stay on disk. To roll back a published package, reinstall the
+previous exact npm and crate versions and point the user service at that CLI.
 
 ```bash
 omp-workflows host --project /path/to/project
 ```
 
-The host claims parked runs and reconciles controllers without an interactive session. Conversation nodes execute in headless `omp --mode rpc` children that expose the same `workflow` tool contract. It is a foreground process — stop it with Ctrl-C; a crashed host's leftovers are reaped by the next one. See [docs/workflows.md](docs/workflows.md#durable-runs-parking-and-resume) for the model and [docs/run-bundles.md](docs/run-bundles.md) for the on-disk rules.
+The host claims parked runs and reconciles controllers without an interactive
+session. Conversation nodes execute in headless `omp --mode rpc` children that
+expose the same `workflow` tool contract. A headless host can advertise pending
+protected decisions but cannot answer them. A later same-project OMP or Herdr
+session may adopt a detached decision through native HITL. See
+[docs/workflows.md](docs/workflows.md#durable-runs-parking-and-resume) for the
+model and [docs/run-bundles.md](docs/run-bundles.md) for the on-disk rules.
 
 ## Examples
 

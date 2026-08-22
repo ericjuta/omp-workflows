@@ -10,6 +10,7 @@ src/workflows/   finite graph engine: definitions, execution, bundles, loader
 src/builtins/    default workflows shipped at lowest discovery precedence
 src/controllers/ durable resources, queue, reconciliation, effects, child runs
 src/extension/   pi integration: commands, workflow tool, controller host, widget
+src/host/        project host, lease, user service, and health snapshot
 src/viewer/      standalone read-only views over runs and controller resources
 tui/             Rust ompw viewer and live replay server
 ```
@@ -83,7 +84,7 @@ timestamp index. Neither cache is persisted.
 
 ## Toolchain
 
-Node 22+, ESM, TypeScript strict (including `exactOptionalPropertyTypes`).
+Node 22.18+, ESM, TypeScript strict (including `exactOptionalPropertyTypes`).
 Formatting is oxfmt, linting is oxlint with warnings denied, tests are vitest
 with istanbul coverage. The single gate is:
 
@@ -129,7 +130,18 @@ Nothing outside the temp directories is touched, and no real model is called.
 
 The npm package is `@ericjuta/omp-workflows`. The crates.io package is
 `omp-workflows`, and it installs the `ompw` executable. Keep both package versions
-in sync so one GitHub Release can publish both artifacts.
+in sync so one GitHub Release can publish both artifacts. This release is `0.13.0`
+under immutable tag `v0.13.0`.
+
+`scripts/release-verify.mjs` is the source of truth. It locks synchronized
+versions, exact package inventories, build-once artifacts, checksums, and the
+release manifest. Local and GitHub release jobs consume that manifest.
+
+```bash
+npm run release:check
+npm run release:inventory
+npm run release:prepare -- --expected-main-commit HEAD
+```
 
 Trusted publishing uses separate GitHub environments and workflows. Neither
 workflow stores a long-lived registry token:
@@ -141,16 +153,19 @@ workflow stores a long-lived registry token:
 
 For later versions:
 
-1. Update `version` in `package.json`, `package-lock.json`, `tui/Cargo.toml`,
-   and `tui/Cargo.lock`, then merge that change into the default branch.
-2. Publish a GitHub Release whose tag is `v<version>`, such as `v0.2.0`.
+1. Update `version` in `package.json`, `package-lock.json`, `src/host/version.ts`,
+   `herdr-plugin.toml`, `tui/Cargo.toml`, and `tui/Cargo.lock`, then land that
+   change on `ericjuta/main`.
+2. Wait for every supported GitHub lane, then publish a GitHub Release whose tag
+   is `v<version>`, such as `v0.13.0`.
 3. Wait for the **Publish npm package** and **Publish crates.io package**
-   workflows to finish.
-4. Verify the version on both npm and crates.io.
+   workflows to finish. An already-published exact version is skipped only when
+   registry integrity matches the release manifest.
+4. Verify the version and checksums on both npm and crates.io.
 
-Both workflows reject mismatched tags, commits outside the default branch, and
-versions already present in their registry. They run their package checks
-before publishing.
+If trusted publisher authorization is unavailable, finish every other selected
+item and leave publication blocked with non-secret evidence. Previous exact
+package versions remain the manual rollback path.
 
 ## Conventions
 

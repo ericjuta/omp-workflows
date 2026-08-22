@@ -98,9 +98,19 @@ export function requireInventory(actual, expected, kind) {
   }
 }
 
+export function parseNpmPackResult(output) {
+  const parsed = JSON.parse(output);
+  if (Array.isArray(parsed)) return parsed[0];
+  if (parsed !== null && typeof parsed === "object") {
+    const results = Object.values(parsed);
+    if (results.length === 1) return results[0];
+  }
+  return undefined;
+}
+
 function npmDryRunInventory() {
   const output = run("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"]);
-  const result = JSON.parse(output)?.[0];
+  const result = parseNpmPackResult(output);
   if (!result || !Array.isArray(result.files))
     throw new Error("npm pack did not return a file inventory");
   return sorted(result.files.map((entry) => entry.path));
@@ -176,9 +186,9 @@ async function prepare() {
   for (const entry of await fsp.readdir(outDir)) {
     await fsp.rm(path.join(outDir, entry), { recursive: true, force: true });
   }
-  const packed = JSON.parse(
+  const packed = parseNpmPackResult(
     run("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", outDir]),
-  )?.[0];
+  );
   if (!packed?.filename) throw new Error("npm pack did not create an artifact");
   const npmPath = path.join(outDir, packed.filename);
 

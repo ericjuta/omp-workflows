@@ -3,9 +3,15 @@ name: Publish npm package
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Immutable release tag to publish
+        required: true
+        default: v0.13.0
 
 concurrency:
-  group: publish-${{ github.event.release.tag_name }}
+  group: publish-${{ github.event.release.tag_name || inputs.tag }}
   cancel-in-progress: false
 
 permissions:
@@ -13,7 +19,7 @@ permissions:
 
 jobs:
   publish:
-    if: ${{ !github.event.release.draft && !github.event.release.prerelease }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (!github.event.release.draft && !github.event.release.prerelease) }}
     runs-on: ubuntu-24.04
     environment: npm
     permissions:
@@ -23,7 +29,7 @@ jobs:
       - name: Checkout release
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
           fetch-depth: 0
 
       - name: Set up Node.js
@@ -35,8 +41,8 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Update npm
-        run: npm install --global npm@latest
+      - name: Install pinned npm
+        run: npm install --global npm@11.13.0
 
       - name: Install dependencies
         run: npm ci
@@ -44,11 +50,18 @@ jobs:
       - name: Prepare release artifacts
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           set -euo pipefail
           git fetch origin "$DEFAULT_BRANCH"
+          expected_main_commit="origin/${DEFAULT_BRANCH}"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            expected_main_commit="refs/tags/${RELEASE_TAG}"
+          fi
           node scripts/release-verify.mjs prepare \
-            --expected-main-commit "origin/${DEFAULT_BRANCH}" \
+            --tag "$RELEASE_TAG" \
+            --expected-main-commit "$expected_main_commit" \
             --out-dir release-artifacts
 
       - name: Publish

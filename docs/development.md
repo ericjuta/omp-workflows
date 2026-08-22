@@ -151,6 +151,11 @@ workflow stores a long-lived registry token:
 - crates.io: repository owner `ericjuta`, repository `omp-workflows`, workflow
   `publish-crate.yml`, environment `crates-io`.
 
+The npm workflow pins its npm major and accepts a manual immutable-tag input for
+recovery after a release-event infrastructure failure. Recovery still checks out
+and verifies the exact release tag; it never retags or publishes the current main
+branch in place of that tag.
+
 For later versions:
 
 1. Update `version` in `package.json`, `package-lock.json`, `src/host/version.ts`,

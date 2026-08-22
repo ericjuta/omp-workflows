@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -8,6 +9,7 @@ import {
   parseVerificationCommandPlan,
   repositoryId,
   reviewerCommand,
+  reviewerExecutableExists,
   reviewerHostEnv,
   reviewerLookupPath,
 } from "../src/builtins/autoimplement-command-batches.js";
@@ -93,6 +95,24 @@ describe("autoimplement command batch contracts", () => {
     expect(host.env.PATH).toContain(path.join(home, ".local", "bin"));
     expect(host.envUnset).toEqual(["GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_CLOUD_LOCATION"]);
     expect(JSON.parse(JSON.stringify(host)).envUnset).toEqual(host.envUnset);
+  });
+
+  it("finds pi-reviewer on the augmented reviewer lookup path", async () => {
+    const home = await makeTempDir("reviewer-home");
+    const localBin = path.join(home, ".local", "bin");
+    await fs.mkdir(localBin, { recursive: true });
+    expect(reviewerExecutableExists({ HOME: home, PATH: "" })).toBe(false);
+
+    await fs.writeFile(path.join(localBin, "pi-reviewer"), "#!/bin/sh\n");
+    expect(reviewerExecutableExists({ HOME: home, PATH: "" })).toBe(true);
+
+    const pathBin = await makeTempDir("reviewer-path");
+    await fs.writeFile(path.join(pathBin, "pi-reviewer"), "#!/bin/sh\n");
+    expect(reviewerExecutableExists({ HOME: "", PATH: pathBin })).toBe(true);
+
+    const windowsBin = await makeTempDir("reviewer-windows");
+    await fs.writeFile(path.join(windowsBin, "pi-reviewer.exe"), "binary");
+    expect(reviewerExecutableExists({ HOME: "", PATH: windowsBin })).toBe(true);
   });
 
   it("rejects duplicate or incomplete publication records", async () => {

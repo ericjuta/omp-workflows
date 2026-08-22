@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import {
   MAX_COMMAND_BATCH_ITEMS,
@@ -134,6 +135,19 @@ export function reviewerLookupPath(
     seen.add(extra);
   }
   return parts.join(path.delimiter);
+}
+
+/** Check if pi-reviewer exists in the augmented reviewer lookup PATH. */
+export function reviewerExecutableExists(source: NodeJS.ProcessEnv = process.env): boolean {
+  const lookup = reviewerLookupPath(source.PATH, source.HOME);
+  return lookup
+    .split(path.delimiter)
+    .filter((entry) => entry.length > 0)
+    .some(
+      (directory) =>
+        existsSync(path.join(directory, "pi-reviewer")) ||
+        existsSync(path.join(directory, "pi-reviewer.exe")),
+    );
 }
 
 /** Same executable; host env that OMP panes inject must not reach reviewer stdout. */

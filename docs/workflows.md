@@ -174,11 +174,14 @@ tools after the engine has closed that attempt.
 
 `timeoutMs` can be a finite positive number, `null`, or a function of the normal
 node context that returns either value. Omit it to use the 15-minute engine
-default. Set it to `null` to disable only the wall-clock deadline; cancellation,
-parking, claim loss, shutdown, and the node's abort signal still work. A timeout
-function can use prepared outputs to select a policy for this run. It has 30
-seconds to return. Computed timeout functions are runtime code, so definition
-snapshots omit them. Snapshots keep fixed numbers and fixed `null` values.
+default. The configured value is an idle budget: each successful `publishUpdate`
+resets the timer, while an absolute wall-clock cap of three times `timeoutMs`
+still bounds the attempt. Set it to `null` to disable both deadlines;
+cancellation, parking, claim loss, shutdown, and the node's abort signal still
+work. A timeout function can use prepared outputs to select a policy for this
+run. It has 30 seconds to return. Computed timeout functions are runtime code,
+so definition snapshots omit them. Snapshots keep fixed numbers and fixed
+`null` values.
 
 ### compute
 
@@ -420,9 +423,14 @@ The run records every mounted source and a digest of the resolved graph. Resume 
 
 The model sees one `workflow` tool. Its `action` field supports:
 
-- `list` for discovered workflow names and sources.
-- `start` with a workflow name or path and structured input.
-- `status` for the active run or a supplied run ID.
+- `list` for discovered workflow names and sources. Pass `kind: "runs"` for
+  paginated recent runs; the default definitions response also includes up to
+  eight recent live, waiting, or paused runs.
+- `start` with a workflow name or path and structured input. A matching live
+  run with the same normalized `task` or `problem` is rejected so callers can
+  inspect or resume it instead of starting duplicate work.
+- `status` for the active run or a supplied run ID. Without a run ID, it also
+  discovers cross-session live runs and asks for a run ID when several exist.
 - `pause`, `resume`, and `cancel` for the active run.
 - `answer` with ordinary checkpoint input and an optional run ID. Protected `humanDecision()` gates reject this model-facing action.
 - `update` for a non-completing update from the current agent attempt.
@@ -622,8 +630,11 @@ bundle before the engine moves on, which is what makes the live viewer
 possible. Defaults worth knowing:
 
 - Node timeout is 15 minutes unless the node sets `timeoutMs` to a positive
-  number or context callback. A timed-out node has outcome `timed_out` and can
-  be routed with `$result.outcome`. A timed-out agent node also aborts its Pi
+  number or context callback. The configured value is an idle budget: a
+  successful `publishUpdate` resets the remaining timer, up to a hard
+  wall-clock cap of `timeoutMs * 3` from node start. `timeoutMs: null`
+  disables the timer. A timed-out node has outcome `timed_out` and can be
+  routed with `$result.outcome`. A timed-out agent node also aborts its Pi
   turn, and late output for that attempt is rejected.
 - `maxSteps` (workflow-level, default 100) bounds loops built from cycles in
   the graph.

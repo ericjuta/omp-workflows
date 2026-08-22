@@ -112,6 +112,7 @@ export class WorkflowEngine {
         nodeId: string;
         attemptId: string;
         signal: AbortSignal;
+        onHeartbeat: () => void;
       }
     | undefined;
   private readonly updateLimiters = new Map<string, UpdateRateLimiter>();
@@ -160,7 +161,11 @@ export class WorkflowEngine {
         : `${active.state.runId}:${active.attemptId}:${idempotencyKey}`;
     if (receiptKey !== undefined) {
       const prior = this.updatePublications.get(receiptKey);
-      if (prior !== undefined) return await prior;
+      if (prior !== undefined) {
+        const receipt = await prior;
+        active.onHeartbeat();
+        return receipt;
+      }
     }
     const publication = (async () => {
       const update = validateWorkflowUpdate(input);
@@ -183,6 +188,7 @@ export class WorkflowEngine {
       } catch {
         // UI and logging observers never determine workflow correctness.
       }
+      active.onHeartbeat();
       return updateReceipt(record);
     })();
     if (receiptKey !== undefined) this.updatePublications.set(receiptKey, publication);
@@ -980,12 +986,39 @@ export class WorkflowEngine {
       if (abort.signal.aborted) {
         throw abortError(abort.signal);
       }
+      const wallDeadline = timeoutMs !== null ? Date.now() + timeoutMs * 3 : null;
+      const onHeartbeat = () => {
+        if (timeoutMs === null || wallDeadline === null || abort.signal.aborted) {
+          return;
+        }
+        if (timer !== undefined) {
+          clearTimeout(timer);
+          timer = undefined;
+        }
+        const remainingWall = wallDeadline - Date.now();
+        if (remainingWall <= 0) {
+          abort.abort(new TimeoutError(timeoutMs));
+          return;
+        }
+        const nextTimeout = Math.min(timeoutMs, remainingWall);
+        timer = setTimeout(() => {
+          abort.abort(new TimeoutError(timeoutMs));
+        }, nextTimeout);
+      };
+
       if (timeoutMs !== null) {
         timer = setTimeout(() => {
           abort.abort(new TimeoutError(timeoutMs));
         }, timeoutMs);
       }
-      this.activeAttempt = { runDir, state, nodeId, attemptId, signal: abort.signal };
+      this.activeAttempt = {
+        runDir,
+        state,
+        nodeId,
+        attemptId,
+        signal: abort.signal,
+        onHeartbeat,
+      };
       const dispatched = this.dispatchNode(
         workflow,
         state,

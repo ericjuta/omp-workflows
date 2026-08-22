@@ -21,6 +21,7 @@ import {
   parsePublishedRepositories,
   parseVerificationCommandPlan,
   reviewerCommand,
+  reviewerExecutableExists,
   type AutoimplementConcurrency,
   type CiInspectionBatch,
   type PublishedRepositories,
@@ -78,7 +79,7 @@ type RepositoryReviewAssessment = {
 };
 
 type ReviewAssessment = {
-  route: "critical" | "p2" | "clean" | "command_error";
+  route: "critical" | "p2" | "clean" | "command_error" | "blocked";
   invocationSucceeded: boolean;
   p0: ReviewFinding[];
   p1: ReviewFinding[];
@@ -534,8 +535,9 @@ type ReviewCommandSelection = {
 };
 
 type BatchExecution = {
-  route: "assess" | "repair";
+  route: "assess" | "repair" | "blocked";
   batch: CommandBatchResult;
+  reason?: string;
 };
 
 function concurrency(context: WorkflowNodeContext): AutoimplementConcurrency {
@@ -594,6 +596,12 @@ function reviewBatchNeedsRepair(result: CommandBatchResult): boolean {
   );
 }
 
+function reviewRepairAttempted(context: WorkflowNodeContext): boolean {
+  return context.state.steps.some(
+    (step) => step.nodeId === "repairReviewCommand" && step.outcome === "ok",
+  );
+}
+
 function latestOutput<T>(context: WorkflowNodeContext, nodeIds: string[]): T {
   for (let index = context.state.steps.length - 1; index >= 0; index -= 1) {
     const step = context.state.steps[index];
@@ -619,6 +627,23 @@ function currentPlan(context: WorkflowNodeContext): unknown {
   return (context.input as AutoimplementInput).plan;
 }
 
+function currentDocumentationReceipt(
+  context: WorkflowNodeContext,
+  plan: unknown,
+): AutodocInput["documentation"] | undefined {
+  const planDigest = digest(plan);
+  const request = context.input as AutoimplementInput;
+  if (request.documentation?.planDigest === planDigest) return request.documentation;
+  if (context.outputs.documentation === undefined) return undefined;
+  const documented = includedResult(autodocWorkflow, context.outputs.documentation);
+  if (documented.exit !== "ready" || documented.output.planDigest !== planDigest) return undefined;
+  return {
+    status: "current",
+    planDigest,
+    documents: documented.output.documentation.files,
+  };
+}
+
 function blockerChallenges(context: WorkflowNodeContext): BlockerChallenge[] {
   return context.state.steps
     .filter((step) => step.nodeId === "challengeBlocker" && step.outcome === "ok")
@@ -628,6 +653,8 @@ function blockerChallenges(context: WorkflowNodeContext): BlockerChallenge[] {
 function latestBlockerClaim(context: WorkflowNodeContext): unknown {
   const ids = [
     "classifyImplementation",
+    "runReview",
+    "assessReview",
     "classifyVerification",
     "repairReviewCommand",
     "inspectComments",
@@ -651,7 +678,10 @@ function recentWorkflowAttempts(context: WorkflowNodeContext): unknown[] {
   return context.state.steps.slice(-12).map((step) => ({
     nodeId: step.nodeId,
     outcome: step.outcome,
-    output: step.output,
+    error: step.error ?? null,
+    durationMs:
+      step.action?.durationMs ??
+      Math.max(0, Date.parse(step.finishedAt) - Date.parse(step.startedAt)),
   }));
 }
 
@@ -1036,7 +1066,9 @@ function parseReviewAssessment(value: unknown, context: WorkflowNodeContext): Re
   const lower = repositories.flatMap((entry) => entry.lower);
   const invocationSucceeded = repositories.every((entry) => entry.invocationSucceeded);
   const route = !invocationSucceeded
-    ? "command_error"
+    ? reviewRepairAttempted(context)
+      ? "blocked"
+      : "command_error"
     : p0.length + p1.length > 0
       ? "critical"
       : p2.length > 0
@@ -1095,6 +1127,8 @@ function latestBlockedReason(context: WorkflowNodeContext): { reason: string; ev
     "timeoutFallback",
     "challengeBlockerGuard",
     "challengeBlocker",
+    "runReview",
+    "assessReview",
     "finalizeDelivery",
     "inspectCi",
     "assessTrackedCi",
@@ -1138,10 +1172,12 @@ export const autoimplementWorkflow = defineWorkflow({
         const discovery = context.outputs.findPlan as ExistingPlanDiscovery | undefined;
         const plan = currentPlan(context);
         if (plan === undefined) throw new Error("autoimplement documentation is missing a plan");
+        const documentation = currentDocumentationReceipt(context, plan);
         return {
           task: request.task,
           plan,
           ...(request.repository !== undefined ? { repository: request.repository } : {}),
+          ...(documentation !== undefined ? { documentation } : {}),
           documents:
             request.documents ?? request.documentation?.documents ?? discovery?.documents ?? [],
           evidence: latestIssue(context),
@@ -1151,13 +1187,17 @@ export const autoimplementWorkflow = defineWorkflow({
     redesign: includeWorkflow(planChangeWorkflow, {
       input: (context): NormalizedPlanChangeInput => {
         const request = context.input as AutoimplementInput;
+        const plan = currentPlan(context);
+        const documentation =
+          plan === undefined ? undefined : currentDocumentationReceipt(context, plan);
         return {
           task: request.task,
           ...(request.scope !== undefined ? { scope: request.scope } : {}),
           ...(request.constraints !== undefined ? { constraints: request.constraints } : {}),
           ...(request.repository !== undefined ? { repository: request.repository } : {}),
           documents: request.documents ?? request.documentation?.documents ?? [],
-          ...(currentPlan(context) !== undefined ? { previousPlan: currentPlan(context) } : {}),
+          ...(plan !== undefined ? { previousPlan: plan } : {}),
+          ...(documentation !== undefined ? { documentation } : {}),
           newEvidence: latestIssue(context),
           approval: parsePlanApprovalPolicy(request.approval),
         };
@@ -1238,7 +1278,7 @@ export const autoimplementWorkflow = defineWorkflow({
       run: timeoutFallbackGuard,
     }),
     timeoutFallback: agent({
-      timeoutMs: 30 * 60_000,
+      timeoutMs: 8 * 60_000,
       statusDetail: "choosing a safe timeout fallback",
       prompt: (context) => {
         const request = context.input as AutoimplementInput;
@@ -1258,7 +1298,6 @@ export const autoimplementWorkflow = defineWorkflow({
           `Approved plan: ${JSON.stringify(currentPlan(context))}`,
           `Authorized scope: ${request.scope ?? request.repository ?? "the current repository and task"}`,
           `Timeout: ${JSON.stringify(guard)}`,
-          `Accepted outputs: ${JSON.stringify(context.outputs)}`,
           `Previous fallback results: ${JSON.stringify(previousFallbacks)}`,
           `Recent workflow attempts: ${JSON.stringify(recentWorkflowAttempts(context))}`,
         ].join("\n");
@@ -1481,7 +1520,14 @@ export const autoimplementWorkflow = defineWorkflow({
           selected.commands,
           concurrency(context).reviewer,
         );
-        return { route: reviewBatchNeedsRepair(batch) ? "repair" : "assess", batch };
+        if (!reviewBatchNeedsRepair(batch)) return { route: "assess", batch };
+        return reviewRepairAttempted(context)
+          ? {
+              route: "blocked",
+              batch,
+              reason: "pi-reviewer failed again after one reviewer repair attempt.",
+            }
+          : { route: "repair", batch };
       },
     }),
     repairReviewCommand: agent({
@@ -1495,8 +1541,15 @@ export const autoimplementWorkflow = defineWorkflow({
           `Failed batch: ${JSON.stringify(context.outputs.runReview)}`,
         ].join("\n"),
       expectedOutput: `{ "route": "retry" | "blocked", "reason": "diagnosis and action" }`,
-      validate: (value) =>
-        parseRoute(value, ["retry", "blocked"] as const, "reviewer command repair"),
+      validate: (value) => {
+        const result = parseRoute(value, ["retry", "blocked"] as const, "reviewer command repair");
+        if (result.route !== "retry" || reviewerExecutableExists()) return result;
+        return {
+          ...result,
+          route: "blocked" as const,
+          reason: "pi-reviewer remains unavailable on the reviewer lookup PATH after repair.",
+        };
+      },
     }),
     assessReview: agent({
       statusDetail: "assessing reviewer findings",
@@ -1864,7 +1917,14 @@ export const autoimplementWorkflow = defineWorkflow({
     },
     {
       from: "runReview",
-      switch: { on: "$.route", cases: { assess: "assessReview", repair: "repairReviewCommand" } },
+      switch: {
+        on: "$.route",
+        cases: {
+          assess: "assessReview",
+          repair: "repairReviewCommand",
+          blocked: "challengeBlockerGuard",
+        },
+      },
     },
     {
       from: "repairReviewCommand",
@@ -1879,6 +1939,7 @@ export const autoimplementWorkflow = defineWorkflow({
         on: "$.route",
         cases: {
           command_error: "repairReviewCommand",
+          blocked: "challengeBlockerGuard",
           critical: "triageReview",
           p2: "addressP2",
           clean: "inspectComments",

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import planChangeWorkflow from "../src/builtins/plan-change.workflow.js";
 import { WorkflowEngine } from "../src/workflows/engine.js";
+import { digest } from "../src/workflows/human-decision.js";
 import type { HumanDecisionRequest } from "../src/workflows/types.js";
 import { makeTempDir, ScriptedExecutor } from "./helpers.js";
 
@@ -83,6 +84,32 @@ describe("plan-change workflow", () => {
       approval: { provenance: "skipped" },
     });
     expect(result.state.steps.map((step) => step.nodeId)).not.toContain("approval/approve");
+  });
+
+  it("passes a matching current-document receipt to autodoc", async () => {
+    const plan = { summary: "documented plan", steps: ["one"] };
+    const result = await new WorkflowEngine({
+      outputRoot: await makeTempDir("plan-change-documented"),
+      executor: planningExecutor(plan),
+    }).run(planChangeWorkflow, {
+      task: "change the implementation",
+      documentation: {
+        status: "current",
+        planDigest: digest(plan),
+        documents: ["docs/current-plan.md"],
+      },
+      approval: { mode: "skip" },
+    });
+
+    expect(result.state.status).toBe("completed");
+    expect(result.state.finalOutput).toMatchObject({
+      status: "ready",
+      documents: ["docs/current-plan.md"],
+      documentation: { state: "current", files: ["docs/current-plan.md"] },
+    });
+    expect(result.state.steps.map((step) => step.nodeId)).not.toContain(
+      "documentation/inspectDocumentation",
+    );
   });
 
   it("uses the default autonomous policy for a new plan", async () => {

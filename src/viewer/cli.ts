@@ -16,6 +16,7 @@ import {
 import { sanitizeText } from "../render/ansi.js";
 import { validateHumanDecisionRequestIntegrity } from "../workflows/decision-presentation.js";
 import { HumanDecisionStore } from "../workflows/human-decision.js";
+import { selectRecentRuns } from "../workflows/run-discovery.js";
 import { listRunBundles, readRunBundle, workflowRunsBaseDir } from "../workflows/store.js";
 import type { HumanDecisionRequest } from "../workflows/types.js";
 import {
@@ -29,7 +30,7 @@ import { runViewer } from "./tui.js";
 
 const USAGE = `omp-workflows — workflow runs and controller resources
   omp-workflows view [runId] [--dir <runsDir>] [--once]
-  omp-workflows runs [--dir <runsDir>]
+  omp-workflows runs [--dir <runsDir>] [--project <dir>]
   omp-workflows cancel <runId> [--dir <runsDir>]
   omp-workflows controllers [--controller-dir <dir>]
   omp-workflows controller <controller> <key> [--controller-dir <dir>]
@@ -50,7 +51,7 @@ Options:
   --dir <runsDir>          Runs directory (default: ~/.pi/agent/workflows/runs)
   --controller-dir <dir>  Controller directory (default: project-scoped local store)
   --once                   Render once without the interactive TUI
-  --project <dir>          Project directory for the host (default: cwd)
+  --project <dir>          Project directory for run filtering or the host (default: cwd)
   --json                   Print versioned JSON for host status or herdr sync
 `;
 
@@ -176,23 +177,40 @@ export function parseCliArgs(argv: string[]): CliArgs {
     controllerDir,
     once,
     json,
+    ...(project !== undefined ? { project } : {}),
   };
 }
 
-async function printRuns(dir: string): Promise<void> {
+async function printRuns(dir: string, project?: string): Promise<void> {
   const bundles = await listRunBundles(dir);
-  if (bundles.length === 0) {
+  const selectedRunIds =
+    project === undefined
+      ? null
+      : new Set(selectRecentRuns(bundles, { project }).map((run) => run.runId));
+  const selectedBundles =
+    selectedRunIds === null
+      ? bundles
+      : bundles.filter((bundle) => selectedRunIds.has(bundle.state.runId));
+  if (selectedBundles.length === 0) {
     process.stdout.write(`No workflow runs found in ${dir}\n`);
-    return;
+  } else {
+    for (const bundle of selectedBundles) {
+      const state = bundle.state;
+      const title = state.runTitle ? ` — ${sanitizeText(state.runTitle)}` : "";
+      process.stdout.write(
+        `${statusLabel(state.status)}  ${sanitizeText(state.workflowName)}${title}  ${state.runId}  ${formatDuration(
+          runElapsedMs(state),
+        )}\n`,
+      );
+    }
   }
-  for (const bundle of bundles) {
-    const state = bundle.state;
-    const title = state.runTitle ? ` — ${sanitizeText(state.runTitle)}` : "";
-    process.stdout.write(
-      `${statusLabel(state.status)}  ${sanitizeText(state.workflowName)}${title}  ${state.runId}  ${formatDuration(
-        runElapsedMs(state),
-      )}\n`,
-    );
+  if (project !== undefined) {
+    const allLive = selectRecentRuns(bundles, { liveOnly: true });
+    const projectLive = selectRecentRuns(bundles, { liveOnly: true, project });
+    const outside = allLive.length - projectLive.length;
+    if (outside > 0) {
+      process.stdout.write(`${outside} other live run(s) outside this project.\n`);
+    }
   }
 }
 
@@ -306,7 +324,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       return 0;
     }
     if (args.command === "runs") {
-      await printRuns(args.dir);
+      await printRuns(args.dir, args.project);
       return 0;
     }
     if (args.command === "controllers") {

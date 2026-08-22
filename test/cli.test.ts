@@ -11,6 +11,7 @@ import {
   defineHumanChoices,
   humanDecision,
 } from "../src/workflows/human-decision.js";
+import { WorkflowRunStore } from "../src/workflows/store.js";
 import type { HumanDecisionRequest } from "../src/workflows/types.js";
 import { ScriptedExecutor, makeTempDir } from "./helpers.js";
 
@@ -24,6 +25,16 @@ async function makeCompletedRun(outputRoot: string): Promise<string> {
   const engine = new WorkflowEngine({ executor: new ScriptedExecutor(), outputRoot });
   const { state } = await engine.run(workflow, {});
   return state.runId;
+}
+async function bindRunToProject(outputRoot: string, runId: string, cwd: string): Promise<void> {
+  const store = new WorkflowRunStore(outputRoot);
+  await store.writeSessionBinding(store.runDirFor(runId), {
+    schema: "pi-workflows.session-binding.v1",
+    runId,
+    piSessionId: `session-${runId}`,
+    cwd,
+    boundAt: new Date().toISOString(),
+  });
 }
 
 const decisionChoices = defineHumanChoices({
@@ -136,6 +147,12 @@ describe("parseCliArgs", () => {
       json: false,
     });
   });
+  it("parses a project filter for runs", () => {
+    expect(parseCliArgs(["runs", "--project", "/repo"])).toMatchObject({
+      command: "runs",
+      project: "/repo",
+    });
+  });
 
   it("parses the cancel command with its run and runs directory", () => {
     expect(parseCliArgs(["cancel", "run-123", "--dir", "/tmp/runs"])).toMatchObject({
@@ -180,6 +197,20 @@ describe("omp-workflows CLI", () => {
     expect(await main(["runs", "--dir", outputRoot])).toBe(0);
     expect(stdout).toContain(runId);
     expect(stdout).toContain("completed");
+  });
+  it("filters runs by project and reports other live runs", async () => {
+    const outputRoot = await makeTempDir("pi-workflows-cli-project");
+    const project = await makeTempDir("pi-workflows-cli-project-cwd");
+    const otherProject = await makeTempDir("pi-workflows-cli-other-cwd");
+    const projectRunId = await makeCompletedRun(outputRoot);
+    const outsideRunId = await makeWaitingCheckpointRun(outputRoot);
+    await bindRunToProject(outputRoot, projectRunId, project);
+    await bindRunToProject(outputRoot, outsideRunId, otherProject);
+
+    expect(await main(["runs", "--dir", outputRoot, "--project", project])).toBe(0);
+    expect(stdout).toContain(projectRunId);
+    expect(stdout).not.toContain(outsideRunId);
+    expect(stdout).toContain("1 other live run(s) outside this project.");
   });
 
   it("reports an empty runs dir", async () => {

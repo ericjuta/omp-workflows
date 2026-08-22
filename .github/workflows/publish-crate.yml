@@ -61,7 +61,7 @@ jobs:
           set -euo pipefail
           state="$(node scripts/release-verify.mjs registry-state --manifest release-artifacts/release-manifest.json --kind crate)"
           if [[ "$state" == "matched" ]]; then
-            echo "crates.io 0.13.0 already matches the release manifest"
+            echo "crates.io 0.14.0 already matches the release manifest"
             exit 0
           fi
           if [[ "$state" != "absent" && "$state" != "unchecked" ]]; then

@@ -30,6 +30,7 @@ output. Do not guess those values from an earlier attempt.
 | User intent                      | Do this                                                                                                                                  |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | What workflows exist?            | `workflow` `list`. `/workflow` with no args is the same.                                                                                 |
+| What is already running?         | `workflow` `list` with `kind: "runs"`. Definitions list also includes a recent-runs row when live work exists.                           |
 | Run this / keep going on a graph | `start` once. Trailing text is `{ task: "..." }`. Use `--input-json` or structured `input` when the shape is not a task string.          |
 | How is it doing?                 | `status`. Prefer the known `runId`.                                                                                                      |
 | I want the conversation back     | `pause`. Escape already pauses; say so and wait for `resume`.                                                                            |
@@ -46,6 +47,20 @@ paused, cancelled, waiting at a checkpoint you will answer, or finished.
 Built-ins: `monitor`, `autoplan`, `autodoc`, `autoimplement`. Monitoring
 requests use the `monitor` skill and start `monitor` once. Do not hand-roll a
 poll loop around a workflow that already waits.
+
+## Durable-run cookbook
+
+Before starting durable work:
+
+1. Call `list` with `kind: "runs"` and compare workflow name plus the task or
+   problem, not only the current session widget.
+2. Inspect a matching `runId` with `status`. Resume the matching run when it is
+   paused in this session; do not create a replacement run.
+3. For durable monitors, use the project host and inspect the existing run.
+   Do not hand-roll polling or start another monitor because the originating
+   conversation is closed.
+4. Never start a second `autoimplement` for the same task. Continue, resume, or
+   wait for the existing run instead.
 
 ## Worked calls
 
@@ -116,7 +131,7 @@ Published CLI:
 
 ```text
 omp-workflows herdr sync
-omp-workflows runs
+omp-workflows runs [--project /path/to/project]
 omp-workflows view [runId]
 omp-workflows view [runId] --once
 omp-workflows cancel <runId> --dir <runsDir>

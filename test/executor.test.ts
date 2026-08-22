@@ -191,6 +191,7 @@ describe("ConversationStepExecutor", () => {
   it("nudges on settle up to the budget, then fails the step", async () => {
     const { executor, sent } = makeExecutor({ maxNudges: 2 });
     const stepPromise = executor.runAgentStep(makeRequest(), new AbortController().signal);
+    executor.setStreaming(true);
 
     expect(executor.handleAgentSettled()).toBe(true);
     expect(executor.handleAgentSettled()).toBe(true);
@@ -220,6 +221,7 @@ describe("ConversationStepExecutor", () => {
       },
     });
     const stepPromise = executor.runAgentStep(makeRequest(), new AbortController().signal);
+    executor.setStreaming(true);
     expect(executor.handleAgentSettled()).toBe(true);
     executor.hold();
     expect(executor.handleAgentSettled()).toBe(false);
@@ -229,6 +231,18 @@ describe("ConversationStepExecutor", () => {
     expect(deliveries.every((delivery) => delivery.contract.attemptId === "a1")).toBe(true);
     await executor.submit("step1", "a1", {});
     await stepPromise;
+  });
+
+  it("does not nudge or fail before the pending step sees an agent start", async () => {
+    const { executor, sent } = makeExecutor({ maxNudges: 0 });
+    const stepPromise = executor.runAgentStep(makeRequest(), new AbortController().signal);
+
+    expect(executor.handleAgentSettled()).toBe(false);
+    expect(sent).toHaveLength(1);
+    expect(executor.pendingStepId).toBe("step1");
+
+    await executor.submit("step1", "a1", {});
+    await expect(stepPromise).resolves.toEqual({ output: {} });
   });
 
   it("does nothing on settle without a pending step", () => {

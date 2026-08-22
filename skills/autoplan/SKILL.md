@@ -6,6 +6,11 @@ compatibility: Requires omp-workflows and the built-in autoplan workflow.
 
 # Autoplan
 
+## Durable-run cookbook
+
+1. Call `workflow` `list` with `kind: "runs"` before starting. Resume a matching live plan instead of starting another autoplan.
+2. Do not restart after timeout or cancel. Inspect the existing run and continue from its accepted plan output.
+
 ## Start the workflow
 
 Use the built-in `autoplan` workflow when it is available. At top level, list workflows, build the complete input, and start `autoplan` once.

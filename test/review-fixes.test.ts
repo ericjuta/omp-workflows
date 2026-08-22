@@ -619,6 +619,7 @@ describe("nudge delivery failures", () => {
       accept: async (output) => ({ ok: true, value: output }),
     };
     const stepPromise = executor.runAgentStep(request, new AbortController().signal);
+    executor.setStreaming(true);
     expect(executor.handleAgentSettled()).toBe(false);
     await expect(stepPromise).rejects.toThrow(/reminder delivery failed/);
     expect(executor.pendingStepId).toBeNull();

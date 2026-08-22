@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
 import { decision, decisionEdge } from "../src/workflows/decision.js";
 import { agent, checkpoint, compute, defineWorkflow, shell } from "../src/workflows/definition.js";
@@ -21,6 +22,14 @@ async function makeEngine(
     ...options,
   });
   return { engine, outputRoot, events };
+}
+
+function promiseGate() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
 describe("WorkflowEngine", () => {
@@ -325,6 +334,62 @@ describe("WorkflowEngine", () => {
 
     expect(state.status).toBe("timed_out");
     expect(state.results.ask?.outcome).toBe("timed_out");
+  });
+
+  // These tests exercise replacement of native timeout handles; Vitest fake timers
+  // prevent this suite's asynchronous run-store startup from reaching dispatch.
+  it("extends the idle timeout after a successful update", async () => {
+    const timeoutMs = 100;
+    const executor = new ScriptedExecutor().respond("ask", async (request) => {
+      if (request.publishUpdate === undefined) throw new Error("publishUpdate is unavailable");
+      await delay(60);
+      await request.publishUpdate({ type: "heartbeat", key: "job", data: { completed: 1 } });
+      await delay(60);
+      const accepted = await request.accept({ completed: true });
+      if (!accepted.ok) throw new Error(accepted.error);
+      return { output: accepted.value };
+    });
+    const workflow = defineWorkflow({
+      name: "heartbeat",
+      startAt: "ask",
+      nodes: { ask: agent({ prompt: () => "?", timeoutMs }) },
+      edges: [],
+    });
+    const { engine } = await makeEngine(executor);
+
+    const { state } = await engine.run(workflow, {});
+
+    expect(state.status).toBe("completed");
+    expect(state.finalOutput).toEqual({ completed: true });
+    expect(state.results.ask?.durationMs).toBeGreaterThanOrEqual(timeoutMs);
+  });
+
+  it("caps heartbeat extensions at three times the configured timeout", async () => {
+    const timeoutMs = 100;
+    const never = promiseGate();
+    const executor = new ScriptedExecutor().respond("ask", async (request) => {
+      if (request.publishUpdate === undefined) throw new Error("publishUpdate is unavailable");
+      for (let completed = 1; completed <= 8; completed += 1) {
+        await delay(30);
+        await request.publishUpdate({ type: "heartbeat", key: "job", data: { completed } });
+      }
+      await never.promise;
+      return { output: { completed: true } };
+    });
+    const workflow = defineWorkflow({
+      name: "heartbeat-wall-cap",
+      startAt: "ask",
+      nodes: { ask: agent({ prompt: () => "?", timeoutMs }) },
+      edges: [],
+    });
+    const { engine } = await makeEngine(executor);
+
+    const { state } = await engine.run(workflow, {});
+
+    expect(state.status).toBe("timed_out");
+    expect(state.results.ask?.outcome).toBe("timed_out");
+    expect(state.results.ask?.durationMs).toBeGreaterThanOrEqual(timeoutMs * 2.5);
+    expect(state.results.ask?.durationMs).toBeLessThan(timeoutMs * 5);
   });
 
   it("resolves a node timeout from run context", async () => {

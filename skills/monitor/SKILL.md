@@ -12,6 +12,8 @@ A monitor request authorizes routine, bounded work needed to preserve and finish
 
 ## Start the workflow without delay
 
+List live runs first. Resume a matching monitor instead of starting a second one for the same objective. Use the built-in in-process `sleep` node; do not replace it with `omp -e` or a hand poll.
+
 Build the complete input and start the workflow in the same turn. As soon as the user invokes this skill:
 
 1. Read the current conversation, active plan, repository instructions, and applicable compute, runtime, credential, deployment, or publication skills.

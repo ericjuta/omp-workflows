@@ -3660,4 +3660,75 @@ export default defineController({
     expect(harness.notifications.at(-1)).toContain("No controllers found");
     await harness.emitAsync("session_shutdown");
   });
+  it("discovers cross-session runs and rejects duplicate matching starts", async () => {
+    const cwd = await makeTempDir("pi-workflows-run-discovery");
+    const runsDir = await makeTempDir("pi-workflows-run-discovery-runs");
+    vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
+    try {
+      await writeEchoWorkflow(cwd);
+      const owner = makeHarness({
+        cwd,
+        sessionId: "run-owner",
+        respond: () => {},
+      });
+      const queued = await owner.tool.execute("start-observed", {
+        action: "start",
+        workflow: "mini",
+        input: { task: "  Observe   this run " },
+      });
+      await owner.emitAsync("agent_settled");
+      await waitFor(async () =>
+        (await listRunBundles(runsDir)).some(
+          (bundle) =>
+            bundle.state.runId === queued.details.runId && bundle.state.status === "running",
+        ),
+      );
+
+      const observer = makeHarness({
+        cwd,
+        sessionId: "run-observer",
+        respond: () => {},
+      });
+      const status = await observer.tool.execute("status-observed", { action: "status" });
+      expect(status.details).toMatchObject({
+        runId: queued.details.runId,
+        workflowName: "mini",
+        status: "running",
+      });
+
+      const definitions = await observer.tool.execute("list-definitions-observed", {
+        action: "list",
+      });
+      expect(definitions.details.recentRuns).toEqual([
+        expect.objectContaining({ runId: queued.details.runId, status: "running" }),
+      ]);
+      expect(definitions.content[0]?.text).toContain("recent live run");
+
+      const runs = await observer.tool.execute("list-runs-observed", {
+        action: "list",
+        kind: "runs",
+      });
+      expect(runs.details).toMatchObject({ total: 1, offset: 0, omitted: 0 });
+      expect(runs.details.runs).toEqual([
+        expect.objectContaining({ runId: queued.details.runId, workflowName: "mini" }),
+      ]);
+
+      await expect(
+        observer.tool.execute("start-duplicate", {
+          action: "start",
+          workflow: "mini",
+          input: { task: "observe this RUN" },
+        }),
+      ).rejects.toThrow(
+        new RegExp(
+          `Workflow mini is already running \\(run ${String(queued.details.runId)}\\)\\. Call status or resume that run instead of starting another\\.`,
+        ),
+      );
+
+      await owner.emitAsync("session_shutdown");
+      await observer.emitAsync("session_shutdown");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  }, 20_000);
 });

@@ -6,6 +6,12 @@ compatibility: Requires omp-workflows and the built-in autoimplement workflow.
 
 # Autoimplement
 
+## Durable-run cookbook
+
+1. Call `workflow` `list` with `kind: "runs"` before starting. Resume a matching live or paused run instead of starting another.
+2. Never start a second `autoimplement` for the same task after timeout, cancel, or a parked session. Inspect and resume the existing run.
+3. Missing `pi-reviewer` is a blocker after one repair attempt, not a redesign loop.
+
 ## Start the workflow
 
 Use the built-in `autoimplement` workflow when it is available. At top level, list workflows, build the complete input, and start `autoimplement` once. Do not start with a partial input and repair it in later turns.

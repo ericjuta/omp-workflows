@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import autodocWorkflow from "../src/builtins/autodoc.workflow.js";
 import { WorkflowEngine } from "../src/workflows/engine.js";
+import { digest } from "../src/workflows/human-decision.js";
 import { makeTempDir, ScriptedExecutor } from "./helpers.js";
 
 async function run(executor: ScriptedExecutor, input: unknown) {
@@ -17,6 +18,20 @@ describe("built-in autodoc", () => {
     expect(() => parse(null)).toThrow(/object/);
     expect(() => parse({ task: "" })).toThrow(/non-empty/);
     expect(() => parse({ task: "demo", documents: "bad" })).toThrow(/array/);
+    expect(() =>
+      parse({
+        task: "demo",
+        plan: {},
+        documentation: { status: "stale", planDigest: digest({}), documents: [] },
+      }),
+    ).toThrow(/status/);
+    expect(() =>
+      parse({
+        task: "demo",
+        plan: {},
+        documentation: { status: "current", planDigest: digest({}), documents: "bad" },
+      }),
+    ).toThrow(/array/);
 
     const validate = async (nodeId: string, value: unknown) => {
       const node = autodocWorkflow.nodes[nodeId];
@@ -64,6 +79,58 @@ describe("built-in autodoc", () => {
     await expect(validate("verifyDocumentation", { passed: "yes" })).rejects.toThrow(/boolean/);
   });
 
+  it("reuses current documentation when its plan digest matches", async () => {
+    const plan = { summary: "selected plan", steps: ["one"] };
+    const documents = ["docs/spec.md", "docs/plans/plan.md"];
+    const executor = new ScriptedExecutor();
+    const { state } = await run(executor, {
+      task: "implement feature",
+      plan,
+      documentation: {
+        status: "current",
+        planDigest: digest(plan),
+        documents,
+      },
+    });
+
+    expect(state.status).toBe("completed");
+    expect(state.steps.map((step) => step.nodeId)).toEqual(["prepare", "finalize"]);
+    expect(executor.requests).toEqual([]);
+    expect(state.finalOutput).toMatchObject({
+      status: "ready",
+      plan,
+      planDigest: digest(plan),
+      documentation: { state: "current", files: documents },
+      verification: { passed: true },
+    });
+  });
+
+  it("inspects documentation when the supplied plan digest does not match", async () => {
+    const plan = { summary: "selected plan" };
+    const executor = new ScriptedExecutor().respond("inspectDocumentation", {
+      output: {
+        route: "current",
+        files: ["docs/plan.md"],
+        reason: "Current for the selected plan.",
+        evidence: "checked",
+      },
+    });
+    const { state } = await run(executor, {
+      task: "implement feature",
+      plan,
+      documentation: {
+        status: "current",
+        planDigest: digest({ summary: "old plan" }),
+        documents: ["docs/old-plan.md"],
+      },
+    });
+
+    expect(state.status).toBe("completed");
+    expect(executor.requests.map((request) => request.contract.nodeId)).toEqual([
+      "inspectDocumentation",
+    ]);
+  });
+
   it("adopts current canonical documentation without a write step", async () => {
     const executor = new ScriptedExecutor().respond("inspectDocumentation", {
       output: {
@@ -83,6 +150,23 @@ describe("built-in autodoc", () => {
       status: "ready",
       documentation: { state: "current" },
     });
+  });
+
+  it("treats input.plan as the selected plan in the inspection prompt", async () => {
+    const plan = { summary: "selected plan", excluded: ["redesign"] };
+    const executor = new ScriptedExecutor().respond("inspectDocumentation", {
+      output: {
+        route: "current",
+        files: ["docs/plan.md"],
+        reason: "Current.",
+        evidence: "checked",
+      },
+    });
+    await run(executor, { task: "implement feature", plan });
+
+    const prompt = executor.requests[0]?.prompt ?? "";
+    expect(prompt).toContain("input.plan is the selected plan");
+    expect(prompt).toContain(JSON.stringify(plan));
   });
 
   it("updates and verifies stale documentation", async () => {
@@ -118,6 +202,49 @@ describe("built-in autodoc", () => {
       status: "ready",
       documentation: { state: "updated" },
       verification: { passed: true },
+    });
+  });
+
+  it("limits verification to named files and reports verification failures", async () => {
+    const files = ["docs/spec.md", "docs/plans/plan.md"];
+    const executor = new ScriptedExecutor()
+      .respond("inspectDocumentation", {
+        output: {
+          route: "update",
+          files,
+          reason: "The selected plan is stale.",
+          evidence: "stale digest",
+        },
+      })
+      .respond("updateDocumentation", {
+        output: {
+          updated: true,
+          files,
+          summary: "Recorded the selected plan.",
+        },
+      })
+      .respond("verifyDocumentation", {
+        output: {
+          passed: false,
+          commands: [{ command: "simpledoc check docs/spec.md", outcome: "failed" }],
+          failures: ["docs/spec.md has a broken link"],
+        },
+      });
+
+    const { state } = await run(executor, {
+      task: "implement feature",
+      plan: { steps: ["one"] },
+    });
+    const verifyRequest = executor.requests.find(
+      (request) => request.contract.nodeId === "verifyDocumentation",
+    );
+
+    expect(verifyRequest?.prompt).toContain(`Target documentation files: ${JSON.stringify(files)}`);
+    expect(verifyRequest?.prompt).toContain("not repo-wide SimpleDoc");
+    expect(state.finalOutput).toMatchObject({
+      status: "blocked",
+      reason: "docs/spec.md has a broken link",
+      evidence: ["docs/spec.md has a broken link"],
     });
   });
 

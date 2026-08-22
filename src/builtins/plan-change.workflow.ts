@@ -4,6 +4,7 @@ import {
   includeWorkflow,
   includedResult,
 } from "../workflows/definition.js";
+import { digest } from "../workflows/human-decision.js";
 import type { WorkflowNodeContext } from "../workflows/types.js";
 import autodocWorkflow, { type AutodocInput, type DocumentedPlan } from "./autodoc.workflow.js";
 import autoplanWorkflow, { type AutoplanInput, type AutoplanReady } from "./autoplan.workflow.js";
@@ -22,6 +23,11 @@ export type PlanChangeInput = {
   constraints?: string[];
   repository?: string;
   documents?: string[];
+  documentation?: {
+    status: "current";
+    planDigest: string;
+    documents: string[];
+  };
   previousPlan?: unknown;
   newEvidence?: unknown;
   approval?: PlanApprovalPolicy;
@@ -88,6 +94,7 @@ function parseInput(value: unknown): NormalizedPlanChangeInput {
       "constraints",
       "repository",
       "documents",
+      "documentation",
       "previousPlan",
       "newEvidence",
       "approval",
@@ -96,6 +103,26 @@ function parseInput(value: unknown): NormalizedPlanChangeInput {
   );
   const constraints = parseStringArray(input.constraints, "plan change constraints");
   const documents = parseStringArray(input.documents, "plan change documents");
+  let documentation: PlanChangeInput["documentation"];
+  if (input.documentation !== undefined) {
+    const receipt = requireRecord(input.documentation, "plan change documentation");
+    requireExactKeys(receipt, ["status", "planDigest", "documents"], "plan change documentation");
+    if (receipt.status !== "current") {
+      throw new Error('plan change documentation status must be "current"');
+    }
+    const receiptDocuments = parseStringArray(
+      receipt.documents,
+      "plan change documentation documents",
+    );
+    if (receiptDocuments === undefined) {
+      throw new Error("plan change documentation documents must be an array of strings");
+    }
+    documentation = {
+      status: "current",
+      planDigest: requireString(receipt.planDigest, "plan change documentation planDigest"),
+      documents: receiptDocuments,
+    };
+  }
   return {
     task: requireString(input.task, "plan change task"),
     ...(input.scope !== undefined
@@ -106,6 +133,7 @@ function parseInput(value: unknown): NormalizedPlanChangeInput {
       ? { repository: requireString(input.repository, "plan change repository") }
       : {}),
     ...(documents !== undefined ? { documents } : {}),
+    ...(documentation !== undefined ? { documentation } : {}),
     ...(input.previousPlan !== undefined ? { previousPlan: input.previousPlan } : {}),
     ...(input.newEvidence !== undefined ? { newEvidence: input.newEvidence } : {}),
     approval: parsePlanApprovalPolicy(input.approval),
@@ -212,11 +240,25 @@ export const planChangeWorkflow = defineWorkflow({
       input: (context): AutodocInput => {
         const request = context.input as NormalizedPlanChangeInput;
         const design = currentDesign(context);
+        const planDigest = digest(design.plan);
+        let documentation: AutodocInput["documentation"] =
+          request.documentation?.planDigest === planDigest ? request.documentation : undefined;
+        if (documentation === undefined && context.outputs.documentation !== undefined) {
+          const prior = includedResult(autodocWorkflow, context.outputs.documentation);
+          if (prior.exit === "ready" && prior.output.planDigest === planDigest) {
+            documentation = {
+              status: "current",
+              planDigest: prior.output.planDigest,
+              documents: prior.output.documentation.files,
+            };
+          }
+        }
         return {
           task: request.task,
           plan: design.plan,
           ...(request.repository !== undefined ? { repository: request.repository } : {}),
           ...(request.documents !== undefined ? { documents: request.documents } : {}),
+          ...(documentation !== undefined ? { documentation } : {}),
           evidence: request.newEvidence,
         };
       },

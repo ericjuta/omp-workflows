@@ -49,6 +49,12 @@ import { discoverWorkflows, resolveWorkflowRef } from "../workflows/loader.js";
 import { migrateLegacyWorkflowSources } from "../workflows/migrate-sources.js";
 import { appendProgressHistory, progressRecordsFromTrace } from "../workflows/progress.js";
 import {
+  findMatchingLiveRuns,
+  isLiveWorkflowStatus,
+  selectRecentRuns,
+  workflowTaskFingerprint,
+} from "../workflows/run-discovery.js";
+import {
   createRunId,
   listRunBundles,
   readLastTraceEvent,
@@ -390,6 +396,7 @@ function workflowStateSummary(state: WorkflowRunState): JsonObject {
     runId: state.runId,
     workflowName: state.workflowName,
     status: state.status,
+    ...(state.paused === true ? { paused: true } : {}),
     steps: state.steps.length,
     updates: (state.updates ?? []).map(({ data, ...record }) => ({
       ...record,
@@ -1711,16 +1718,96 @@ export default function piWorkflows(pi: ExtensionAPI) {
     level?: "info" | "warning" | "error";
   };
 
+  const listOpenHumanDecisions = async (outputRoot: string) => {
+    const store = new HumanDecisionStore(outputRoot);
+    const requests = await store.listRequests();
+    const now = Date.now();
+    const items = [];
+    for (const request of requests) {
+      if ((await store.readCancellation(request.decisionId)) !== null) continue;
+      if ((await store.readResolved(request.decisionId)) !== null) continue;
+      if ((await store.readContinuation(request.decisionId)) !== null) continue;
+      const bundle = await readRunBundle(path.join(outputRoot, request.runId));
+      const stale =
+        bundle === null || !isLiveWorkflowStatus(bundle.state.status, bundle.state.paused);
+      items.push({
+        decisionId: request.decisionId,
+        runId: request.runId,
+        title: request.title,
+        createdAt: request.createdAt,
+        ageMs: Math.max(0, now - Date.parse(request.createdAt)),
+        stale,
+      });
+    }
+    return items.sort((a, b) => b.ageMs - a.ageMs);
+  };
+
   const listWorkflowControl = async (
     ctx: ExtensionContext,
     offset = 0,
+    kind: "definitions" | "runs" = "definitions",
   ): Promise<WorkflowControlResult> => {
+    const outputRoot = new WorkflowRunStore().outputRoot;
+    const bundles = await listRunBundles(outputRoot);
+    const waitingDecisions = await listOpenHumanDecisions(outputRoot);
+    if (kind === "runs") {
+      if (!Number.isInteger(offset) || offset < 0 || offset > bundles.length) {
+        throw new Error(
+          `Workflow run list offset must be an integer from 0 through ${bundles.length}.`,
+        );
+      }
+      const allRuns = selectRecentRuns(bundles);
+      const page = allRuns.slice(offset, offset + 50);
+      const nextOffset = offset + page.length;
+      const omitted = allRuns.length - nextOffset;
+      const stale = waitingDecisions.filter((decision) => decision.stale).length;
+      return {
+        message:
+          page.length === 0
+            ? waitingDecisions.length === 0
+              ? "No workflow runs found."
+              : `${waitingDecisions.length} waiting human decision(s); cancel the owning run to prune a leftover decision.`
+            : [
+                `Workflow runs: ${page.map((run) => `${run.workflowName} ${run.status} (${run.runId})`).join(", ")}.`,
+                omitted > 0 ? `${omitted} more omitted; list again with offset ${nextOffset}.` : "",
+                waitingDecisions.length > 0
+                  ? `${waitingDecisions.length} waiting human decision(s)${stale > 0 ? `, ${stale} stale` : ""}. Cancel the owning run to prune a leftover decision.`
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" "),
+        details: {
+          runs: page as JsonObject[],
+          total: allRuns.length,
+          offset,
+          omitted,
+          ...(omitted > 0 ? { nextOffset } : {}),
+          ...(waitingDecisions.length > 0 ? { waitingDecisions } : {}),
+        },
+        ...(page.length === 0 ? { level: "warning" as const } : {}),
+      };
+    }
+
+    const recentRuns = selectRecentRuns(bundles, { limit: 8, liveOnly: true });
     const discovered = await discoverWorkflows({ cwd: ctx.cwd }, builtinWorkflowCatalog);
     if (discovered.length === 0) {
       return {
-        message:
+        message: [
           "No workflows found. Put *.workflow.ts files in .pi/workflows/ or ~/.pi/agent/workflows/, or pass a path.",
-        details: { workflows: [], total: 0, offset: 0 },
+          recentRuns.length > 0 ? `${recentRuns.length} recent live run(s) are available.` : "",
+          waitingDecisions.length > 0
+            ? `${waitingDecisions.length} waiting human decision(s) remain.`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" "),
+        details: {
+          workflows: [],
+          total: 0,
+          offset: 0,
+          ...(recentRuns.length > 0 ? { recentRuns: recentRuns as JsonObject[] } : {}),
+          ...(waitingDecisions.length > 0 ? { waitingDecisions } : {}),
+        },
         level: "warning",
       };
     }
@@ -1749,6 +1836,10 @@ export default function piWorkflows(pi: ExtensionAPI) {
       message: [
         `Workflows: ${names}.`,
         omitted > 0 ? `${omitted} more omitted; list again with offset ${nextOffset}.` : "",
+        recentRuns.length > 0 ? `${recentRuns.length} recent live run(s) are available.` : "",
+        waitingDecisions.length > 0
+          ? `${waitingDecisions.length} waiting human decision(s) remain.`
+          : "",
         "Run one with /workflow <name> [task].",
       ]
         .filter(Boolean)
@@ -1768,6 +1859,8 @@ export default function piWorkflows(pi: ExtensionAPI) {
         offset,
         omitted,
         ...(omitted > 0 ? { nextOffset } : {}),
+        ...(recentRuns.length > 0 ? { recentRuns: recentRuns as JsonObject[] } : {}),
+        ...(waitingDecisions.length > 0 ? { waitingDecisions } : {}),
       },
     };
   };
@@ -2022,11 +2115,43 @@ export default function piWorkflows(pi: ExtensionAPI) {
         ctx.sessionManager.getSessionId(),
       );
       if (queued !== undefined) return workflowLaunchStatus(queued);
+
+      const outputRoot = new WorkflowRunStore().outputRoot;
+      const liveRuns = selectRecentRuns(await listRunBundles(outputRoot), { liveOnly: true });
+      const waitingDecisions = await listOpenHumanDecisions(outputRoot);
+      if (liveRuns.length === 1) {
+        const run = liveRuns[0] as (typeof liveRuns)[number];
+        return {
+          message: `Workflow ${run.workflowName} is ${run.status} (run ${run.runId}).`,
+          details: {
+            ...(run as JsonObject),
+            ...(waitingDecisions.length > 0 ? { waitingDecisions } : {}),
+          },
+        };
+      }
+      if (liveRuns.length > 1) {
+        return {
+          message: `Several live workflow runs exist; call status with a runId: ${liveRuns.map((run) => run.runId).join(", ")}.`,
+          details: {
+            active: false,
+            runs: liveRuns as JsonObject[],
+            ...(waitingDecisions.length > 0 ? { waitingDecisions } : {}),
+          },
+          level: "warning",
+        };
+      }
     }
     if (state === undefined || state === null) {
+      const waitingDecisions = await listOpenHumanDecisions(new WorkflowRunStore().outputRoot);
       return {
-        message: "No workflow run is active or displayed.",
-        details: { active: false },
+        message:
+          waitingDecisions.length > 0
+            ? `No workflow run is active or displayed. ${waitingDecisions.length} waiting human decision(s) remain.`
+            : "No workflow run is active or displayed.",
+        details: {
+          active: false,
+          ...(waitingDecisions.length > 0 ? { waitingDecisions } : {}),
+        },
         level: "warning",
       };
     }
@@ -2576,6 +2701,21 @@ export default function piWorkflows(pi: ExtensionAPI) {
     const resolved = await resolveWorkflowRef(ref, { cwd: ctx.cwd }, builtinWorkflowCatalog);
     const workflow = resolved.definition;
     const workflowSource = resolved.source;
+    if (options.parentRunId === undefined) {
+      const matching = findMatchingLiveRuns(
+        await listRunBundles(new WorkflowRunStore().outputRoot),
+        {
+          workflowName: workflow.name,
+          fingerprint: workflowTaskFingerprint(input),
+        },
+      );
+      if (matching.length > 0) {
+        const existingRun = matching[0] as (typeof matching)[number];
+        throw new Error(
+          `Workflow ${workflow.name} is already ${existingRun.status} (run ${existingRun.runId}). Call status or resume that run instead of starting another.`,
+        );
+      }
+    }
     if (options.parentRunId !== undefined) {
       const parent = await readRunBundle(new WorkflowRunStore().runDirFor(options.parentRunId));
       if (parent === null || parent.state.status !== "waiting") {
@@ -3006,7 +3146,8 @@ export default function piWorkflows(pi: ExtensionAPI) {
     name: "workflow",
     label: "Workflow",
     description: [
-      "List, start, inspect, pause, resume, cancel, answer, update, or complete OMP workflow runs.",
+      'List discovered workflow definitions, or pass kind: "runs" to list recent runs and leftover waiting human decisions; start, inspect, pause, resume, cancel, answer, update, or complete OMP workflow runs.',
+      "Bare status can discover live runs from other sessions; pass a runId when several exist.",
       "When the user asks to monitor, watch, poll, or check something repeatedly, start the built-in monitor workflow with input keys task, everyMinutes, stopWhen, and optional maxChecks.",
       "Use update or submit only when a workflow step contract asks for it, and pass the exact step and attempt ids.",
       "Do not start repeated work without the user's request, and keep monitoring observation-only unless the user authorizes mutations.",
@@ -3017,7 +3158,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
       let control: WorkflowControlResult;
       switch (params.action) {
         case "list":
-          control = await listWorkflowControl(ctx, params.offset);
+          control = await listWorkflowControl(ctx, params.offset, params.kind);
           break;
         case "start":
           control = await queueToolLaunch(ctx, params.workflow, params.input ?? {});

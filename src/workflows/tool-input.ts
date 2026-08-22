@@ -4,6 +4,9 @@ import { parseToolInput } from "./tool-input-parse.js";
 const noExtraProperties = { additionalProperties: false } as const;
 
 const offsetSchema = Type.Integer({ minimum: 0, description: "Workflow list offset" });
+const listKindSchema = Type.Union([Type.Literal("definitions"), Type.Literal("runs")], {
+  description: "List discovered workflow definitions or recent workflow runs",
+});
 const workflowSchema = Type.String({
   description: "Discovered workflow name or workflow file path; required when action is start",
 });
@@ -33,7 +36,11 @@ const outputSchema = Type.Unknown({
 
 export const WorkflowActionSchemas = {
   list: Type.Object(
-    { action: Type.Literal("list"), offset: Type.Optional(offsetSchema) },
+    {
+      action: Type.Literal("list"),
+      kind: Type.Optional(listKindSchema),
+      offset: Type.Optional(offsetSchema),
+    },
     noExtraProperties,
   ),
   start: Type.Object(
@@ -93,6 +100,7 @@ export type WorkflowToolInput = Static<SchemaValue<typeof WorkflowActionSchemas>
 export type WorkflowSubmissionInput = Static<SchemaValue<typeof WorkflowSubmissionActionSchemas>>;
 
 const workflowToolFields = {
+  kind: Type.Optional(listKindSchema),
   offset: Type.Optional(offsetSchema),
   workflow: Type.Optional(workflowSchema),
   input: Type.Optional(inputSchema),

@@ -6,6 +6,12 @@ compatibility: Requires omp-workflows and the built-in autodoc workflow.
 
 # Autodoc
 
+## Durable-run cookbook
+
+1. Call `workflow` `list` with `kind: "runs"` before starting. Resume matching documentation work instead of starting another autodoc.
+2. When `input.plan` is present, that object is the selected plan. Do not hunt for a different one.
+3. Verify only the named documentation files. Do not fail the run because unrelated repo-wide SimpleDoc checks fail.
+
 ## Start the workflow
 
 Use the built-in `autodoc` workflow when it is available. At top level, list workflows, build the complete input, and start `autodoc` once. Do not manually duplicate stages owned by the workflow.

@@ -121,6 +121,14 @@ export {
   resolveArtifacts,
 } from "./artifacts.js";
 export {
+  findMatchingLiveRuns,
+  isLiveWorkflowStatus,
+  selectRecentRuns,
+  summarizeRunBundle,
+  workflowTaskFingerprint,
+  type WorkflowRunListItem,
+} from "./run-discovery.js";
+export {
   DEFINITION_SNAPSHOT_SCHEMA,
   RUN_BUNDLE_SCHEMA,
   RUN_STATE_SCHEMA,

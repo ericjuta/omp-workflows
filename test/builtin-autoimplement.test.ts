@@ -10,6 +10,7 @@ import { digest } from "../src/workflows/human-decision.js";
 import { makeTempDir, ScriptedExecutor } from "./helpers.js";
 
 let originalPath = "";
+let originalHome: string | undefined;
 let commandDir = "";
 let repository = "";
 
@@ -231,6 +232,7 @@ function addRedesignResponses(executor: ScriptedExecutor, plans: unknown[]): Scr
 
 beforeEach(async () => {
   originalPath = process.env.PATH ?? "";
+  originalHome = process.env.HOME;
   commandDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-workflows-commands-"));
   repository = await makeTempDir("pi-workflows-autoimplement-repo");
   await installCommand("pi-reviewer", "printf '%s\\n' \"review complete\"");
@@ -240,6 +242,8 @@ beforeEach(async () => {
 
 afterEach(() => {
   process.env.PATH = originalPath;
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
 });
 
 describe("built-in autoimplement", () => {
@@ -850,6 +854,33 @@ describe("built-in autoimplement", () => {
       approval: { mode: "auto", audience: "operator", timeoutMinutes: 10 },
     });
 
+    const documented = {
+      exit: "ready",
+      output: {
+        status: "ready",
+        task: "demo",
+        plan: { old: true },
+        planDigest: digest({ old: true }),
+        documentation: {
+          state: "current",
+          files: ["docs/current-plan.md"],
+          digests: {},
+          evidence: null,
+        },
+        verification: { passed: true },
+      },
+    };
+    expect(
+      await redesign.input(makeContext({ outputs: { documentation: documented } })),
+    ).toMatchObject({
+      previousPlan: { old: true },
+      documentation: {
+        status: "current",
+        planDigest: digest({ old: true }),
+        documents: ["docs/current-plan.md"],
+      },
+    });
+
     const adopt = autoimplementWorkflow.nodes.adoptPlan;
     if (adopt?.nodeType !== "compute") throw new Error("adoptPlan must be compute");
     const ready = {
@@ -1283,6 +1314,12 @@ describe("built-in autoimplement", () => {
     expect(edge("repairReviewCommand")).toMatchObject({
       switch: { cases: { blocked: "challengeBlockerGuard" } },
     });
+    expect(edge("runReview")).toMatchObject({
+      switch: { cases: { blocked: "challengeBlockerGuard" } },
+    });
+    expect(edge("assessReview")).toMatchObject({
+      switch: { cases: { blocked: "challengeBlockerGuard" } },
+    });
     expect(edge("routeInspectCommentsResult")).toMatchObject({
       switch: { cases: { blocked: "challengeBlockerGuard" } },
     });
@@ -1521,6 +1558,88 @@ describe("built-in autoimplement", () => {
     expect(state.steps.filter((step) => step.nodeId === "runReview")).toHaveLength(2);
   });
 
+  it("blocks a second reviewer command error after one repair", async () => {
+    const failedReview = {
+      repositories: [
+        {
+          id: repositoryId(repository),
+          invocationSucceeded: false,
+          p0: [],
+          p1: [],
+          p2: [],
+          lower: [],
+          reason: "The reviewer did not produce a valid review.",
+        },
+      ],
+      reason: "The reviewer command failed again.",
+    };
+    const executor = commonExecutor()
+      .respond("repairReviewCommand", {
+        output: { route: "retry", reason: "reviewer configuration repaired" },
+      })
+      .respond("assessReview", { output: failedReview }, { output: failedReview })
+      .respond("challengeBlocker", {
+        output: confirmedChallenge("The reviewer remains unavailable after one repair."),
+      });
+    const { state } = await new WorkflowEngine({
+      executor,
+      outputRoot: await makeTempDir("pi-workflows-autoimplement-review-repair-limit"),
+    }).run(autoimplementWorkflow, {
+      task: "implement demo",
+      ...documentedPlan({ steps: ["change code"] }),
+      repository,
+      merge: false,
+    });
+
+    expect(state.status).toBe("completed");
+    expect(state.finalOutput).toMatchObject({
+      status: "blocked",
+      reason: "The reviewer remains unavailable after one repair.",
+    });
+    expect(state.steps.filter((step) => step.nodeId === "repairReviewCommand")).toHaveLength(1);
+    expect(state.steps.filter((step) => step.nodeId === "runReview")).toHaveLength(2);
+    expect(state.steps.filter((step) => step.nodeId === "assessReview")).toHaveLength(2);
+    expect(
+      executor.requests.find((request) => request.contract.nodeId === "challengeBlocker")?.prompt,
+    ).toContain("The reviewer command failed again.");
+  });
+
+  it("blocks when pi-reviewer is still missing after one repair", async () => {
+    await fs.rm(path.join(commandDir, "pi-reviewer"));
+    process.env.PATH = commandDir;
+    process.env.HOME = "";
+    const executor = commonExecutor()
+      .respond("repairReviewCommand", {
+        output: { route: "retry", reason: "reviewer lookup repaired" },
+      })
+      .respond("challengeBlocker", {
+        output: confirmedChallenge("pi-reviewer is not installed."),
+      });
+    const { state } = await new WorkflowEngine({
+      executor,
+      outputRoot: await makeTempDir("pi-workflows-autoimplement-reviewer-missing"),
+    }).run(autoimplementWorkflow, {
+      task: "implement demo",
+      ...documentedPlan({ steps: ["change code"] }),
+      repository,
+      merge: false,
+    });
+
+    expect(state.status).toBe("completed");
+    expect(state.finalOutput).toMatchObject({
+      status: "blocked",
+      reason: "pi-reviewer is not installed.",
+    });
+    expect(state.steps.filter((step) => step.nodeId === "repairReviewCommand")).toHaveLength(1);
+    expect(state.steps.filter((step) => step.nodeId === "runReview")).toHaveLength(1);
+    expect(state.steps.find((step) => step.nodeId === "repairReviewCommand")?.output).toMatchObject(
+      {
+        route: "blocked",
+        reason: expect.stringContaining("remains unavailable"),
+      },
+    );
+  });
+
   it("runs independent repository reviews in a bounded parallel batch", async () => {
     const secondRepository = await makeTempDir("pi-workflows-autoimplement-second-repo");
     const eventsPath = path.join(commandDir, "review-events.log");
@@ -1728,9 +1847,24 @@ describe("built-in autoimplement", () => {
       state.steps.filter((step) => step.nodeId === "implement").map((step) => step.outcome),
     ).toEqual(["timed_out", "ok"]);
     expect(state.steps.filter((step) => step.nodeId === "timeoutFallback")).toHaveLength(1);
-    expect(
-      executor.requests.find((request) => request.contract.nodeId === "timeoutFallback")?.prompt,
-    ).toContain("read-only fallback step");
+    const fallbackPrompt = executor.requests.find(
+      (request) => request.contract.nodeId === "timeoutFallback",
+    )?.prompt;
+    expect(fallbackPrompt).toContain("read-only fallback step");
+    expect(fallbackPrompt).not.toContain("Accepted outputs:");
+    const recentAttemptsJson =
+      fallbackPrompt?.split("Recent workflow attempts: ")[1]?.split("\n")[0] ?? "[]";
+    const recentAttempts = JSON.parse(recentAttemptsJson) as Array<Record<string, unknown>>;
+    const timedOutAttempt = recentAttempts.find((attempt) => attempt.nodeId === "implement");
+    expect(timedOutAttempt).toMatchObject({
+      nodeId: "implement",
+      outcome: "timed_out",
+      error: "Timed out after 20ms",
+      durationMs: expect.any(Number),
+    });
+    expect(Object.keys(timedOutAttempt ?? {}).sort()).toEqual(
+      ["durationMs", "error", "nodeId", "outcome"].sort(),
+    );
   });
 
   it("stops after three timeout fallback executions", async () => {
@@ -1907,6 +2041,7 @@ describe("built-in autoimplement", () => {
 
   it("uses the eight-hour implementation timeout and shared outcome routes", () => {
     expect(autoimplementWorkflow.nodes.implement?.timeoutMs).toBe(8 * 60 * 60_000);
+    expect(autoimplementWorkflow.nodes.timeoutFallback?.timeoutMs).toBe(8 * 60_000);
     const compiled = compileWorkflowDefinition(autoimplementWorkflow);
     expect(
       compiled.edges.find((candidate) => candidate.from === "routeTimeoutFallback"),

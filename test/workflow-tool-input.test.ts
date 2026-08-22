@@ -18,6 +18,8 @@ describe("workflow tool input", () => {
   it.each([
     { action: "list" },
     { action: "list", offset: 10 },
+    { action: "list", kind: "definitions" },
+    { action: "list", kind: "runs", offset: 5 },
     { action: "start", workflow: "monitor" },
     { action: "start", workflow: "monitor", input: { task: "check" } },
     { action: "status" },
@@ -51,6 +53,7 @@ describe("workflow tool input", () => {
     { action: "submit", step: "check", attempt: "try-1" },
     { action: "pause", runId: "run-1" },
     { action: "list", workflow: "monitor" },
+    { action: "list", kind: "other" },
     {
       action: "update",
       step: "check",
@@ -100,6 +103,7 @@ describe("workflow tool input", () => {
       "action",
       "attempt",
       "input",
+      "kind",
       "offset",
       "output",
       "runId",

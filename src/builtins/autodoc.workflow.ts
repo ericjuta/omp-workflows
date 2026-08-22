@@ -8,6 +8,11 @@ export type AutodocInput = {
   repository?: string;
   documents?: string[];
   evidence?: unknown;
+  documentation?: {
+    status: "current";
+    planDigest: string;
+    documents: string[];
+  };
 };
 
 export type DocumentedPlan = {
@@ -80,6 +85,20 @@ function stringRecord(value: unknown, label: string): Record<string, string> {
 function parseInput(value: unknown): AutodocInput {
   const input = requireRecord(value, "autodoc input");
   const documents = input.documents;
+  let documentation: AutodocInput["documentation"] = undefined;
+  if (input.documentation !== undefined) {
+    const rawDoc = requireRecord(input.documentation, "autodoc documentation");
+    if (rawDoc.status !== "current") {
+      throw new Error('autodoc documentation status must be "current"');
+    }
+    const planDigest = requireString(rawDoc.planDigest, "autodoc documentation planDigest");
+    const docFiles = stringArray(rawDoc.documents, "autodoc documentation documents");
+    documentation = {
+      status: "current",
+      planDigest,
+      documents: docFiles,
+    };
+  }
   return {
     task: requireString(input.task, "autodoc task"),
     ...(input.plan !== undefined ? { plan: input.plan } : {}),
@@ -87,6 +106,7 @@ function parseInput(value: unknown): AutodocInput {
       ? { repository: requireString(input.repository, "autodoc repository") }
       : {}),
     ...(documents !== undefined ? { documents: stringArray(documents, "autodoc documents") } : {}),
+    ...(documentation !== undefined ? { documentation } : {}),
     ...(input.evidence !== undefined ? { evidence: input.evidence } : {}),
   };
 }
@@ -134,8 +154,30 @@ function currentPlan(context: WorkflowNodeContext): unknown {
 
 function blockedReason(context: WorkflowNodeContext): AutodocBlocked {
   const request = context.input as AutodocInput;
+  const verify = context.outputs.verifyDocumentation as Record<string, unknown> | undefined;
   const assessment = context.outputs.inspectDocumentation as DocumentationAssessment | undefined;
   const located = context.outputs.locatePlan as LocatedPlan | undefined;
+
+  if (verify !== undefined && verify.passed === false) {
+    let reason = "Documentation verification failed.";
+    if (Array.isArray(verify.failures) && verify.failures.length > 0) {
+      const failureList = verify.failures
+        .map((item) => (typeof item === "string" ? item.trim() : JSON.stringify(item)))
+        .filter((item) => item.length > 0);
+      if (failureList.length > 0) {
+        reason = failureList.join("; ");
+      }
+    } else if (typeof verify.reason === "string" && verify.reason.trim().length > 0) {
+      reason = verify.reason.trim();
+    }
+    return {
+      status: "blocked",
+      task: request.task,
+      reason,
+      evidence: verify.failures ?? verify,
+    };
+  }
+
   return {
     status: "blocked",
     task: request.task,
@@ -169,9 +211,19 @@ export const autodocWorkflow = defineWorkflow({
   },
   nodes: {
     prepare: compute({
-      run: ({ input }) => ({
-        route: (input as AutodocInput).plan === undefined ? "locate" : "inspect",
-      }),
+      run: ({ input }) => {
+        const request = input as AutodocInput;
+        if (request.plan === undefined) {
+          return { route: "locate" };
+        }
+        if (
+          request.documentation?.status === "current" &&
+          request.documentation.planDigest === digest(request.plan)
+        ) {
+          return { route: "ready" };
+        }
+        return { route: "inspect" };
+      },
     }),
     locatePlan: agent({
       statusDetail: "locating selected plan",
@@ -196,14 +248,16 @@ export const autodocWorkflow = defineWorkflow({
       statusDetail: "checking canonical documentation",
       prompt: (context) => {
         const request = context.input as AutodocInput;
+        const plan = currentPlan(context);
         return [
           "Check whether the selected plan is already recorded completely and accurately in the canonical specification and implementation plan.",
-          "Use repository guidance to choose canonical files. Do not redesign or implement anything.",
+          "When present, input.plan is the selected plan; do not redesign, re-plan, or implement anything.",
+          "Use repository guidance to choose canonical files.",
           "Choose current only when the documents already preserve the whole selected plan and its boundaries.",
           "Choose update when documents are missing or stale and can be corrected in scope.",
           "Choose blocked only when no safe canonical target exists or repository rules prohibit the documentation change.",
           `Task: ${request.task}`,
-          `Selected plan: ${JSON.stringify(currentPlan(context))}`,
+          `Selected plan: ${JSON.stringify(plan)}`,
           `Preferred documents: ${JSON.stringify(request.documents ?? [])}`,
         ].join("\n");
       },
@@ -242,13 +296,17 @@ export const autodocWorkflow = defineWorkflow({
     verifyDocumentation: agent({
       timeoutMs: 20 * 60_000,
       statusDetail: "verifying documentation",
-      prompt: ({ outputs }) =>
-        [
+      prompt: ({ outputs }) => {
+        const update = outputs.updateDocumentation as { files?: string[] } | undefined;
+        const files = Array.isArray(update?.files) ? update.files : [];
+        return [
           "Verify the changed canonical documentation.",
-          "Run the repository documentation, formatting, link, and privacy checks that apply.",
+          "Run formatting, link, and documentation checks only against the named changed files, not repo-wide SimpleDoc.",
           "Do not implement code.",
+          `Target documentation files: ${JSON.stringify(files)}`,
           `Documentation update: ${JSON.stringify(outputs.updateDocumentation)}`,
-        ].join("\n"),
+        ].join("\n");
+      },
       expectedOutput:
         '{ "passed": true | false, "commands": [{ "command": "exact command", "outcome": "result" }], "failures": ["failure"] }',
       validate: (value) => {
@@ -262,7 +320,9 @@ export const autodocWorkflow = defineWorkflow({
     finalize: compute({
       run: (context) => {
         const request = context.input as AutodocInput;
-        const assessment = context.outputs.inspectDocumentation as DocumentationAssessment;
+        const assessment = context.outputs.inspectDocumentation as
+          | DocumentationAssessment
+          | undefined;
         const plan = currentPlan(context);
         const updated = context.outputs.updateDocumentation;
         if (updated === undefined) {
@@ -273,9 +333,9 @@ export const autodocWorkflow = defineWorkflow({
             planDigest: digest(plan),
             documentation: {
               state: "current",
-              files: assessment.files,
-              digests: assessment.digests,
-              evidence: assessment.evidence,
+              files: assessment?.files ?? request.documentation?.documents ?? [],
+              digests: assessment?.digests ?? {},
+              evidence: assessment?.evidence ?? request.documentation ?? request.evidence ?? null,
             },
             verification: { passed: true, reason: "Canonical documentation was already current." },
           } satisfies DocumentedPlan;
@@ -301,7 +361,14 @@ export const autodocWorkflow = defineWorkflow({
   edges: [
     {
       from: "prepare",
-      switch: { on: "$.route", cases: { locate: "locatePlan", inspect: "inspectDocumentation" } },
+      switch: {
+        on: "$.route",
+        cases: {
+          locate: "locatePlan",
+          inspect: "inspectDocumentation",
+          ready: "finalize",
+        },
+      },
     },
     {
       from: "locatePlan",

@@ -47,6 +47,7 @@ type PendingStep = {
   resolve: (submission: AgentStepSubmission) => void;
   reject: (error: unknown) => void;
   nudgesSent: number;
+  seenAgentStart: boolean;
   /** Conversation mark taken when the prompt was first delivered. */
   mark: number | null;
   cleanup: () => void;
@@ -83,6 +84,9 @@ export class ConversationStepExecutor implements AgentStepExecutor {
   /** Track agent streaming state (wire to agent_start / agent_settled). */
   setStreaming(streaming: boolean): void {
     this.streaming = streaming;
+    if (streaming && this.pending) {
+      this.pending.seenAgentStart = true;
+    }
   }
 
   get pendingStepId(): string | null {
@@ -151,6 +155,7 @@ export class ConversationStepExecutor implements AgentStepExecutor {
         resolve,
         reject,
         nudgesSent: 0,
+        seenAgentStart: false,
         mark: this.conversation?.mark() ?? null,
         cleanup: () => signal.removeEventListener("abort", onAbort),
         cleared,
@@ -244,7 +249,7 @@ export class ConversationStepExecutor implements AgentStepExecutor {
    */
   handleAgentSettled(): boolean {
     const pending = this.pending;
-    if (!pending) {
+    if (!pending || !pending.seenAgentStart) {
       return false;
     }
     if (this.heldByUser) {

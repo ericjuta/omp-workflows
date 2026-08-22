@@ -687,14 +687,14 @@ function atomicWriteJson(filePath: string, value: unknown): void {
   ensurePrivateDirectory(path.dirname(filePath));
   const payload = jsonPayload(value);
   const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  const handle = fs.openSync(temporary, "wx", 0o600);
   try {
-    fs.writeFileSync(handle, payload, "utf8");
-    fs.fsyncSync(handle);
-  } finally {
-    fs.closeSync(handle);
-  }
-  try {
+    const handle = fs.openSync(temporary, "wx", 0o600);
+    try {
+      fs.writeFileSync(handle, payload, "utf8");
+      fs.fsyncSync(handle);
+    } finally {
+      fs.closeSync(handle);
+    }
     fs.renameSync(temporary, filePath);
     fs.chmodSync(filePath, 0o600);
   } catch (error) {

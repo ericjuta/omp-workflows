@@ -125,8 +125,8 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-WorkingDirectory=${unitQuote(service.project)}
-ExecStart=${unitQuote(executable)} ${unitQuote(cli)} host foreground --project ${unitQuote(service.project)}
+WorkingDirectory=${unitEscape(service.project)}
+ExecStart=${unitEscape(executable)} ${argumentQuote(cli)} host foreground --project ${argumentQuote(service.project)}
 Restart=on-failure
 RestartSec=5s
 KillSignal=SIGTERM
@@ -139,8 +139,18 @@ WantedBy=default.target
 `;
 }
 
-function unitQuote(value: string): string {
-  return JSON.stringify(value.replaceAll("%", "%%"));
+function unitEscape(value: string): string {
+  return value
+    .replaceAll("\\", "\\\\")
+    .replaceAll("%", "%%")
+    .replaceAll(" ", "\\x20")
+    .replaceAll("\t", "\\t")
+    .replaceAll("\r", "\\r")
+    .replaceAll("\n", "\\n");
+}
+
+function argumentQuote(value: string): string {
+  return `"${unitEscape(value).replaceAll('"', '\\"')}"`;
 }
 
 function writeIfChanged(filePath: string, content: string): void {

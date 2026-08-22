@@ -57,8 +57,8 @@ export function openSqliteDatabase(
     const { Database } = require("bun:sqlite") as { Database: BunSqliteDatabase };
     return wrapSqliteDatabase(new Database(filePath, { readonly: readOnly, create: !readOnly }));
   }
-  // DatabaseSync enforces this at the SQLite connection boundary; keep writes
-  // out of the wrapper rather than trying to classify arbitrary SQL strings.
+  // readOnly and the other connection options require Node 22.18.0, which is
+  // enforced by package.json. Keep read-only at the SQLite connection boundary.
   const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: NodeSqliteDatabase };
   return wrapSqliteDatabase(
     new DatabaseSync(filePath, {

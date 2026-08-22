@@ -115,6 +115,38 @@ export function parsePublishedRepositories(value: unknown): PublishedRepositorie
   return { repositories };
 }
 
+const REVIEWER_VERTEX_ENV = ["GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_CLOUD_LOCATION"] as const;
+
+/** Login-style bins OMP/systemd PATH often omits. Appended, never prepended. */
+export function reviewerLookupPath(
+  current: string | undefined,
+  home: string | undefined = process.env.HOME,
+): string {
+  const extras =
+    home === undefined || home === ""
+      ? []
+      : [path.join(home, ".local", "bin"), path.join(home, ".bun", "bin")];
+  const parts = (current ?? "").split(path.delimiter).filter((entry) => entry.length > 0);
+  const seen = new Set(parts);
+  for (const extra of extras) {
+    if (seen.has(extra)) continue;
+    parts.push(extra);
+    seen.add(extra);
+  }
+  return parts.join(path.delimiter);
+}
+
+/** Same executable; host env that OMP panes inject must not reach reviewer stdout. */
+export function reviewerHostEnv(source: NodeJS.ProcessEnv = process.env): {
+  env: NodeJS.ProcessEnv;
+  envUnset: string[];
+} {
+  return {
+    env: { PATH: reviewerLookupPath(source.PATH, source.HOME) },
+    envUnset: [...REVIEWER_VERTEX_ENV],
+  };
+}
+
 export function reviewerCommand(repository: PublishedRepository): CommandBatchItem {
   return {
     id: repository.id,
@@ -123,6 +155,7 @@ export function reviewerCommand(repository: PublishedRepository): CommandBatchIt
     cwd: repository.repository,
     timeoutMs: REVIEW_TIMEOUT_MS,
     maxOutputChars: AUTOIMPLEMENT_BATCH_MAX_OUTPUT_CHARS,
+    ...reviewerHostEnv(),
   };
 }
 

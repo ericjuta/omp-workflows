@@ -135,7 +135,7 @@ export type ShellActionExecution = {
   command: string;
   args?: string[];
   cwd?: string;
-  env?: Record<string, string>;
+  env?: Record<string, string | undefined>;
   stdin?: string;
   shell?: boolean | string;
   allowNonZeroExit?: boolean;

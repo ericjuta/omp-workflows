@@ -427,6 +427,14 @@ The internal plan-change workflow composes Autoplan, Autodoc, plan approval, and
 
 Autoimplement runs independent commands through bounded command batches. A batch is an ordinary function action that calls the public `runCommandBatch` helper. Each command has a stable ID, executable, arguments, absolute working directory, timeout, and output limit. Results stay separate and return in input order. One command uses the same path with concurrency one.
 
+### Command batch environment
+
+`runCommandBatch` items may include optional `env` and `envUnset`. `env` is a string map overlaid on the process environment. `envUnset` is an array of names deleted after that overlay so the child does not inherit them. Workflow snapshots cannot store `undefined`, so deletion uses `envUnset` rather than a missing map value. Items still cannot set `stdin`, `shell`, or `allowNonZeroExit`. Commands run without a shell.
+
+`runShellAction` applies the same overlay: an `undefined` override removes that key from the child environment.
+
+Autoimplement reviewer items keep executable `pi-reviewer` and arguments `--base <branch>`. They append `$HOME/.local/bin` and `$HOME/.bun/bin` to `PATH` when those directories are missing, and they unset `GOOGLE_GENAI_USE_VERTEXAI` and `GOOGLE_CLOUD_LOCATION` so a Vertex precedence warning cannot break the reviewer's JSON event collector.
+
 Autoimplement gives `implement` an eight-hour deadline. When a supported
 long-running agent node times out, one shared read-only fallback inspects the
 current repository, accepted workflow outputs, and relevant pull-request state.

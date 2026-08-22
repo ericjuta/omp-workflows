@@ -80,6 +80,12 @@ describe("command batch validation", () => {
     }
     expect(() =>
       validateCommandBatchRequest({
+        items: [{ ...valid, env: { FLAG: 1 } }],
+        maxConcurrency: 1,
+      }),
+    ).toThrow(/must be a string/);
+    expect(() =>
+      validateCommandBatchRequest({
         items: [{ ...valid, shell: true }],
         maxConcurrency: 1,
       }),
@@ -93,6 +99,25 @@ describe("command batch validation", () => {
 });
 
 describe("runCommandBatch", () => {
+  it("passes item env into the child and can unset inherited keys", async () => {
+    const cwd = await makeTempDir("command-batch-env");
+    const result = await runCommandBatch({
+      items: [
+        {
+          ...item(
+            "env",
+            cwd,
+            "process.stdout.write([process.env.BATCH_MARK, process.env.GOOGLE_GENAI_USE_VERTEXAI ?? 'unset'].join('|'))",
+          ),
+          env: { BATCH_MARK: "ok" },
+          envUnset: ["GOOGLE_GENAI_USE_VERTEXAI"],
+        },
+      ],
+      maxConcurrency: 1,
+    });
+    expect(result.items[0]?.stdout).toBe("ok|unset");
+  });
+
   it("returns results in input order while commands finish out of order", async () => {
     const cwd = await makeTempDir("command-batch-order");
     const result = await runCommandBatch({

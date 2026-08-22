@@ -124,6 +124,11 @@ Encoding rule, applied recursively to a persisted value:
   unwrap `$escaped` one level and resolve `$artifact` refs.
 - Everything else is stored inline. Small values are never externalized.
 
+Command-batch items that appear in `outputs.*`, `results.*.output`, or
+`steps[*].output` may include `env` (a string map) and `envUnset` (an array of
+names). Those fields are ordinary JSON and must not contain `undefined`
+values. `envUnset` is the persisted form of "delete this inherited key."
+
 Artifact rules:
 
 - `path` is bundle-relative; a reference never points outside the bundle.

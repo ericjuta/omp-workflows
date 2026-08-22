@@ -21,6 +21,19 @@ export function shellResultFromError(error: unknown): ShellActionResult | null {
   return null;
 }
 
+/** Overlay `overrides` on `base`. `undefined` values remove a key. */
+export function mergeChildEnv(
+  base: NodeJS.ProcessEnv,
+  overrides?: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base, ...overrides };
+  if (overrides === undefined) return env;
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) delete env[key];
+  }
+  return env;
+}
+
 export function renderShellCommand(command: string, args: string[]): string {
   const renderedArgs = args.map((arg) => JSON.stringify(arg)).join(" ");
   return renderedArgs.length > 0 ? `${command} ${renderedArgs}` : command;
@@ -76,7 +89,7 @@ export async function runShellAction(
   const useProcessGroup = process.platform !== "win32";
   const child = spawn(spec.command, args, {
     cwd,
-    env: { ...process.env, ...spec.env },
+    env: mergeChildEnv(process.env, spec.env),
     shell: spec.shell,
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,

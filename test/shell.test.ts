@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { TimeoutError } from "../src/workflows/errors.js";
-import { renderShellCommand, runShellAction } from "../src/workflows/shell.js";
+import { mergeChildEnv, renderShellCommand, runShellAction } from "../src/workflows/shell.js";
+
+describe("mergeChildEnv", () => {
+  it("deletes keys overridden as undefined", () => {
+    expect(
+      mergeChildEnv(
+        { KEEP: "1", GOOGLE_GENAI_USE_VERTEXAI: "true" },
+        { GOOGLE_GENAI_USE_VERTEXAI: undefined },
+      ),
+    ).toEqual({ KEEP: "1" });
+  });
+});
 
 describe("renderShellCommand", () => {
   it("renders commands with quoted args", () => {
@@ -19,6 +30,18 @@ describe("runShellAction", () => {
     expect(result.stderr).toBe("err");
     expect(result.exitCode).toBe(0);
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("omits overridden env keys that are undefined", async () => {
+    const result = await runShellAction({
+      command: process.execPath,
+      args: [
+        "-e",
+        "process.stdout.write(String(process.env.GOOGLE_GENAI_USE_VERTEXAI ?? 'unset'))",
+      ],
+      env: { GOOGLE_GENAI_USE_VERTEXAI: undefined },
+    });
+    expect(result.stdout).toBe("unset");
   });
 
   it("passes stdin, env, and cwd", async () => {

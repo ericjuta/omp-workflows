@@ -8,6 +8,8 @@ import {
   parseVerificationCommandPlan,
   repositoryId,
   reviewerCommand,
+  reviewerHostEnv,
+  reviewerLookupPath,
 } from "../src/builtins/autoimplement-command-batches.js";
 import { makeTempDir } from "./helpers.js";
 
@@ -68,7 +70,29 @@ describe("autoimplement command batch contracts", () => {
       cwd: path.resolve(repository),
       timeoutMs: 600_000,
       maxOutputChars: 1_000_000,
+      ...reviewerHostEnv(),
     });
+  });
+
+  it("keeps reviewer lookup on PATH and drops Vertex vars from the child env", () => {
+    const home = "/home/reviewer";
+    expect(reviewerLookupPath("/usr/bin", home)).toBe(
+      ["/usr/bin", path.join(home, ".local", "bin"), path.join(home, ".bun", "bin")].join(
+        path.delimiter,
+      ),
+    );
+    expect(reviewerLookupPath(path.join(home, ".local", "bin"), home)).toBe(
+      [path.join(home, ".local", "bin"), path.join(home, ".bun", "bin")].join(path.delimiter),
+    );
+    const host = reviewerHostEnv({
+      HOME: home,
+      PATH: "/usr/bin",
+      GOOGLE_GENAI_USE_VERTEXAI: "true",
+      GOOGLE_CLOUD_LOCATION: "us-east1",
+    });
+    expect(host.env.PATH).toContain(path.join(home, ".local", "bin"));
+    expect(host.envUnset).toEqual(["GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_CLOUD_LOCATION"]);
+    expect(JSON.parse(JSON.stringify(host)).envUnset).toEqual(host.envUnset);
   });
 
   it("rejects duplicate or incomplete publication records", async () => {

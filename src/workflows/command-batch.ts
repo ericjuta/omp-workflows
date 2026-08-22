@@ -19,6 +19,8 @@ export type CommandBatchItem = {
   cwd: string;
   timeoutMs: number;
   maxOutputChars: number;
+  env?: NodeJS.ProcessEnv;
+  envUnset?: string[];
 };
 
 export type CommandBatchRequest = {
@@ -136,7 +138,16 @@ export async function runCommandBatch(
 
 function validateItem(value: unknown, index: number): CommandBatchItem {
   const item = requireRecord(value, `command batch items[${index}]`);
-  const allowed = new Set(["id", "command", "args", "cwd", "timeoutMs", "maxOutputChars"]);
+  const allowed = new Set([
+    "id",
+    "command",
+    "args",
+    "cwd",
+    "timeoutMs",
+    "maxOutputChars",
+    "env",
+    "envUnset",
+  ]);
   for (const key of Object.keys(item)) {
     if (!allowed.has(key)) throw new Error(`command batch items[${index}].${key} is not supported`);
   }
@@ -162,7 +173,18 @@ function validateItem(value: unknown, index: number): CommandBatchItem {
     `command batch items[${index}].maxOutputChars`,
     MAX_COMMAND_BATCH_OUTPUT_CHARS,
   );
-  return { id, command, args: [...item.args] as string[], cwd, timeoutMs, maxOutputChars };
+  const env = optionalEnv(item.env, `command batch items[${index}].env`);
+  const envUnset = optionalStringArray(item.envUnset, `command batch items[${index}].envUnset`);
+  return {
+    id,
+    command,
+    args: [...item.args] as string[],
+    cwd,
+    timeoutMs,
+    maxOutputChars,
+    ...(env === undefined ? {} : { env }),
+    ...(envUnset === undefined ? {} : { envUnset }),
+  };
 }
 
 async function runItem(
@@ -177,6 +199,7 @@ async function runItem(
         cwd: item.cwd,
         timeoutMs: item.timeoutMs,
         maxOutputChars: item.maxOutputChars,
+        ...childEnv(item),
       },
       signal,
     );
@@ -251,4 +274,37 @@ function requireString(value: unknown, label: string): string {
     throw new Error(`${label} must be a non-empty string`);
   }
   return value;
+}
+
+function optionalEnv(value: unknown, label: string): NodeJS.ProcessEnv | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (key.length === 0) throw new Error(`${label} keys must be non-empty`);
+    if (typeof entry !== "string") {
+      throw new Error(`${label}.${key} must be a string`);
+    }
+    env[key] = entry;
+  }
+  return env;
+}
+
+function optionalStringArray(value: unknown, label: string): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || entry === "")) {
+    throw new Error(`${label} must be an array of non-empty strings`);
+  }
+  return [...value] as string[];
+}
+
+function childEnv(item: CommandBatchItem): { env?: NodeJS.ProcessEnv } {
+  if (item.env === undefined && (item.envUnset === undefined || item.envUnset.length === 0)) {
+    return {};
+  }
+  const env: NodeJS.ProcessEnv = item.env === undefined ? {} : { ...item.env };
+  for (const key of item.envUnset ?? []) env[key] = undefined;
+  return { env };
 }

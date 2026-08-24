@@ -1,6 +1,6 @@
 id = "ericjuta.omp-workflows"
 name = "omp-workflows"
-version = "0.14.1"
+version = "0.14.2"
 min_herdr_version = "0.7.0"
 description = "Open the active OMP workflow run in ompw from a managed Herdr pane."
 platforms = ["linux", "macos"]

@@ -16,16 +16,16 @@ function runVerifier(args: string[]) {
 }
 
 describe("release verifier", () => {
-  it("locks synchronized 0.14.1 metadata and Node 22.18", () => {
+  it("locks synchronized 0.14.2 metadata and Node 22.18", () => {
     const result = runVerifier(["check-metadata"]);
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({
-      package: "0.14.1",
-      packageLock: "0.14.1",
-      packageLockRoot: "0.14.1",
-      cargo: "0.14.1",
-      herdr: "0.14.1",
-      source: "0.14.1",
+      package: "0.14.2",
+      packageLock: "0.14.2",
+      packageLockRoot: "0.14.2",
+      cargo: "0.14.2",
+      herdr: "0.14.2",
+      source: "0.14.2",
     });
   });
 

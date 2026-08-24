@@ -5,7 +5,7 @@
 
 use crate::bundle::reader::read_declared_artifact_checked;
 use crate::protocol::{ClientMessage, PatchOp, ServerMessage, PROTOCOL_ID};
-use crate::source::RunSource;
+use crate::source::{RunEntry, RunSource};
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
@@ -104,8 +104,9 @@ pub async fn serve_on(listener: TcpListener, runs_dir: PathBuf) -> Result<()> {
         let (stream, _addr) = listener.accept().await?;
         let source = Arc::clone(&source);
         let updates_rx = updates_tx.subscribe();
+        let connection_updates_tx = updates_tx.clone();
         tokio::spawn(async move {
-            let _ = handle_connection(stream, source, updates_rx).await;
+            let _ = handle_connection(stream, source, connection_updates_tx, updates_rx).await;
         });
     }
 }
@@ -138,10 +139,82 @@ fn reject_browser_origins(
     }
     Ok(response)
 }
+#[derive(Clone, Copy)]
+struct WatchedRun {
+    revision: u64,
+    generation: u64,
+}
+
+type Snapshot = (u64, u64, serde_json::Value);
+
+async fn load_snapshot(
+    source: &Arc<Mutex<RunSource>>,
+    updates_tx: &broadcast::Sender<Update>,
+    run_id: &str,
+) -> Option<Snapshot> {
+    let mut listing_changed = false;
+    loop {
+        let (snapshot, candidate) = {
+            let source = source.lock().await;
+            let snapshot = source.get(run_id).and_then(|entry| {
+                let generation = source.metadata(run_id)?.generation;
+                Some((entry.revision, generation, entry.view()))
+            });
+            let candidate = if snapshot.is_none() {
+                source.load_candidate(run_id)
+            } else {
+                None
+            };
+            if listing_changed && (snapshot.is_some() || candidate.is_none()) {
+                let _ = updates_tx.send(Update::Runs(source.summaries()));
+            }
+            (snapshot, candidate)
+        };
+        if snapshot.is_some() {
+            return snapshot;
+        }
+        let candidate = candidate?;
+        let generation = candidate.generation;
+        let opened = tokio::task::spawn_blocking(move || RunEntry::open(&candidate.dir))
+            .await
+            .ok()
+            .and_then(Result::ok);
+        let Some(entry) = opened else {
+            if listing_changed {
+                let source = source.lock().await;
+                let _ = updates_tx.send(Update::Runs(source.summaries()));
+            }
+            return None;
+        };
+        let (snapshot, retry) = {
+            let mut source = source.lock().await;
+            let installed = source.install_loaded(run_id, generation, entry);
+            listing_changed |= match installed {
+                Some(changed_on_install) => changed_on_install,
+                None => source.scan(),
+            };
+            let snapshot = source.get(run_id).and_then(|entry| {
+                let generation = source.metadata(run_id)?.generation;
+                Some((entry.revision, generation, entry.view()))
+            });
+            let retry = installed.is_none()
+                && snapshot.is_none()
+                && source.load_candidate(run_id).is_some();
+            if listing_changed && !retry {
+                let _ = updates_tx.send(Update::Runs(source.summaries()));
+            }
+            (snapshot, retry)
+        };
+        if !retry {
+            return snapshot;
+        }
+    }
+}
 
 async fn handle_connection(
     stream: TcpStream,
     source: Arc<Mutex<RunSource>>,
+    updates_tx: broadcast::Sender<Update>,
     mut updates_rx: broadcast::Receiver<Update>,
 ) -> Result<()> {
     // Browsers always send an Origin header; native clients do not. The
@@ -159,10 +232,9 @@ async fn handle_connection(
     .await?;
 
     let mut watching_runs = false;
-    // Last revision sent per watched run; a broadcast patch is forwarded only
-    // when it is exactly the next revision, otherwise the client gets a fresh
-    // snapshot (covers the subscribe/broadcast race).
-    let mut watched: HashMap<String, u64> = HashMap::new();
+    // A key remains present while its run is unavailable. Available values pin both
+    // the run incarnation and the last revision delivered to this connection.
+    let mut watched: HashMap<String, Option<WatchedRun>> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -185,15 +257,16 @@ async fn handle_connection(
                         send(&mut sink, &ServerMessage::Runs { runs }).await?;
                     }
                     ClientMessage::WatchRun { run_id } => {
-                        // Snapshot under the lock, send after releasing it: a
-                        // slow client must not stall the refresh loop.
-                        let snapshot = {
-                            let source = source.lock().await;
-                            source.get(&run_id).map(|entry| (entry.revision, entry.view()))
-                        };
-                        match snapshot {
-                            Some((revision, view)) => {
-                                watched.insert(run_id.clone(), revision);
+                        watched.entry(run_id.clone()).or_insert(None);
+                        match load_snapshot(&source, &updates_tx, &run_id).await {
+                            Some((revision, generation, view)) => {
+                                watched.insert(
+                                    run_id.clone(),
+                                    Some(WatchedRun {
+                                        revision,
+                                        generation,
+                                    }),
+                                );
                                 send(&mut sink, &ServerMessage::RunSnapshot {
                                     run_id,
                                     revision,
@@ -214,10 +287,10 @@ async fn handle_connection(
                     ClientMessage::FetchArtifact { run_id, path } => {
                         let content = {
                             let source = source.lock().await;
-                            source.get(&run_id).and_then(|entry| {
-                                let artifact_dir = entry.manifest.paths.artifacts.as_deref()?;
+                            source.metadata(&run_id).and_then(|metadata| {
+                                let artifact_dir = metadata.manifest.paths.artifacts.as_deref()?;
                                 read_declared_artifact_checked(
-                                    &entry.dir,
+                                    metadata.dir,
                                     artifact_dir,
                                     &path,
                                     ARTIFACT_MAX_BYTES,
@@ -244,35 +317,108 @@ async fn handle_connection(
                         if watching_runs {
                             send(&mut sink, &ServerMessage::Runs { runs }).await?;
                         }
+                        let reload_ids = {
+                            let source = source.lock().await;
+                            watched
+                                .iter_mut()
+                                .filter_map(|(run_id, watched_run)| {
+                                    let Some(metadata) = source.metadata(run_id) else {
+                                        *watched_run = None;
+                                        return None;
+                                    };
+                                    let needs_snapshot = watched_run
+                                        .is_none_or(|watched_run| {
+                                            watched_run.generation != metadata.generation
+                                        });
+                                    if needs_snapshot {
+                                        *watched_run = None;
+                                        Some(run_id.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                        };
+                        for run_id in reload_ids {
+                            if let Some((revision, generation, view)) =
+                                load_snapshot(&source, &updates_tx, &run_id).await
+                            {
+                                watched.insert(
+                                    run_id.clone(),
+                                    Some(WatchedRun {
+                                        revision,
+                                        generation,
+                                    }),
+                                );
+                                send(&mut sink, &ServerMessage::RunSnapshot {
+                                    run_id,
+                                    revision,
+                                    view,
+                                }).await?;
+                            }
+                        }
                     }
                     Ok(Update::Patch { run_id, revision, patch }) => {
-                        let Some(&last) = watched.get(&run_id) else { continue };
-                        if revision == last + 1 {
-                            watched.insert(run_id.clone(), revision);
+                        let Some(Some(current)) = watched.get(&run_id).copied() else {
+                            continue;
+                        };
+                        if revision == current.revision + 1 {
+                            watched.insert(
+                                run_id.clone(),
+                                Some(WatchedRun {
+                                    revision,
+                                    generation: current.generation,
+                                }),
+                            );
                             send(&mut sink, &ServerMessage::RunPatch { run_id, revision, patch }).await?;
-                        } else if revision > last {
+                        } else if revision > current.revision {
                             // Missed one (lagged broadcast): resnapshot.
-                            let snapshot = {
-                                let source = source.lock().await;
-                                source.get(&run_id).map(|entry| (entry.revision, entry.view()))
-                            };
-                            if let Some((revision, view)) = snapshot {
-                                watched.insert(run_id.clone(), revision);
-                                send(&mut sink, &ServerMessage::RunSnapshot { run_id, revision, view }).await?;
+                            if let Some((revision, generation, view)) =
+                                load_snapshot(&source, &updates_tx, &run_id).await
+                            {
+                                watched.insert(
+                                    run_id.clone(),
+                                    Some(WatchedRun {
+                                        revision,
+                                        generation,
+                                    }),
+                                );
+                                send(&mut sink, &ServerMessage::RunSnapshot {
+                                    run_id,
+                                    revision,
+                                    view,
+                                }).await?;
                             }
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => {
-                        // Dropped updates: resnapshot everything we watch.
+                        // Drop the retained backlog before publishing current state; otherwise an
+                        // older queued Runs message could regress this connection after recovery.
+                        updates_rx = updates_tx.subscribe();
+                        if watching_runs {
+                            let runs = source.lock().await.summaries();
+                            send(&mut sink, &ServerMessage::Runs { runs }).await?;
+                        }
                         let run_ids: Vec<String> = watched.keys().cloned().collect();
                         for run_id in run_ids {
-                            let snapshot = {
-                                let source = source.lock().await;
-                                source.get(&run_id).map(|entry| (entry.revision, entry.view()))
-                            };
-                            if let Some((revision, view)) = snapshot {
-                                watched.insert(run_id.clone(), revision);
-                                send(&mut sink, &ServerMessage::RunSnapshot { run_id, revision, view }).await?;
+                            match load_snapshot(&source, &updates_tx, &run_id).await {
+                                Some((revision, generation, view)) => {
+                                    watched.insert(
+                                        run_id.clone(),
+                                        Some(WatchedRun {
+                                            revision,
+                                            generation,
+                                        }),
+                                    );
+                                    send(&mut sink, &ServerMessage::RunSnapshot {
+                                        run_id,
+                                        revision,
+                                        view,
+                                    }).await?;
+                                }
+                                None => {
+                                    watched.insert(run_id, None);
+                                }
                             }
                         }
                     }

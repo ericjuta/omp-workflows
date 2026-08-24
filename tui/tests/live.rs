@@ -9,13 +9,18 @@ use omp_workflows::protocol::apply_patch;
 use omp_workflows::source::RunSource;
 use serde_json::json;
 use std::io::Write;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
+fn loaded_source(runs_dir: &std::path::Path, run_id: &str) -> RunSource {
+    let mut source = RunSource::new(runs_dir);
+    assert!(source.load(run_id).is_some());
+    source
+}
 
 #[test]
 fn patches_reproduce_the_view_exactly() {
     let runs = tempfile::tempdir().unwrap();
     let dir = write_bundle(runs.path(), "run-1", "running");
-    let mut source = RunSource::new(runs.path());
+    let mut source = loaded_source(runs.path(), "run-1");
     let mut tracked = source.get("run-1").unwrap().view();
 
     // Grow the bundle: node events in the trace, then a state rewrite, then
@@ -64,7 +69,7 @@ fn patches_reproduce_the_view_exactly() {
 fn trace_events_wait_for_the_state_projection() {
     let runs = tempfile::tempdir().unwrap();
     let dir = write_bundle(runs.path(), "run-torn", "running");
-    let mut source = RunSource::new(runs.path());
+    let mut source = loaded_source(runs.path(), "run-torn");
     assert_eq!(
         source.get("run-torn").unwrap().view()["events"]
             .as_array()
@@ -114,7 +119,7 @@ fn trace_events_wait_for_the_state_projection() {
 fn terminal_transition_waits_for_the_projection() {
     let runs = tempfile::tempdir().unwrap();
     let dir = write_bundle(runs.path(), "run-race", "running");
-    let mut source = RunSource::new(runs.path());
+    let mut source = loaded_source(runs.path(), "run-race");
 
     // A refresh can observe the new trace tail and the terminal manifest
     // while still holding the old state.json (the reader raced the writer).
@@ -156,7 +161,7 @@ fn terminal_transition_waits_for_the_projection() {
 fn terminal_bundles_are_not_re_read() {
     let runs = tempfile::tempdir().unwrap();
     let dir = write_bundle(runs.path(), "run-done", "completed");
-    let mut source = RunSource::new(runs.path());
+    let mut source = loaded_source(runs.path(), "run-done");
     assert!(!source.get("run-done").unwrap().live);
 
     // Growth after terminal status violates the format contract; the source
@@ -184,7 +189,7 @@ fn unsupported_state_schema_is_skipped() {
     )
     .unwrap();
     let source = RunSource::new(runs.path());
-    assert!(source.get("run-future").is_none());
+    assert!(source.ordered_run_ids().is_empty());
 }
 
 #[test]
@@ -213,7 +218,10 @@ fn manifest_paths_escaping_the_bundle_are_rejected() {
     .unwrap();
     assert!(omp_workflows::bundle::reader::read_manifest(&dir).is_err());
     let source = RunSource::new(runs.path());
-    assert!(source.get("run-evil").is_none(), "bundle must be skipped");
+    assert!(
+        source.ordered_run_ids().is_empty(),
+        "bundle must be skipped"
+    );
 }
 
 #[test]
@@ -227,6 +235,133 @@ fn source_discovers_new_runs() {
     let outcome = source.refresh_all();
     assert!(outcome.listing_changed);
     assert_eq!(source.ordered_run_ids().len(), 2);
+}
+#[test]
+fn directory_source_loads_full_bundle_on_demand() {
+    let runs = tempfile::tempdir().unwrap();
+    write_bundle(runs.path(), "run-lazy", "completed");
+    let mut source = RunSource::new(runs.path());
+
+    assert_eq!(source.ordered_run_ids(), vec!["run-lazy"]);
+    assert_eq!(source.summaries().len(), 1);
+    assert!(source.get("run-lazy").is_none());
+    assert!(source.load("run-lazy").is_some());
+    assert!(source.get("run-lazy").is_some());
+}
+#[test]
+fn unloaded_listing_tracks_interruption_and_recovery_from_file_activity() {
+    let runs = tempfile::tempdir().unwrap();
+    let dir = write_bundle(runs.path(), "run-unloaded", "running");
+    let mut source = RunSource::new(runs.path());
+    assert!(source.get("run-unloaded").is_none());
+    assert_eq!(source.summaries()[0]["possiblyInterrupted"], json!(false));
+
+    let stale = SystemTime::now() - Duration::from_secs(61);
+    for name in ["state.json", "trace.ndjson"] {
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join(name))
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(stale))
+            .unwrap();
+    }
+
+    let interrupted = source.refresh_all();
+    assert!(interrupted.listing_changed);
+    assert!(source.get("run-unloaded").is_none());
+    assert_eq!(source.summaries()[0]["possiblyInterrupted"], json!(true));
+
+    append_trace(
+        &dir,
+        &json!({
+            "seq": 2, "at": "2026-01-01T00:00:02.000Z", "scope": "node",
+            "type": "node_started", "runId": "run-unloaded", "nodeId": "plan",
+            "attemptId": "a1", "payload": {},
+        }),
+    );
+    let recovered = source.refresh_all();
+    assert!(recovered.listing_changed);
+    assert!(source.get("run-unloaded").is_none());
+    assert_eq!(source.summaries()[0]["possiblyInterrupted"], json!(false));
+}
+#[test]
+fn directory_source_keeps_the_newest_duplicate_run_id() {
+    let runs = tempfile::tempdir().unwrap();
+    let older = write_bundle(runs.path(), "older-directory", "running");
+    let newer = write_bundle(runs.path(), "newer-directory", "completed");
+    let invalid = write_bundle(runs.path(), "invalid-newest-directory", "running");
+    for (dir, started_at) in [
+        (&older, "2026-01-01T00:00:00.000Z"),
+        (&newer, "2026-01-02T00:00:00.000Z"),
+        (&invalid, "2026-01-03T00:00:00.000Z"),
+    ] {
+        let path = dir.join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        manifest["runId"] = json!("duplicate-run");
+        manifest["startedAt"] = json!(started_at);
+        std::fs::write(path, serde_json::to_string(&manifest).unwrap()).unwrap();
+    }
+    std::fs::remove_file(invalid.join("state.json")).unwrap();
+
+    let mut source = RunSource::new(runs.path());
+    assert_eq!(source.summaries().len(), 1);
+    assert_eq!(source.metadata("duplicate-run").unwrap().dir, newer);
+    assert_eq!(
+        source.summaries()[0]["manifest"]["status"],
+        json!("completed")
+    );
+    assert!(!source.scan(), "duplicate runs must not churn the listing");
+}
+
+#[test]
+fn loading_a_completed_bundle_updates_its_listing() {
+    let runs = tempfile::tempdir().unwrap();
+    let dir = write_bundle(runs.path(), "run-race", "running");
+    let mut source = RunSource::new(runs.path());
+    assert_eq!(
+        source.summaries()[0]["manifest"]["status"],
+        json!("running")
+    );
+
+    std::fs::write(
+        dir.join("state.json"),
+        serde_json::to_string(&state_value("run-race", "completed", 1, vec![])).unwrap(),
+    )
+    .unwrap();
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
+    manifest["status"] = json!("completed");
+    std::fs::write(
+        dir.join("manifest.json"),
+        serde_json::to_string(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(source.load("run-race"), Some(true));
+    assert_eq!(
+        source.summaries()[0]["manifest"]["status"],
+        json!("completed")
+    );
+    assert_eq!(source.summaries()[0]["live"], json!(false));
+}
+#[test]
+fn loaded_run_is_evicted_when_its_directory_is_recreated() {
+    let runs = tempfile::tempdir().unwrap();
+    let dir = write_bundle(runs.path(), "run-recreated", "running");
+    let mut source = loaded_source(runs.path(), "run-recreated");
+
+    std::fs::remove_dir_all(dir).unwrap();
+    write_bundle(runs.path(), "run-recreated", "completed");
+    let outcome = source.refresh_all();
+
+    assert!(outcome.listing_changed);
+    assert!(source.get("run-recreated").is_none());
+    assert!(source.load("run-recreated").is_some());
+    assert_eq!(
+        source.get("run-recreated").unwrap().state.status,
+        omp_workflows::bundle::types::RunStatus::Completed
+    );
 }
 
 #[test]
@@ -333,6 +468,68 @@ fn server_round_trip_with_live_updates() {
     });
     assert!(rejected.is_err(), "browser-origin handshake must fail");
 }
+#[test]
+fn watched_run_reloads_after_delete_and_recreate() {
+    let runs = tempfile::tempdir().unwrap();
+    let dir = write_bundle(runs.path(), "run-recreated", "running");
+    let runs_dir = runs.path().to_path_buf();
+    let (addr_tx, addr_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            addr_tx.send(listener.local_addr().unwrap()).unwrap();
+            let _ = omp_workflows::server::serve_on(listener, runs_dir).await;
+        });
+    });
+    let addr = addr_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let url = format!("ws://{addr}/ws");
+    let mut client_a = omp_workflows::client::RemoteRuns::connect(&url).unwrap();
+    let mut client_b = omp_workflows::client::RemoteRuns::connect(&url).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while client_a.summaries().is_empty() || client_b.summaries().is_empty() {
+        assert!(Instant::now() < deadline, "initial listings timed out");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    client_a.watch("run-recreated");
+    client_b.watch("run-recreated");
+    while client_a.view("run-recreated").is_none() || client_b.view("run-recreated").is_none() {
+        assert!(Instant::now() < deadline, "initial snapshots timed out");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    std::fs::remove_dir_all(&dir).unwrap();
+    while !client_a.summaries().is_empty() || !client_b.summaries().is_empty() {
+        assert!(Instant::now() < deadline, "run deletion was not listed");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let mut late_client = omp_workflows::client::RemoteRuns::connect(&url).unwrap();
+    late_client.watch("run-recreated");
+    while late_client.error().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "unavailable watch was not recorded"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    write_bundle(runs.path(), "run-recreated", "completed");
+    loop {
+        let completed = |client: &mut omp_workflows::client::RemoteRuns| {
+            client.view("run-recreated").is_some_and(|view| {
+                view.state.status == omp_workflows::bundle::types::RunStatus::Completed
+            })
+        };
+        if completed(&mut client_a) && completed(&mut client_b) && completed(&mut late_client) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "recreated run was not resnapshotted for every watcher"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
 
 #[test]
 fn remote_client_reconnects_and_restores_selected_run() {
@@ -428,7 +625,7 @@ fn remote_client_reconnects_and_restores_selected_run() {
 fn terminal_run_stays_live_until_the_trace_tail_is_observed() {
     let runs = tempfile::tempdir().unwrap();
     let dir = write_bundle(runs.path(), "run-1", "running");
-    let mut source = RunSource::new(runs.path());
+    let mut source = loaded_source(runs.path(), "run-1");
     assert!(source.get("run-1").unwrap().live);
 
     // Terminal state and manifest referencing trace seq 2, while the trace
@@ -469,7 +666,7 @@ fn terminal_run_stays_live_until_the_trace_tail_is_observed() {
 fn session_files_are_discovered_before_the_manifest_names_them() {
     let runs = tempfile::tempdir().unwrap();
     let dir = write_bundle(runs.path(), "run-1", "running");
-    let mut source = RunSource::new(runs.path());
+    let mut source = loaded_source(runs.path(), "run-1");
     assert_eq!(
         source.get("run-1").unwrap().view()["session"],
         serde_json::Value::Null
@@ -583,7 +780,7 @@ fn symlinked_documents_outside_the_bundle_are_not_read() {
     // The manifest path is lexically fine, but the file resolves outside the
     // bundle; the run must be skipped rather than expose external content.
     let source = RunSource::new(runs.path());
-    assert!(source.get("run-1").is_none());
+    assert!(source.ordered_run_ids().is_empty());
 }
 
 #[test]

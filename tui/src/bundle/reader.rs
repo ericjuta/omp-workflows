@@ -189,24 +189,27 @@ pub fn read_bundle(dir: &Path) -> Result<LoadedBundle> {
     })
 }
 
-/// List all readable bundles in a runs directory, newest first (by
-/// `startedAt`, then run id, matching the TypeScript store).
-pub fn list_bundles(runs_dir: &Path) -> Vec<(PathBuf, Manifest)> {
+/// List all readable bundle manifests in a runs directory, newest first (by
+/// `startedAt`, then run id, matching the TypeScript store). The raw document
+/// is retained so forward-compatible manifest fields survive listing.
+pub fn list_bundles(runs_dir: &Path) -> Vec<(PathBuf, Value, Manifest)> {
     let Ok(entries) = std::fs::read_dir(runs_dir) else {
         return Vec::new();
     };
-    let mut bundles: Vec<(PathBuf, Manifest)> = entries
+    let mut bundles: Vec<(PathBuf, Value, Manifest)> = entries
         .filter_map(|entry| entry.ok())
         .filter(|entry| entry.file_type().map(|t| t.is_dir()).unwrap_or(false))
         .filter_map(|entry| {
             let dir = entry.path();
-            read_manifest(&dir).ok().map(|manifest| (dir, manifest))
+            read_manifest_value(&dir)
+                .ok()
+                .map(|(raw, manifest)| (dir, raw, manifest))
         })
         .collect();
     bundles.sort_by(|a, b| {
-        b.1.started_at
-            .cmp(&a.1.started_at)
-            .then_with(|| b.1.run_id.cmp(&a.1.run_id))
+        b.2.started_at
+            .cmp(&a.2.started_at)
+            .then_with(|| b.2.run_id.cmp(&a.2.run_id))
     });
     bundles
 }

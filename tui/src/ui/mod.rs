@@ -104,8 +104,11 @@ impl Provider {
     }
 
     fn ensure_watch(&mut self, run_id: &str) {
-        if let Provider::Remote(remote) = self {
-            remote.watch(run_id);
+        match self {
+            Provider::Local { source, .. } => {
+                let _ = source.load(run_id);
+            }
+            Provider::Remote(remote) => remote.watch(run_id),
         }
     }
 
@@ -114,16 +117,16 @@ impl Provider {
             Provider::Local { source, .. } => source
                 .ordered_run_ids()
                 .iter()
-                .filter_map(|id| source.get(id))
-                .map(|entry| RunSummary {
-                    run_id: entry.manifest.run_id.clone(),
-                    workflow_name: entry.manifest.workflow_name.clone(),
-                    run_title: entry.manifest.run_title.clone(),
-                    status: entry.manifest.status,
-                    started_at: entry.manifest.started_at.clone(),
-                    finished_at: entry.manifest.finished_at.clone(),
-                    live: entry.live,
-                    possibly_interrupted: entry.possibly_interrupted,
+                .filter_map(|id| source.metadata(id))
+                .map(|metadata| RunSummary {
+                    run_id: metadata.manifest.run_id.clone(),
+                    workflow_name: metadata.manifest.workflow_name.clone(),
+                    run_title: metadata.manifest.run_title.clone(),
+                    status: metadata.manifest.status,
+                    started_at: metadata.manifest.started_at.clone(),
+                    finished_at: metadata.manifest.finished_at.clone(),
+                    live: metadata.live,
+                    possibly_interrupted: metadata.possibly_interrupted,
                 })
                 .collect(),
             Provider::Remote(remote) => remote
@@ -466,11 +469,11 @@ fn event_loop(
         {
             app.selected_run = summaries.first().map(|summary| summary.run_id.clone());
         }
+        app.advance_playback();
+        terminal.draw(|frame| draw(frame, &mut app, &summaries))?;
         if let Some(run_id) = app.selected_run.clone() {
             app.provider.ensure_watch(&run_id);
         }
-        app.advance_playback();
-        terminal.draw(|frame| draw(frame, &mut app, &summaries))?;
 
         if crossterm::event::poll(Duration::from_millis(120))? {
             match crossterm::event::read()? {

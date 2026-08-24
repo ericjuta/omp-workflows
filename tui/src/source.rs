@@ -10,12 +10,32 @@ use crate::protocol::PatchOp;
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 /// A run whose bundle stopped changing for this long while status is
 /// `running` is flagged as possibly interrupted (writer crashed).
 const INTERRUPTED_AFTER: Duration = Duration::from_secs(60);
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BundleIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    created: Option<SystemTime>,
+}
+fn bundle_identity(dir: &Path) -> Option<BundleIdentity> {
+    let metadata = std::fs::metadata(dir).ok()?;
+    Some(BundleIdentity {
+        #[cfg(unix)]
+        device: metadata.dev(),
+        #[cfg(unix)]
+        inode: metadata.ino(),
+        created: metadata.created().ok(),
+    })
+}
 
 pub struct RunEntry {
     pub dir: PathBuf,
@@ -86,7 +106,7 @@ fn last_write_instant(paths: &BundlePaths) -> Instant {
 }
 
 impl RunEntry {
-    fn open(dir: &Path) -> Result<Self> {
+    pub(crate) fn open(dir: &Path) -> Result<Self> {
         let (manifest_raw, manifest) = read_manifest_value(dir)?;
         let paths = BundlePaths::from_manifest(dir, &manifest);
         let state_text = crate::bundle::reader::read_contained(dir, &paths.state)
@@ -243,14 +263,6 @@ impl RunEntry {
             "state": self.state_raw,
             "events": self.events,
             "session": self.session_value(),
-            "live": self.live,
-            "possiblyInterrupted": self.possibly_interrupted,
-        })
-    }
-
-    pub fn summary(&self) -> Value {
-        json!({
-            "manifest": self.manifest_raw,
             "live": self.live,
             "possiblyInterrupted": self.possibly_interrupted,
         })
@@ -414,9 +426,149 @@ impl RunEntry {
     }
 }
 
+struct RunListing {
+    dir: PathBuf,
+    manifest: Manifest,
+    manifest_raw: Value,
+    identity: BundleIdentity,
+    generation: u64,
+    live: bool,
+    possibly_interrupted: bool,
+    last_growth: Instant,
+}
+
+impl RunListing {
+    fn open(
+        dir: PathBuf,
+        manifest_raw: Value,
+        manifest: Manifest,
+        identity: BundleIdentity,
+        generation: u64,
+    ) -> Option<Self> {
+        let paths = BundlePaths::from_manifest(&dir, &manifest);
+        let state_text = crate::bundle::reader::read_contained(&dir, &paths.state)?;
+        let state: RunState = serde_json::from_str(&state_text).ok()?;
+        if state.schema != crate::bundle::types::RUN_STATE_SCHEMA {
+            return None;
+        }
+        let live = !manifest.status.is_terminal();
+        let last_growth = if live {
+            last_write_instant(&paths)
+        } else {
+            Instant::now()
+        };
+        let possibly_interrupted = live && last_growth.elapsed() >= INTERRUPTED_AFTER;
+        Some(Self {
+            dir,
+            manifest,
+            manifest_raw,
+            identity,
+            generation,
+            live,
+            possibly_interrupted,
+            last_growth,
+        })
+    }
+
+    fn from_entry(entry: &RunEntry, generation: u64) -> Option<Self> {
+        Some(Self {
+            dir: entry.dir.clone(),
+            manifest: entry.manifest.clone(),
+            manifest_raw: entry.manifest_raw.clone(),
+            identity: bundle_identity(&entry.dir)?,
+            generation,
+            live: entry.live,
+            possibly_interrupted: entry.possibly_interrupted,
+            last_growth: entry.last_growth,
+        })
+    }
+
+    fn update_manifest(
+        &mut self,
+        dir: PathBuf,
+        manifest_raw: Value,
+        manifest: Manifest,
+        identity: BundleIdentity,
+        generation: u64,
+    ) -> (bool, bool) {
+        let manifest_changed = self.manifest_raw != manifest_raw;
+        let incarnation_changed = self.dir != dir || self.identity != identity;
+        let previous_live = self.live;
+        let previous_interrupted = self.possibly_interrupted;
+        let paths = BundlePaths::from_manifest(&dir, &manifest);
+        self.dir = dir;
+        self.manifest = manifest;
+        self.manifest_raw = manifest_raw;
+        self.identity = identity;
+        if incarnation_changed {
+            self.generation = generation;
+        }
+        self.live = !self.manifest.status.is_terminal();
+        self.last_growth = if self.live {
+            last_write_instant(&paths)
+        } else {
+            Instant::now()
+        };
+        self.possibly_interrupted = self.live && self.last_growth.elapsed() >= INTERRUPTED_AFTER;
+        (
+            manifest_changed
+                || self.live != previous_live
+                || self.possibly_interrupted != previous_interrupted
+                || incarnation_changed,
+            incarnation_changed,
+        )
+    }
+
+    fn differs_from_entry(&self, entry: &RunEntry) -> bool {
+        self.manifest_raw != entry.manifest_raw
+            || self.live != entry.live
+            || self.possibly_interrupted != entry.possibly_interrupted
+    }
+
+    fn sync_from_entry(&mut self, entry: &RunEntry) {
+        self.manifest = entry.manifest.clone();
+        self.manifest_raw = entry.manifest_raw.clone();
+        self.live = entry.live;
+        self.possibly_interrupted = entry.possibly_interrupted;
+        self.last_growth = entry.last_growth;
+    }
+    fn refresh_activity(&mut self) -> bool {
+        if !self.live {
+            return false;
+        }
+        let previous_interrupted = self.possibly_interrupted;
+        let paths = BundlePaths::from_manifest(&self.dir, &self.manifest);
+        self.last_growth = last_write_instant(&paths);
+        self.possibly_interrupted = self.last_growth.elapsed() >= INTERRUPTED_AFTER;
+        self.possibly_interrupted != previous_interrupted
+    }
+
+    fn summary(&self) -> Value {
+        json!({
+            "manifest": self.manifest_raw,
+            "live": self.live,
+            "possiblyInterrupted": self.possibly_interrupted,
+        })
+    }
+}
+
+pub struct RunMetadata<'a> {
+    pub dir: &'a Path,
+    pub manifest: &'a Manifest,
+    pub generation: u64,
+    pub live: bool,
+    pub possibly_interrupted: bool,
+}
+pub(crate) struct RunLoadCandidate {
+    pub dir: PathBuf,
+    pub generation: u64,
+}
+
 pub struct RunSource {
     runs_dir: PathBuf,
-    runs: BTreeMap<String, RunEntry>,
+    listings: BTreeMap<String, RunListing>,
+    loaded: BTreeMap<String, RunEntry>,
+    next_generation: u64,
     /// Single-bundle mode: `runs_dir` is the bundle itself, so directory
     /// scanning must not run (it would treat the bundle as an empty listing
     /// and drop the run).
@@ -434,7 +586,9 @@ impl RunSource {
     pub fn new(runs_dir: &Path) -> Self {
         let mut source = Self {
             runs_dir: runs_dir.to_path_buf(),
-            runs: BTreeMap::new(),
+            listings: BTreeMap::new(),
+            loaded: BTreeMap::new(),
+            next_generation: 1,
             single: false,
         };
         source.scan();
@@ -444,12 +598,18 @@ impl RunSource {
     /// Open a source for a single bundle directory (no listing).
     pub fn single(bundle_dir: &Path) -> Result<Self> {
         let entry = RunEntry::open(bundle_dir)?;
-        let mut runs = BTreeMap::new();
         let run_id = entry.manifest.run_id.clone();
-        runs.insert(run_id, entry);
+        let listing = RunListing::from_entry(&entry, 1)
+            .ok_or_else(|| anyhow::anyhow!("manifest disappeared from {}", bundle_dir.display()))?;
+        let mut listings = BTreeMap::new();
+        listings.insert(run_id.clone(), listing);
+        let mut loaded = BTreeMap::new();
+        loaded.insert(run_id, entry);
         Ok(Self {
             runs_dir: bundle_dir.to_path_buf(),
-            runs,
+            listings,
+            loaded,
+            next_generation: 2,
             single: true,
         })
     }
@@ -458,34 +618,99 @@ impl RunSource {
         &self.runs_dir
     }
 
+    /// Return a loaded run. Directory sources load a full bundle only after
+    /// the UI or protocol client selects it.
     pub fn get(&self, run_id: &str) -> Option<&RunEntry> {
-        self.runs.get(run_id)
+        self.loaded.get(run_id)
+    }
+
+    /// Load a selected run synchronously. The result says whether opening the
+    /// bundle changed its lightweight listing.
+    pub fn load(&mut self, run_id: &str) -> Option<bool> {
+        let mut listing_changed = false;
+        loop {
+            if self.loaded.contains_key(run_id) {
+                return Some(listing_changed);
+            }
+            let candidate = self.load_candidate(run_id)?;
+            let generation = candidate.generation;
+            let entry = RunEntry::open(&candidate.dir).ok()?;
+            if let Some(changed_on_install) = self.install_loaded(run_id, generation, entry) {
+                return Some(listing_changed || changed_on_install);
+            }
+            listing_changed |= self.scan();
+            if self.load_candidate(run_id)?.generation == generation {
+                return None;
+            }
+        }
+    }
+
+    pub(crate) fn install_loaded(
+        &mut self,
+        run_id: &str,
+        generation: u64,
+        entry: RunEntry,
+    ) -> Option<bool> {
+        if self.loaded.contains_key(run_id) {
+            return Some(false);
+        }
+        let listing = self.listings.get_mut(run_id)?;
+        if listing.generation != generation
+            || bundle_identity(&listing.dir).as_ref() != Some(&listing.identity)
+            || entry.manifest.run_id != run_id
+            || entry.dir != listing.dir
+        {
+            return None;
+        }
+        let listing_changed = listing.differs_from_entry(&entry);
+        listing.sync_from_entry(&entry);
+        self.loaded.insert(run_id.to_string(), entry);
+        Some(listing_changed)
+    }
+    pub(crate) fn load_candidate(&self, run_id: &str) -> Option<RunLoadCandidate> {
+        let listing = self.listings.get(run_id)?;
+        Some(RunLoadCandidate {
+            dir: listing.dir.clone(),
+            generation: listing.generation,
+        })
+    }
+
+    pub fn metadata(&self, run_id: &str) -> Option<RunMetadata<'_>> {
+        let listing = self.listings.get(run_id)?;
+        Some(RunMetadata {
+            dir: &listing.dir,
+            manifest: &listing.manifest,
+            generation: listing.generation,
+            live: listing.live,
+            possibly_interrupted: listing.possibly_interrupted,
+        })
     }
 
     /// Run ids ordered newest first (startedAt desc, then run id desc).
     pub fn ordered_run_ids(&self) -> Vec<String> {
-        let mut ids: Vec<&RunEntry> = self.runs.values().collect();
-        ids.sort_by(|a, b| {
+        let mut listings: Vec<&RunListing> = self.listings.values().collect();
+        listings.sort_by(|a, b| {
             b.manifest
                 .started_at
                 .cmp(&a.manifest.started_at)
                 .then_with(|| b.manifest.run_id.cmp(&a.manifest.run_id))
         });
-        ids.into_iter()
-            .map(|entry| entry.manifest.run_id.clone())
+        listings
+            .into_iter()
+            .map(|listing| listing.manifest.run_id.clone())
             .collect()
     }
 
     pub fn summaries(&self) -> Vec<Value> {
         self.ordered_run_ids()
             .iter()
-            .filter_map(|id| self.runs.get(id))
-            .map(RunEntry::summary)
+            .filter_map(|id| self.listings.get(id))
+            .map(RunListing::summary)
             .collect()
     }
 
-    /// Discover new bundles and drop deleted ones. Returns whether the run
-    /// listing membership changed. No-op in single-bundle mode.
+    /// Discover new bundles and drop deleted ones. Full trace and session
+    /// journals remain unopened until a consumer selects the run.
     pub fn scan(&mut self) -> bool {
         if self.single {
             return false;
@@ -493,49 +718,83 @@ impl RunSource {
         let found = list_bundles(&self.runs_dir);
         let mut changed = false;
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for (dir, manifest) in found {
-            seen.insert(manifest.run_id.clone());
-            if !self.runs.contains_key(&manifest.run_id) {
-                if let Ok(entry) = RunEntry::open(&dir) {
-                    self.runs.insert(manifest.run_id.clone(), entry);
-                    changed = true;
+        for (dir, manifest_raw, manifest) in found {
+            let run_id = manifest.run_id.clone();
+            if seen.contains(&run_id) {
+                continue;
+            }
+            let Some(identity) = bundle_identity(&dir) else {
+                continue;
+            };
+            let current_listing_is_valid = self.listings.get(&run_id).is_some_and(|listing| {
+                listing.dir == dir
+                    && listing.identity == identity
+                    && (self.loaded.contains_key(&run_id) || listing.manifest_raw == manifest_raw)
+            });
+            if current_listing_is_valid {
+                seen.insert(run_id.clone());
+                if !self.loaded.contains_key(&run_id) {
+                    if let Some(listing) = self.listings.get_mut(&run_id) {
+                        changed |= listing.refresh_activity();
+                    }
                 }
+                continue;
+            }
+            let generation = self.next_generation;
+            let Some(candidate) =
+                RunListing::open(dir, manifest_raw, manifest, identity, generation)
+            else {
+                continue;
+            };
+            seen.insert(run_id.clone());
+            self.next_generation = self.next_generation.wrapping_add(1).max(1);
+            if let Some(listing) = self.listings.get_mut(&run_id) {
+                let (listing_changed, incarnation_changed) = listing.update_manifest(
+                    candidate.dir,
+                    candidate.manifest_raw,
+                    candidate.manifest,
+                    candidate.identity,
+                    generation,
+                );
+                changed |= listing_changed;
+                if incarnation_changed {
+                    self.loaded.remove(&run_id);
+                }
+            } else {
+                self.listings.insert(run_id, candidate);
+                changed = true;
             }
         }
         let stale: Vec<String> = self
-            .runs
+            .listings
             .keys()
             .filter(|id| !seen.contains(*id))
             .cloned()
             .collect();
         for id in stale {
-            self.runs.remove(&id);
+            self.listings.remove(&id);
+            self.loaded.remove(&id);
             changed = true;
         }
         changed
     }
 
-    /// Rescan and refresh every run, collecting patches.
+    /// Rescan and refresh loaded runs, collecting patches.
     pub fn refresh_all(&mut self) -> RefreshOutcome {
         let mut listing_changed = self.scan();
         let mut patches = Vec::new();
-        for (run_id, entry) in self.runs.iter_mut() {
+        for (run_id, entry) in self.loaded.iter_mut() {
             // Terminal bundles are immutable per the format contract; stop
             // re-reading them (discovery of new runs still happens above).
             if !entry.live {
                 continue;
             }
-            let live_before = entry.live;
-            let interrupted_before = entry.possibly_interrupted;
-            let status_before = entry.manifest.status;
             if let Some(patch) = entry.refresh() {
                 patches.push((run_id.clone(), entry.revision, patch));
-                if entry.live != live_before
-                    || entry.possibly_interrupted != interrupted_before
-                    || entry.manifest.status != status_before
-                {
-                    listing_changed = true;
-                }
+            }
+            if let Some(listing) = self.listings.get_mut(run_id) {
+                listing_changed |= listing.differs_from_entry(entry);
+                listing.sync_from_entry(entry);
             }
         }
         RefreshOutcome {

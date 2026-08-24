@@ -650,7 +650,7 @@ function blockerChallenges(context: WorkflowNodeContext): BlockerChallenge[] {
     .map((step) => step.output as BlockerChallenge);
 }
 
-function latestBlockerClaim(context: WorkflowNodeContext): unknown {
+function latestBlockerClaim(context: WorkflowNodeContext): { source: string; result: unknown } {
   const ids = [
     "classifyImplementation",
     "runReview",
@@ -1364,6 +1364,28 @@ export const autoimplementWorkflow = defineWorkflow({
     }),
     challengeBlockerGuard: compute({
       run: (context) => {
+        const blocker = latestBlockerClaim(context);
+        const repairIndex = latestStepIndex(
+          context,
+          (step) => step.nodeId === "repairReviewCommand" && step.outcome === "ok",
+        );
+        const selectionIndex = latestStepIndex(
+          context,
+          (step) => step.nodeId === "selectReviewCommands",
+        );
+        if (
+          repairIndex > selectionIndex &&
+          (blocker.source === "runReview" ||
+            blocker.source === "repairReviewCommand" ||
+            blocker.source === "assessReview")
+        ) {
+          const result = requireRecord(blocker.result, "reviewer blocker result");
+          return {
+            route: "blocked",
+            reason: requireString(result.reason, "reviewer blocker reason"),
+            evidence: { source: blocker.source, currentSelectionRepairAttempted: true, result },
+          };
+        }
         const challenges = blockerChallenges(context);
         return challenges.length >= MAX_BLOCKER_CHALLENGES
           ? {

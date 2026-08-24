@@ -1304,6 +1304,27 @@ describe("built-in autoimplement", () => {
   it("routes model blockers through the challenge and preserves hard stops", () => {
     const edge = (from: string) =>
       autoimplementWorkflow.edges.find((candidate) => candidate.from === from);
+    const guard = autoimplementWorkflow.nodes.challengeBlockerGuard;
+    if (guard?.nodeType !== "compute") throw new Error("challengeBlockerGuard must be compute");
+    expect(
+      guard.run({
+        state: {
+          steps: [
+            {
+              nodeId: "repairReviewCommand",
+              outcome: "ok",
+              output: { route: "retry", reason: "earlier selection repaired" },
+            },
+            { nodeId: "selectReviewCommands", outcome: "ok", output: {} },
+            {
+              nodeId: "assessReview",
+              outcome: "ok",
+              output: { route: "blocked", reason: "new selection failed" },
+            },
+          ],
+        },
+      } as never),
+    ).toMatchObject({ route: "challenge" });
 
     expect(edge("classifyImplementation")).toMatchObject({
       switch: { cases: { blocked: "challengeBlockerGuard" } },
@@ -1558,7 +1579,7 @@ describe("built-in autoimplement", () => {
     expect(state.steps.filter((step) => step.nodeId === "runReview")).toHaveLength(2);
   });
 
-  it("blocks a second reviewer command error after one repair", async () => {
+  it("blocks a second reviewer command error without another challenge after one repair", async () => {
     const failedReview = {
       repositories: [
         {
@@ -1577,10 +1598,7 @@ describe("built-in autoimplement", () => {
       .respond("repairReviewCommand", {
         output: { route: "retry", reason: "reviewer configuration repaired" },
       })
-      .respond("assessReview", { output: failedReview }, { output: failedReview })
-      .respond("challengeBlocker", {
-        output: confirmedChallenge("The reviewer remains unavailable after one repair."),
-      });
+      .respond("assessReview", { output: failedReview }, { output: failedReview });
     const { state } = await new WorkflowEngine({
       executor,
       outputRoot: await makeTempDir("pi-workflows-autoimplement-review-repair-limit"),
@@ -1594,27 +1612,23 @@ describe("built-in autoimplement", () => {
     expect(state.status).toBe("completed");
     expect(state.finalOutput).toMatchObject({
       status: "blocked",
-      reason: "The reviewer remains unavailable after one repair.",
+      reason: "The reviewer command failed again.",
     });
     expect(state.steps.filter((step) => step.nodeId === "repairReviewCommand")).toHaveLength(1);
     expect(state.steps.filter((step) => step.nodeId === "runReview")).toHaveLength(2);
     expect(state.steps.filter((step) => step.nodeId === "assessReview")).toHaveLength(2);
     expect(
-      executor.requests.find((request) => request.contract.nodeId === "challengeBlocker")?.prompt,
-    ).toContain("The reviewer command failed again.");
+      executor.requests.some((request) => request.contract.nodeId === "challengeBlocker"),
+    ).toBe(false);
   });
 
   it("blocks when omp-reviewer is still missing after one repair", async () => {
     await fs.rm(path.join(commandDir, "omp-reviewer"));
     process.env.PATH = commandDir;
     process.env.HOME = "";
-    const executor = commonExecutor()
-      .respond("repairReviewCommand", {
-        output: { route: "retry", reason: "reviewer lookup repaired" },
-      })
-      .respond("challengeBlocker", {
-        output: confirmedChallenge("omp-reviewer is not installed."),
-      });
+    const executor = commonExecutor().respond("repairReviewCommand", {
+      output: { route: "retry", reason: "reviewer lookup repaired" },
+    });
     const { state } = await new WorkflowEngine({
       executor,
       outputRoot: await makeTempDir("pi-workflows-autoimplement-reviewer-missing"),
@@ -1628,7 +1642,7 @@ describe("built-in autoimplement", () => {
     expect(state.status).toBe("completed");
     expect(state.finalOutput).toMatchObject({
       status: "blocked",
-      reason: "omp-reviewer is not installed.",
+      reason: expect.stringContaining("remains unavailable"),
     });
     expect(state.steps.filter((step) => step.nodeId === "repairReviewCommand")).toHaveLength(1);
     expect(state.steps.filter((step) => step.nodeId === "runReview")).toHaveLength(1);
@@ -1638,6 +1652,39 @@ describe("built-in autoimplement", () => {
         reason: expect.stringContaining("remains unavailable"),
       },
     );
+    expect(
+      executor.requests.some((request) => request.contract.nodeId === "challengeBlocker"),
+    ).toBe(false);
+  });
+
+  it("blocks a second truncated reviewer run without another challenge", async () => {
+    await installCommand(
+      "omp-reviewer",
+      `${JSON.stringify(process.execPath)} -e "process.stdout.write('x'.repeat(1_000_001))"`,
+    );
+    const executor = commonExecutor().respond("repairReviewCommand", {
+      output: { route: "retry", reason: "reviewer configuration repaired" },
+    });
+    const { state } = await new WorkflowEngine({
+      executor,
+      outputRoot: await makeTempDir("pi-workflows-autoimplement-reviewer-truncated"),
+    }).run(autoimplementWorkflow, {
+      task: "implement demo",
+      ...documentedPlan({ steps: ["change code"] }),
+      repository,
+      merge: false,
+    });
+
+    expect(state.status).toBe("completed");
+    expect(state.finalOutput).toMatchObject({
+      status: "blocked",
+      reason: "omp-reviewer failed again after one reviewer repair attempt.",
+    });
+    expect(state.steps.filter((step) => step.nodeId === "repairReviewCommand")).toHaveLength(1);
+    expect(state.steps.filter((step) => step.nodeId === "runReview")).toHaveLength(2);
+    expect(
+      executor.requests.some((request) => request.contract.nodeId === "challengeBlocker"),
+    ).toBe(false);
   });
 
   it("runs independent repository reviews in a bounded parallel batch", async () => {

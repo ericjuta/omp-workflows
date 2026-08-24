@@ -130,8 +130,8 @@ Nothing outside the temp directories is touched, and no real model is called.
 
 The npm package is `@ericjuta/omp-workflows`. The crates.io package is
 `omp-workflows`, and it installs the `ompw` executable. Keep both package versions
-in sync so one GitHub Release can publish both artifacts. This release is `0.14.2`
-under immutable tag `v0.14.2`.
+in sync so one GitHub Release can publish both artifacts. This release is `0.14.3`
+under immutable tag `v0.14.3`.
 
 `scripts/release-verify.mjs` is the source of truth. It locks synchronized
 versions, exact package inventories, build-once artifacts, checksums, and the

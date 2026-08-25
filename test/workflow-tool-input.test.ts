@@ -40,9 +40,33 @@ describe("workflow tool input", () => {
     expect(parseWorkflowToolInput({ i: "Listing Workflows", action: "list" })).toEqual({
       action: "list",
     });
+    expect(
+      parseWorkflowSubmissionInput({
+        i: "Submitting Workflow Step",
+        action: "submit",
+        step: "check",
+        attempt: "try-1",
+        output: { result: "ok" },
+      }),
+    ).toEqual({
+      action: "submit",
+      step: "check",
+      attempt: "try-1",
+      output: { result: "ok" },
+    });
     expect(() =>
       parseWorkflowToolInput({ i: "Listing Workflows", action: "list", extra: true }),
     ).toThrow("Invalid workflow tool input");
+    expect(() =>
+      parseWorkflowSubmissionInput({
+        i: "Submitting Workflow Step",
+        action: "submit",
+        step: "check",
+        attempt: "try-1",
+        output: null,
+        extra: true,
+      }),
+    ).toThrow("Invalid workflow submission tool input");
   });
 
   it.each([

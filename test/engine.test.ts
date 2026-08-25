@@ -339,12 +339,12 @@ describe("WorkflowEngine", () => {
   // These tests exercise replacement of native timeout handles; Vitest fake timers
   // prevent this suite's asynchronous run-store startup from reaching dispatch.
   it("extends the idle timeout after a successful update", async () => {
-    const timeoutMs = 100;
+    const timeoutMs = 500;
     const executor = new ScriptedExecutor().respond("ask", async (request) => {
       if (request.publishUpdate === undefined) throw new Error("publishUpdate is unavailable");
-      await delay(60);
+      await delay(300);
       await request.publishUpdate({ type: "heartbeat", key: "job", data: { completed: 1 } });
-      await delay(60);
+      await delay(300);
       const accepted = await request.accept({ completed: true });
       if (!accepted.ok) throw new Error(accepted.error);
       return { output: accepted.value };
@@ -365,12 +365,12 @@ describe("WorkflowEngine", () => {
   });
 
   it("caps heartbeat extensions at three times the configured timeout", async () => {
-    const timeoutMs = 100;
+    const timeoutMs = 500;
     const never = promiseGate();
     const executor = new ScriptedExecutor().respond("ask", async (request) => {
       if (request.publishUpdate === undefined) throw new Error("publishUpdate is unavailable");
       for (let completed = 1; completed <= 8; completed += 1) {
-        await delay(30);
+        await delay(150);
         await request.publishUpdate({ type: "heartbeat", key: "job", data: { completed } });
       }
       await never.promise;
@@ -445,7 +445,7 @@ describe("WorkflowEngine", () => {
     const { engine } = await makeEngine(executor, { defaultNodeTimeoutMs: 20 });
 
     const runPromise = engine.run(workflow, {});
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    await waitUntil(() => executor.requests.length > 0);
     engine.cancel();
     const { state } = await runPromise;
 
@@ -481,7 +481,7 @@ describe("WorkflowEngine", () => {
     const { engine } = await makeEngine(executor);
 
     const runPromise = engine.run(workflow, {});
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitUntil(() => executor.requests.length > 0);
     engine.cancel();
     const { state } = await runPromise;
 

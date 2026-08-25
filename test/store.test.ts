@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { agent, compute, defineWorkflow } from "../src/workflows/definition.js";
 import { choice, defineHumanChoices, humanDecision } from "../src/workflows/human-decision.js";
 import {
@@ -8,7 +8,10 @@ import {
   createDefinitionSnapshot,
   createRunId,
   listRunBundles,
+  listRunProjections,
   readRunBundle,
+  readRunProjection,
+  readRunState,
   workflowRunsBaseDir,
 } from "../src/workflows/store.js";
 import type { WorkflowRunState, WorkflowSessionEventRecord } from "../src/workflows/types.js";
@@ -539,6 +542,420 @@ describe("listRunBundles", () => {
 
     const bundles = await listRunBundles(outputRoot);
     expect(bundles.map((bundle) => bundle.state.runId)).toEqual([good.runId]);
+  });
+
+  it("isolates malformed bundle metadata and journal records", async () => {
+    const outputRoot = await makeTempDir("pi-workflows-malformed-segment-binding");
+    const store = new WorkflowRunStore(outputRoot);
+    const state = makeState();
+    const runDir = await store.initializeRunBundle(workflow, state);
+    const segmentDir = path.join(runDir, "session", "segments", "attempt-invalid-binding");
+    await fs.mkdir(segmentDir, { recursive: true });
+    await fs.writeFile(
+      path.join(segmentDir, "binding.json"),
+      JSON.stringify({
+        schema: "pi-workflows.session-binding.v1",
+        runId: state.runId,
+        piSessionId: "session-invalid-binding",
+        cwd: "/tmp",
+        boundAt: { invalid: true },
+      }),
+    );
+
+    const bundle = await readRunBundle(runDir);
+    expect(bundle?.sessionSegments).toHaveLength(1);
+    expect(bundle?.sessionSegments[0]?.binding).toBeNull();
+    expect(bundle?.sessionSegments[0]?.integrity.status).toBe("unavailable");
+    await fs.writeFile(
+      path.join(runDir, "workflow.json"),
+      JSON.stringify({
+        schema: "pi-workflows.definition-snapshot.v1",
+        name: "demo",
+        startAt: "one",
+        nodes: null,
+        edges: [],
+      }),
+    );
+    await fs.writeFile(path.join(runDir, "trace.ndjson"), "null\n");
+    const malformedBundle = await readRunBundle(runDir, { includeTrace: true });
+    expect(malformedBundle?.snapshot).toBeNull();
+    expect(malformedBundle?.traceEvents).toEqual([]);
+    expect(malformedBundle?.traceIntegrity?.malformed).toBe(true);
+  });
+});
+
+describe("fast run projections", () => {
+  it("reads state without loading trace or session streams", async () => {
+    const outputRoot = await makeTempDir("pi-workflows-read-state");
+    const store = new WorkflowRunStore(outputRoot);
+    const state = makeState();
+    const runDir = await store.initializeRunBundle(workflow, state);
+    const readFile = vi.spyOn(fs, "readFile");
+
+    expect(await readRunState(runDir)).toEqual(state);
+    const readPaths = readFile.mock.calls.map(([file]) => String(file));
+    readFile.mockRestore();
+
+    expect(readPaths.map((file) => path.basename(file))).toEqual(["manifest.json", "state.json"]);
+
+    const storedState = JSON.parse(
+      await fs.readFile(path.join(runDir, "state.json"), "utf8"),
+    ) as Record<string, unknown>;
+    await fs.writeFile(
+      path.join(runDir, "state.json"),
+      JSON.stringify({ ...storedState, schema: "pi-workflows.run-state.v0" }),
+    );
+    expect(await readRunState(runDir)).toBeNull();
+
+    await fs.writeFile(
+      path.join(runDir, "state.json"),
+      JSON.stringify({ ...storedState, steps: { length: 1e100 } }),
+    );
+    expect(await readRunState(runDir)).toBeNull();
+    expect(await readRunBundle(runDir)).toBeNull();
+
+    await fs.writeFile(path.join(runDir, "state.json"), JSON.stringify(storedState));
+    const manifestPath = path.join(runDir, "manifest.json");
+    const storedManifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    await fs.writeFile(
+      manifestPath,
+      JSON.stringify({ ...storedManifest, schema: "pi-workflows.run-bundle.v0" }),
+    );
+    expect(await readRunState(runDir)).toBeNull();
+  });
+
+  it("lists state-only projections without reading trace or session streams", async () => {
+    const outputRoot = await makeTempDir("pi-workflows-projections");
+    const store = new WorkflowRunStore(outputRoot);
+    const state = makeState({
+      workflowSource: { kind: "builtin", id: "demo", revision: "7" },
+      currentNode: "one",
+    });
+    await store.initializeRunBundle(workflow, state);
+    const readFile = vi.spyOn(fs, "readFile");
+
+    const listed = await listRunProjections(outputRoot);
+    const readPaths = readFile.mock.calls.map(([file]) => String(file));
+    readFile.mockRestore();
+
+    expect(listed.items).toEqual([
+      expect.objectContaining({
+        runId: state.runId,
+        workflowName: "demo",
+        workflowId: "demo",
+        revision: "7",
+        currentNode: "one",
+        warnings: [],
+      }),
+    ]);
+    expect(readPaths.some((file) => file.endsWith("trace.ndjson"))).toBe(false);
+    expect(readPaths.some((file) => file.endsWith("entries.ndjson"))).toBe(false);
+    expect(readPaths.some((file) => file.endsWith("events.ndjson"))).toBe(false);
+    expect(readPaths.some((file) => file.endsWith("capture.json"))).toBe(false);
+  });
+
+  it("projects incompatible running schemas as bounded non-live reset warnings", async () => {
+    const outputRoot = await makeTempDir("pi-workflows-incompatible-projections");
+    const store = new WorkflowRunStore(outputRoot);
+    const stateSchemaRunDir = await store.initializeRunBundle(
+      workflow,
+      makeState({ paused: true }),
+    );
+    const manifestSchemaRunDir = await store.initializeRunBundle(
+      workflow,
+      makeState({ paused: true }),
+    );
+
+    const statePath = path.join(stateSchemaRunDir, "state.json");
+    const storedState = JSON.parse(await fs.readFile(statePath, "utf8")) as Record<string, unknown>;
+    await fs.writeFile(
+      statePath,
+      JSON.stringify({ ...storedState, schema: "pi-workflows.run-state.v0" }),
+    );
+    const manifestPath = path.join(manifestSchemaRunDir, "manifest.json");
+    const storedManifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    await fs.writeFile(
+      manifestPath,
+      JSON.stringify({ ...storedManifest, schema: "pi-workflows.run-bundle.v0" }),
+    );
+
+    for (const runDir of [stateSchemaRunDir, manifestSchemaRunDir]) {
+      const projection = await readRunProjection(runDir);
+      expect(projection).toMatchObject({
+        runId: path.basename(runDir),
+        workflowName: "unknown",
+        status: "unreadable",
+        startedAt: "",
+        errorSummary: expect.stringMatching(/deleting its local run directory.*start a new run/i),
+      });
+      expect(projection).not.toHaveProperty("paused");
+      expect(projection?.warnings).toHaveLength(1);
+      expect(projection?.warnings[0]).toMatch(
+        /incompatible_.*_schema.*deleting its local run directory/i,
+      );
+      expect(projection?.warnings[0]?.length).toBeLessThanOrEqual(500);
+    }
+    expect((await listRunProjections(outputRoot, { liveOnly: true })).items).toEqual([]);
+  });
+
+  it("matches coordinator cwd and target repository independently in fast projections", async () => {
+    const outputRoot = await makeTempDir("pi-workflows-project-projections");
+    const store = new WorkflowRunStore(outputRoot);
+    const coordinatorCwd = path.join(outputRoot, "coordinator");
+    const targetRepository = path.join(outputRoot, "target-repository");
+    const state = makeState({ input: { task: "ship", repository: targetRepository } });
+    const runDir = await store.initializeRunBundle(workflow, state);
+    await store.writeSessionBinding(runDir, {
+      schema: "pi-workflows.session-binding.v1",
+      runId: state.runId,
+      piSessionId: "session-project-filter",
+      cwd: coordinatorCwd,
+      boundAt: new Date().toISOString(),
+    });
+
+    const coordinatorMatches = await listRunProjections(outputRoot, { project: coordinatorCwd });
+    const repositoryMatches = await listRunProjections(outputRoot, { project: targetRepository });
+
+    expect(coordinatorMatches.items.map((item) => item.runId)).toEqual([state.runId]);
+    expect(repositoryMatches.items.map((item) => item.runId)).toEqual([state.runId]);
+    expect(coordinatorMatches.items[0]?.project).toBe(coordinatorCwd);
+    expect(repositoryMatches.items[0]?.project).toBe(coordinatorCwd);
+  });
+
+  it("preserves malformed bundle rows and bounds inconsistency warnings", async () => {
+    const outputRoot = await makeTempDir("pi-workflows-projection-warnings");
+    const store = new WorkflowRunStore(outputRoot);
+    const state = makeState({ currentNode: "missing-node" });
+    const runDir = await store.initializeRunBundle(workflow, state);
+    const manifestPath = path.join(runDir, "manifest.json");
+    const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as Record<string, unknown>;
+    await fs.writeFile(manifestPath, JSON.stringify({ ...manifest, workflowName: "wrong" }));
+
+    const badDir = path.join(outputRoot, "broken-run");
+    await fs.mkdir(badDir);
+    await fs.writeFile(path.join(badDir, "manifest.json"), "{not-json");
+
+    const listed = await listRunProjections(outputRoot);
+    const goodProjection = await readRunProjection(runDir);
+    const brokenProjection = listed.items.find((item) => item.runId === "broken-run");
+
+    expect(goodProjection?.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("manifest_state_workflow_name_mismatch"),
+        "current_node_not_in_snapshot: missing-node",
+      ]),
+    );
+    expect(brokenProjection).toMatchObject({
+      status: "unreadable",
+      warnings: ["unreadable_bundle: missing or unreadable manifest and state"],
+    });
+    expect(listed.warnings.length).toBeLessThanOrEqual(100);
+    expect(listed.items.every((item) => item.warnings.length <= 8)).toBe(true);
+    expect(
+      listed.items.every((item) => item.warnings.every((warning) => warning.length <= 500)),
+    ).toBe(true);
+  });
+});
+describe("malformed and sensitive run projections", () => {
+  it("isolates schema-tagged states with malformed projection fields", async () => {
+    const outputRoot = await makeTempDir("pi-workflows-malformed-state-projections");
+    const store = new WorkflowRunStore(outputRoot);
+    const good = makeState({ startedAt: "2026-08-01T00:00:00.000Z" });
+    await store.initializeRunBundle(workflow, good);
+    const malformedCases: Array<{
+      field: string;
+      mutate: (state: Record<string, unknown>) => void;
+    }> = [
+      { field: "startedAt", mutate: (state) => (state.startedAt = 42) },
+      { field: "status", mutate: (state) => (state.status = { invalid: true }) },
+      { field: "runId", mutate: (state) => (state.runId = 42) },
+      { field: "workflowName", mutate: (state) => (state.workflowName = false) },
+      { field: "traceSeq", mutate: (state) => (state.traceSeq = {}) },
+      { field: "outputs", mutate: (state) => (state.outputs = null) },
+      { field: "results", mutate: (state) => (state.results = null) },
+      { field: "steps", mutate: (state) => (state.steps = { length: 1e100 }) },
+      {
+        field: "steps",
+        mutate: (state) =>
+          (state.steps = [
+            {
+              attemptId: "attempt-1",
+              nodeId: "one",
+              nodeType: {},
+              outcome: "failed",
+              startedAt: "2026-08-01T00:00:00.000Z",
+              finishedAt: "2026-08-01T00:00:01.000Z",
+              prompt: null,
+              output: null,
+              error: {},
+            },
+          ]),
+      },
+      { field: "runTitle", mutate: (state) => (state.runTitle = { invalid: true }) },
+      { field: "currentNode", mutate: (state) => (state.currentNode = 42) },
+      { field: "parentRunId", mutate: (state) => (state.parentRunId = false) },
+      { field: "paused", mutate: (state) => (state.paused = "yes") },
+      { field: "updates", mutate: (state) => (state.updates = { length: 1 }) },
+      {
+        field: "finishedAt",
+        mutate: (state) => {
+          state.status = "failed";
+          delete state.finishedAt;
+        },
+      },
+      {
+        field: "waitingOn",
+        mutate: (state) => {
+          state.status = "waiting";
+          delete state.waitingOn;
+        },
+      },
+    ];
+    const malformedRunIds: string[] = [];
+
+    for (const malformedCase of malformedCases) {
+      const runDir = await store.initializeRunBundle(workflow, makeState());
+      malformedRunIds.push(path.basename(runDir));
+      const statePath = path.join(runDir, "state.json");
+      const storedState = JSON.parse(await fs.readFile(statePath, "utf8")) as Record<
+        string,
+        unknown
+      >;
+      malformedCase.mutate(storedState);
+      await fs.writeFile(statePath, JSON.stringify(storedState));
+
+      const projection = await readRunProjection(runDir);
+      expect(projection).toMatchObject({
+        runId: path.basename(runDir),
+        workflowName: "unknown",
+        status: "unreadable",
+        startedAt: "",
+      });
+      expect(projection?.warnings).toHaveLength(1);
+      expect(projection?.warnings[0]).toContain(`malformed_state: ${malformedCase.field}`);
+      expect(projection?.warnings[0]?.length).toBeLessThanOrEqual(500);
+    }
+
+    const listed = await listRunProjections(outputRoot);
+    expect(listed.items).toHaveLength(malformedCases.length + 1);
+    expect(listed.items.find((item) => item.runId === good.runId)).toMatchObject({
+      runId: good.runId,
+      status: "running",
+    });
+    for (const runId of malformedRunIds) {
+      expect(listed.items.find((item) => item.runId === runId)?.status).toBe("unreadable");
+    }
+    expect((await listRunProjections(outputRoot, { liveOnly: true })).items).toEqual([
+      expect.objectContaining({ runId: good.runId }),
+    ]);
+  });
+  it("isolates malformed session bindings from project filters", async () => {
+    const outputRoot = await makeTempDir("pi-workflows-malformed-session-binding");
+    const store = new WorkflowRunStore(outputRoot);
+    const state = makeState({ input: { task: "demo" } });
+    const runDir = await store.initializeRunBundle(workflow, state);
+    const sessionDir = path.join(runDir, "session");
+    await fs.mkdir(sessionDir, { recursive: true });
+    await fs.writeFile(
+      path.join(sessionDir, "binding.json"),
+      JSON.stringify({
+        schema: "pi-workflows.session-binding.v1",
+        runId: state.runId,
+        piSessionId: "session-1",
+        cwd: {},
+        boundAt: state.startedAt,
+      }),
+    );
+
+    const listed = await listRunProjections(outputRoot, { project: "/repo" });
+    expect(listed.items).toEqual([]);
+    const projection = await readRunProjection(runDir);
+    expect(projection?.sessionBinding).toBeNull();
+    expect(projection?.warnings).toContain(
+      "malformed_session_binding: cwd must be a non-empty string",
+    );
+  });
+
+  it("keeps malformed manifest fallback fields sortable when state is unreadable", async () => {
+    const outputRoot = await makeTempDir("pi-workflows-manifest-fallback-projections");
+    const store = new WorkflowRunStore(outputRoot);
+    const good = makeState({ startedAt: "2026-08-01T00:00:00.000Z" });
+    const malformed = makeState();
+    await store.initializeRunBundle(workflow, good);
+    const malformedRunDir = await store.initializeRunBundle(workflow, malformed);
+    await fs.writeFile(path.join(malformedRunDir, "state.json"), "{not-json");
+    const manifestPath = path.join(malformedRunDir, "manifest.json");
+    const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as Record<string, unknown>;
+    await fs.writeFile(
+      manifestPath,
+      JSON.stringify({
+        ...manifest,
+        runId: 42,
+        workflowName: false,
+        runTitle: { invalid: true },
+        startedAt: 42,
+      }),
+    );
+
+    const listed = await listRunProjections(outputRoot);
+    const malformedProjection = listed.items.find(
+      (projection) => projection.runDir === malformedRunDir,
+    );
+
+    expect(listed.items).toHaveLength(2);
+    expect(malformedProjection).toMatchObject({
+      runId: path.basename(malformedRunDir),
+      workflowName: "unknown",
+      startedAt: "",
+      warnings: ["unreadable_or_missing_state"],
+    });
+    expect(malformedProjection).not.toHaveProperty("runTitle");
+  });
+
+  it("redacts step and state errors before projecting summaries", async () => {
+    const outputRoot = await makeTempDir("pi-workflows-redacted-projections");
+    const store = new WorkflowRunStore(outputRoot);
+    const finishedAt = new Date().toISOString();
+    const stepState = makeState({
+      status: "failed",
+      finishedAt,
+      error: "state fallback password=state-fallback-secret",
+      steps: [
+        {
+          attemptId: "attempt-1",
+          nodeId: "one",
+          nodeType: "compute",
+          outcome: "failed",
+          startedAt: finishedAt,
+          finishedAt,
+          prompt: null,
+          output: null,
+          error: "step failed with Bearer step-bearer-secret",
+        },
+      ],
+    });
+    const stateErrorState = makeState({
+      status: "failed",
+      finishedAt,
+      error: 'request failed with {"password":"state-json-secret"}',
+    });
+    const stepRunDir = await store.initializeRunBundle(workflow, stepState);
+    const stateRunDir = await store.initializeRunBundle(workflow, stateErrorState);
+
+    const stepProjection = await readRunProjection(stepRunDir);
+    const stateProjection = await readRunProjection(stateRunDir);
+
+    expect(stepProjection?.errorSummary).toBe("step failed with Bearer [redacted]");
+    expect(stateProjection?.errorSummary).toBe('request failed with {"password":"[redacted]"}');
+    expect(JSON.stringify([stepProjection, stateProjection])).not.toMatch(
+      /step-bearer-secret|state-json-secret|state-fallback-secret/,
+    );
   });
 });
 

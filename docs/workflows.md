@@ -154,6 +154,7 @@ submit output through the `workflow` tool.
 agent({
   prompt: ({ outputs }) => `Review this: ${JSON.stringify(outputs.implement)}`,
   expectedOutput: `{ "verdict": "clean" | "issues_found" }`,
+  toolPolicy: "observation-only", // optional; omit for unrestricted tool access
   validate: (output) => output, // optional; throw to reject the submission
   timeoutMs: ({ input }) =>
     (input as { timeoutMinutes?: number }).timeoutMinutes
@@ -171,6 +172,12 @@ ends its turn without submitting, the extension nudges it, twice by default,
 then fails the step. If an agent node times out or the workflow is cancelled,
 the extension also aborts its active Pi turn. The model cannot continue to use
 tools after the engine has closed that attempt.
+
+`toolPolicy: "observation-only"` marks an agent step as read-only. The engine
+copies the policy into the executor's step contract; runtimes enforce it from
+that contract rather than inferring policy from workflow or node names. Omit
+the field for ordinary unrestricted agent steps. Composed workflows preserve
+the policy when they namespace and wrap agent nodes.
 
 `timeoutMs` can be a finite positive number, `null`, or a function of the normal
 node context that returns either value. Omit it to use the 15-minute engine

@@ -164,7 +164,7 @@ export function parseWorkflowToolInput(value: unknown): WorkflowToolInput {
 export function parseWorkflowSubmissionInput(value: unknown): WorkflowSubmissionInput {
   return parseSelectedAction<WorkflowSubmissionInput>(
     workflowSubmissionInputParsers,
-    value,
+    withoutHostInvocationIntent(value),
     "workflow submission",
   );
 }

@@ -107,8 +107,28 @@ export type AutoimplementBlocked = {
   evidence: unknown;
 };
 
+type BlockerOrigin =
+  | "implementation"
+  | "verification"
+  | "reviewer"
+  | "comments"
+  | "ci"
+  | "delivery";
+
+type BlockerRecovery =
+  | "redesign"
+  | "fix"
+  | "planVerification"
+  | "repairReviewCommand"
+  | "selectReviewCommands"
+  | "inspectComments"
+  | "inspectCi"
+  | "opportunisticTest";
+
 type BlockerChallenge = {
   route: "continue" | "blocked";
+  origin: BlockerOrigin;
+  recovery: BlockerRecovery;
   blockingNow: boolean;
   outsideAuthority: boolean;
   canProceed: boolean;
@@ -116,6 +136,15 @@ type BlockerChallenge = {
   nextAction: string;
   alternativesChecked: string[];
   evidence: string[];
+};
+
+const BLOCKER_RECOVERIES: Record<BlockerOrigin, readonly BlockerRecovery[]> = {
+  implementation: ["redesign", "fix"],
+  verification: ["planVerification", "fix"],
+  reviewer: ["repairReviewCommand", "selectReviewCommands"],
+  comments: ["inspectComments", "fix"],
+  ci: ["inspectCi", "opportunisticTest"],
+  delivery: ["inspectComments", "inspectCi"],
 };
 
 const MAX_BLOCKER_CHALLENGES = 3;
@@ -176,6 +205,11 @@ function requireString(value: unknown, label: string): string {
   return value.trim();
 }
 
+function resolveRepositoryPath(value: unknown, label: string): string {
+  const result = requireString(value, label);
+  return path.resolve(result);
+}
+
 function requireStringArray(value: unknown, label: string): string[] {
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
     throw new Error(`${label} must be an array of strings`);
@@ -194,6 +228,187 @@ function boundedChallengeItems(value: unknown, label: string): string[] {
     }
     return text;
   });
+}
+const MAX_PROMPT_CHARS_DEFAULT = 24_000;
+const MAX_PROMPT_CHARS_BATCH = 32_000;
+const MAX_PROMPT_CHARS_PLAN = 16_000;
+const MAX_PROMPT_CHARS_ISSUE = 16_000;
+const MAX_PROMPT_CHARS_REVIEW = 24_000;
+const MAX_PROMPT_CHARS_TEXT = 8_000;
+const MAX_PROMPT_CHARS_SCOPE = 4_000;
+const MAX_PROMPT_CHARS_CONSTRAINTS = 8_000;
+const MAX_PROMPT_CHARS_DOCUMENTS = 8_000;
+const MAX_PROMPT_CHARS_ATTEMPTS = 16_000;
+
+const PROMPT_ROUTE_KEYS: Record<string, true> = {
+  allPassed: true,
+  anyFailed: true,
+  anyTimedOut: true,
+  anyTruncated: true,
+  attemptId: true,
+  baseBranch: true,
+  blockingNow: true,
+  branch: true,
+  canProceed: true,
+  command: true,
+  completed: true,
+  cwd: true,
+  exitCode: true,
+  headRevision: true,
+  id: true,
+  invocationSucceeded: true,
+  issueKind: true,
+  kind: true,
+  reason: true,
+  name: true,
+  nodeId: true,
+  origin: true,
+  outcome: true,
+  outsideAuthority: true,
+  passed: true,
+  pushed: true,
+  recovery: true,
+  repository: true,
+  route: true,
+  schema: true,
+  severity: true,
+  source: true,
+  status: true,
+  summary: true,
+  stderrTruncated: true,
+  stdoutTruncated: true,
+  timedOut: true,
+  total: true,
+};
+
+const PROMPT_COLLECTION_KEYS: Record<string, true> = {
+  commands: true,
+  evidence: true,
+  failures: true,
+  files: true,
+  items: true,
+  lower: true,
+  p0: true,
+  p1: true,
+  p2: true,
+  repositories: true,
+  steps: true,
+  targets: true,
+  untested: true,
+};
+const PROMPT_ID_KEYS: Record<string, true> = {
+  attemptId: true,
+  headRevision: true,
+  id: true,
+  nodeId: true,
+  runId: true,
+};
+
+function boundPromptText(text: string, maxChars = MAX_PROMPT_CHARS_TEXT): string {
+  if (text.length <= maxChars) return text;
+  const marker = `\n... [TRUNCATED ${text.length} original chars] ...\n`;
+  if (marker.length >= maxChars) return "[TRUNCATED]";
+  const headChars = Math.floor((maxChars - marker.length) / 2);
+  const tailChars = maxChars - marker.length - headChars;
+  return `${text.slice(0, headChars)}${marker}${text.slice(-tailChars)}`;
+}
+function compactPromptFact(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  if (maxChars <= 1) return "…".slice(0, maxChars);
+  const headChars = Math.ceil((maxChars - 1) / 2);
+  const tailChars = maxChars - 1 - headChars;
+  return `${text.slice(0, headChars)}…${tailChars === 0 ? "" : text.slice(-tailChars)}`;
+}
+
+function projectPromptValue(
+  value: unknown,
+  stringBudget: number,
+  summaryOnly: boolean,
+  arrayLimit = Number.POSITIVE_INFINITY,
+  compactStrings = false,
+): unknown {
+  if (typeof value === "string") {
+    return compactStrings
+      ? compactPromptFact(value, stringBudget)
+      : boundPromptText(value, stringBudget);
+  }
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    const limit = Math.max(1, Math.floor(arrayLimit));
+    if (value.length <= limit) {
+      return value.map((item) =>
+        projectPromptValue(item, stringBudget, summaryOnly, arrayLimit, compactStrings),
+      );
+    }
+    const headCount = Math.ceil(limit / 2);
+    const tailCount = Math.floor(limit / 2);
+    const omittedItems = value.length - headCount - tailCount;
+    return [
+      ...value
+        .slice(0, headCount)
+        .map((item) =>
+          projectPromptValue(item, stringBudget, summaryOnly, arrayLimit, compactStrings),
+        ),
+      { promptProjection: { truncated: true, omittedItems } },
+      ...value
+        .slice(value.length - tailCount)
+        .map((item) =>
+          projectPromptValue(item, stringBudget, summaryOnly, arrayLimit, compactStrings),
+        ),
+    ];
+  }
+
+  const projected: Record<string, unknown> = {};
+  let omittedFields = 0;
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    const routeFact = PROMPT_ROUTE_KEYS[key] === true;
+    const collection = PROMPT_COLLECTION_KEYS[key] === true;
+    if (
+      summaryOnly &&
+      !routeFact &&
+      !collection &&
+      typeof child !== "number" &&
+      typeof child !== "boolean"
+    ) {
+      omittedFields += 1;
+      continue;
+    }
+    const factBudget = PROMPT_ID_KEYS[key] === true ? 128 : Math.min(512, stringBudget);
+    projected[key] = projectPromptValue(
+      child,
+      routeFact ? factBudget : stringBudget,
+      summaryOnly,
+      arrayLimit,
+      routeFact || collection,
+    );
+  }
+  if (omittedFields > 0) {
+    projected.promptProjection = {
+      truncated: true,
+      omittedFields,
+    };
+  }
+  return projected;
+}
+
+function projectBoundedJson(value: unknown, maxChars = MAX_PROMPT_CHARS_DEFAULT): string {
+  if (value === undefined) return "";
+  if (typeof value === "string") return boundPromptText(value, maxChars);
+
+  for (const stringBudget of [4_000, 2_000, 1_000, 500, 250, 120, 60, 20]) {
+    const json = JSON.stringify(projectPromptValue(value, stringBudget, false));
+    if (json.length <= maxChars) return json;
+  }
+  for (const stringBudget of [120, 60, 20]) {
+    const json = JSON.stringify(projectPromptValue(value, stringBudget, true));
+    if (json.length <= maxChars) return json;
+  }
+  for (const arrayLimit of [64, 32, 16, 8, 4]) {
+    const json = JSON.stringify(projectPromptValue(value, 20, true, arrayLimit));
+    if (json.length <= maxChars) return json;
+  }
+
+  throw new Error(`Autoimplement structural prompt projection exceeds ${maxChars} characters`);
 }
 
 function isTimeoutFallbackSource(nodeId: string): nodeId is TimeoutFallbackSource {
@@ -230,16 +445,56 @@ function hasCurrentAcceptedWork(context: WorkflowNodeContext): boolean {
   return index >= 0 && context.state.steps[index]?.outcome === "ok";
 }
 
-function hasCurrentPublication(context: WorkflowNodeContext): boolean {
-  const workIndex = latestWorkAttemptIndex(context);
-  const publicationIndex = latestStepIndex(context, (step) => {
+function latestPublicationIndex(context: WorkflowNodeContext): number {
+  return latestStepIndex(context, (step) => {
     if (step.outcome !== "ok") return false;
     if (step.nodeId === "publish") return true;
     if (step.nodeId !== "verifyP2") return false;
-    const output = step.output as { passed?: unknown } | null;
-    return output?.passed === true;
+    const output = step.output;
+    return (
+      output !== null && typeof output === "object" && "passed" in output && output.passed === true
+    );
   });
-  return publicationIndex > workIndex;
+}
+
+function hasCurrentPublication(context: WorkflowNodeContext): boolean {
+  return latestPublicationIndex(context) > latestWorkAttemptIndex(context);
+}
+
+function latestSuccessfulRouteStep(
+  context: WorkflowNodeContext,
+  nodeIds: readonly string[],
+): { index: number; route: string | undefined } {
+  const index = latestStepIndex(
+    context,
+    (step) => step.outcome === "ok" && nodeIds.includes(step.nodeId),
+  );
+  const output = index < 0 ? undefined : context.state.steps[index]?.output;
+  const route =
+    output !== null &&
+    typeof output === "object" &&
+    "route" in output &&
+    typeof output.route === "string"
+      ? output.route
+      : undefined;
+  return { index, route };
+}
+
+function currentCommentsIndex(context: WorkflowNodeContext): number {
+  const publicationIndex = latestPublicationIndex(context);
+  const comments = latestSuccessfulRouteStep(context, ["inspectComments"]);
+  return comments.index > publicationIndex && comments.route === "ci" ? comments.index : -1;
+}
+
+function hasCurrentReadyCi(context: WorkflowNodeContext): boolean {
+  const commentsIndex = currentCommentsIndex(context);
+  if (commentsIndex < 0) return false;
+  const ci = latestSuccessfulRouteStep(context, ["inspectCi", "assessTrackedCi"]);
+  if (ci.index <= commentsIndex) return false;
+  if (ci.route === "green") return true;
+  if (ci.route !== "failed") return false;
+  const classification = latestSuccessfulRouteStep(context, ["classifyCi"]);
+  return classification.index > ci.index && classification.route === "unrelated";
 }
 
 function parseTimeoutFallback(value: unknown, context: WorkflowNodeContext): TimeoutFallbackResult {
@@ -280,20 +535,11 @@ function parseTimeoutFallback(value: unknown, context: WorkflowNodeContext): Tim
       "timeout fallback cannot move past publication without a current published head",
     );
   }
-  if (route === "ci") {
-    const comments = context.outputs.inspectComments as { route?: unknown } | undefined;
-    if (comments?.route !== "ci") {
-      throw new Error("timeout fallback cannot route to CI before comment inspection completed");
-    }
+  if (route === "ci" && currentCommentsIndex(context) < 0) {
+    throw new Error("timeout fallback cannot route to CI before comment inspection completed");
   }
-  if (route === "deliver") {
-    const ci = (context.outputs.assessTrackedCi ?? context.outputs.inspectCi) as
-      | { route?: unknown }
-      | undefined;
-    const classification = context.outputs.classifyCi as { route?: unknown } | undefined;
-    if (ci?.route !== "green" && classification?.route !== "unrelated") {
-      throw new Error("timeout fallback cannot route to delivery before CI is ready");
-    }
+  if (route === "deliver" && !hasCurrentReadyCi(context)) {
+    throw new Error("timeout fallback cannot route to delivery before CI is ready");
   }
 
   return { route, reason, evidence };
@@ -353,17 +599,34 @@ function timeoutFallbackGuard(context: WorkflowNodeContext) {
 function throwLatestSupportedFailure(context: WorkflowNodeContext): never {
   for (let index = context.state.steps.length - 1; index >= 0; index -= 1) {
     const step = context.state.steps[index];
-    if (step?.outcome === "failed" && isTimeoutFallbackSource(step.nodeId)) {
+    if (
+      step?.outcome === "failed" &&
+      (isTimeoutFallbackSource(step.nodeId) ||
+        step.nodeId === "assessReview" ||
+        step.nodeId === "recoverReviewAssessment")
+    ) {
       throw new Error(step.error ?? `Autoimplement node failed: ${step.nodeId}`);
     }
   }
   throw new Error("No supported failed Autoimplement step is available");
 }
 
-function parseBlockerChallenge(value: unknown): BlockerChallenge {
+function parseBlockerChallenge(value: unknown, context: WorkflowNodeContext): BlockerChallenge {
   const result = requireRecord(value, "blocker challenge");
   if (result.route !== "continue" && result.route !== "blocked") {
     throw new Error("blocker challenge route must be continue or blocked");
+  }
+  const guard = requireRecord(context.outputs.challengeBlockerGuard, "blocker challenge guard");
+  const origin = guard.origin;
+  if (typeof origin !== "string" || !(origin in BLOCKER_RECOVERIES) || result.origin !== origin) {
+    throw new Error("blocker challenge origin must match the guarded blocker origin");
+  }
+  const recovery = result.recovery;
+  if (
+    typeof recovery !== "string" ||
+    !BLOCKER_RECOVERIES[origin as BlockerOrigin].includes(recovery as BlockerRecovery)
+  ) {
+    throw new Error(`blocker challenge recovery is not allowed for ${String(origin)}`);
   }
   for (const key of ["blockingNow", "outsideAuthority", "canProceed"] as const) {
     if (typeof result[key] !== "boolean") {
@@ -411,6 +674,8 @@ function parseBlockerChallenge(value: unknown): BlockerChallenge {
 
   return {
     route: result.route,
+    origin: origin as BlockerOrigin,
+    recovery: recovery as BlockerRecovery,
     blockingNow,
     outsideAuthority,
     canProceed,
@@ -462,6 +727,10 @@ function parseInput(value: unknown): AutoimplementInput {
       documents: [...raw.documents] as string[],
     };
   }
+  let repository: string | undefined;
+  if (input.repository !== undefined) {
+    repository = resolveRepositoryPath(input.repository, "repository");
+  }
   const concurrency = parseAutoimplementConcurrency(input.concurrency);
   const approval = parsePlanApprovalPolicy(input.approval);
   return {
@@ -469,9 +738,7 @@ function parseInput(value: unknown): AutoimplementInput {
     ...(input.plan !== undefined ? { plan: input.plan } : {}),
     ...(input.scope !== undefined ? { scope: requireString(input.scope, "scope") } : {}),
     ...(constraints !== undefined ? { constraints: [...constraints] as string[] } : {}),
-    ...(input.repository !== undefined
-      ? { repository: requireString(input.repository, "repository") }
-      : {}),
+    ...(repository !== undefined ? { repository } : {}),
     ...(input.baseBranch !== undefined
       ? { baseBranch: requireString(input.baseBranch, "baseBranch") }
       : {}),
@@ -643,6 +910,30 @@ function currentDocumentationReceipt(
     documents: documented.output.documentation.files,
   };
 }
+const BLOCKER_ORIGINS_BY_NODE: Readonly<Record<string, BlockerOrigin>> = {
+  classifyImplementation: "implementation",
+  classifyVerification: "verification",
+  runReview: "reviewer",
+  repairReviewCommand: "reviewer",
+  routeReviewAssessment: "reviewer",
+  routeInspectCommentsResult: "comments",
+  routeInspectCiResult: "ci",
+  repairCiCommand: "ci",
+  assessTrackedCi: "ci",
+  classifyCi: "ci",
+  routeFinalizeDeliveryResult: "delivery",
+};
+
+function blockerOrigin(context: WorkflowNodeContext): BlockerOrigin {
+  const previous = context.state.steps.at(-1);
+  const origin = previous === undefined ? undefined : BLOCKER_ORIGINS_BY_NODE[previous.nodeId];
+  if (origin === undefined) {
+    throw new Error(
+      `No safe blocker recovery exists for ${previous?.nodeId ?? "the workflow start"}`,
+    );
+  }
+  return origin;
+}
 
 function blockerChallenges(context: WorkflowNodeContext): BlockerChallenge[] {
   return context.state.steps
@@ -654,16 +945,15 @@ function latestBlockerClaim(context: WorkflowNodeContext): unknown {
   const ids = [
     "classifyImplementation",
     "runReview",
-    "assessReview",
+    "routeReviewAssessment",
     "classifyVerification",
     "repairReviewCommand",
-    "inspectComments",
-    "inspectCi",
+    "routeInspectCommentsResult",
+    "routeInspectCiResult",
     "repairCiCommand",
     "assessTrackedCi",
     "classifyCi",
-    "finalizeDelivery",
-    "timeoutFallback",
+    "routeFinalizeDeliveryResult",
   ];
   for (let index = context.state.steps.length - 1; index >= 0; index -= 1) {
     const step = context.state.steps[index];
@@ -747,6 +1037,15 @@ function parseVerificationForContext(
 function currentPublishedRepositories(context: WorkflowNodeContext): PublishedRepositories {
   return latestOutput<PublishedRepositories>(context, ["verifyP2", "publish"]);
 }
+function publishedRepositoryReferences(context: WorkflowNodeContext): string {
+  return JSON.stringify({
+    repositories: currentPublishedRepositories(context).repositories.map((repository) => ({
+      id: repository.id,
+      headRevision: repository.headRevision,
+      pr: repository.pr,
+    })),
+  });
+}
 
 type DeliveryRepositoryResult = {
   repository: string;
@@ -756,18 +1055,23 @@ type DeliveryRepositoryResult = {
   reason: string;
 };
 
-function parseDeliveryRepository(value: unknown, index: number): DeliveryRepositoryResult {
+function parseDeliveryRepository(
+  value: unknown,
+  index: number,
+  published: ReadonlyMap<string, PublishedRepository>,
+): DeliveryRepositoryResult {
   const result = requireRecord(value, `delivery repositories[${index}]`);
-  const repository = requireString(result.repository, `delivery repositories[${index}].repository`);
-  if (!path.isAbsolute(repository)) {
-    throw new Error(`delivery repositories[${index}].repository must be absolute`);
+  const id = requireString(result.id, `delivery repositories[${index}].id`);
+  const expected = published.get(id);
+  if (expected === undefined) {
+    throw new Error(`delivery repositories[${index}].id is not a published repository: ${id}`);
   }
   if (typeof result.merged !== "boolean") {
     throw new Error(`delivery repositories[${index}].merged must be a boolean`);
   }
   return {
-    repository: path.resolve(repository),
-    pr: requireString(result.pr, `delivery repositories[${index}].pr`),
+    repository: path.resolve(expected.repository),
+    pr: expected.pr,
     merged: result.merged,
     reportComment: requireString(
       result.reportComment,
@@ -793,10 +1097,16 @@ function parseDeliveryResult(
   if (typeof result.merged !== "boolean") {
     throw new Error("completed delivery merged must be a boolean");
   }
-  const pr = requireString(result.pr, "completed delivery pr");
   const reportComment = requireString(result.reportComment, "completed delivery reportComment");
   const reason = requireString(result.reason, "completed delivery reason");
   const published = currentPublishedRepositories(context).repositories;
+  const firstPublished = published[0];
+  if (firstPublished === undefined)
+    throw new Error("completed delivery has no published repository");
+  const pr = firstPublished.pr;
+  const publishedById = new Map(
+    published.map((repository) => [repository.id, repository] as const),
+  );
   let repositories: DeliveryRepositoryResult[];
   if (result.repositories === undefined) {
     if (published.length !== 1) {
@@ -817,7 +1127,9 @@ function parseDeliveryResult(
     if (!Array.isArray(result.repositories)) {
       throw new Error("completed delivery repositories must be an array");
     }
-    repositories = result.repositories.map(parseDeliveryRepository);
+    repositories = result.repositories.map((repository, index) =>
+      parseDeliveryRepository(repository, index, publishedById),
+    );
   }
   const actual = new Map<string, DeliveryRepositoryResult>();
   for (const repository of repositories) {
@@ -846,13 +1158,9 @@ function parseDeliveryResult(
       `completed delivery contains unpublished repositories: ${[...actual.keys()].join(", ")}`,
     );
   }
-  const firstPublished = published[0];
-  const first =
-    firstPublished === undefined
-      ? undefined
-      : repositories.find(
-          (repository) => repository.repository === path.resolve(firstPublished.repository),
-        );
+  const first = repositories.find(
+    (repository) => repository.repository === path.resolve(firstPublished.repository),
+  );
   if (
     first === undefined ||
     first.pr !== pr ||
@@ -908,11 +1216,38 @@ function parseCiInspectionForPublished(
   value: unknown,
   context: WorkflowNodeContext,
 ): CiInspectionBatch {
-  const inspected = parseCiInspectionBatch(value);
+  const result = requireRecord(value, "CI inspection");
+  if (!Array.isArray(result.targets)) {
+    throw new Error("CI inspection targets must be an array");
+  }
   const published = currentPublishedRepositories(context);
   const expected = new Map(
     published.repositories.map((repository) => [repository.id, repository] as const),
   );
+  const hydratedTargets = result.targets.map((value, index) => {
+    const target = requireRecord(value, `CI targets[${index}]`);
+    const id = requireString(target.id, `CI targets[${index}].id`);
+    const repository = expected.get(id);
+    if (repository === undefined) {
+      throw new Error(`CI target id is not a published repository: ${id}`);
+    }
+    const trackingCommand =
+      target.trackingCommand === undefined
+        ? undefined
+        : {
+            ...requireRecord(target.trackingCommand, `CI targets[${index}].trackingCommand`),
+            id,
+            cwd: repository.repository,
+          };
+    return {
+      ...target,
+      repository: repository.repository,
+      headRevision: repository.headRevision,
+      pr: repository.pr,
+      ...(trackingCommand === undefined ? {} : { trackingCommand }),
+    };
+  });
+  const inspected = parseCiInspectionBatch({ targets: hydratedTargets });
   for (const target of inspected.targets) {
     const repository = expected.get(target.id);
     if (
@@ -1088,8 +1423,16 @@ function parseReviewAssessment(value: unknown, context: WorkflowNodeContext): Re
 
 function reviewRounds(context: WorkflowNodeContext): ReviewAssessment[] {
   return context.state.steps
-    .filter((step) => step.nodeId === "assessReview" && step.outcome === "ok")
+    .filter(
+      (step) =>
+        (step.nodeId === "assessReview" || step.nodeId === "recoverReviewAssessment") &&
+        step.outcome === "ok",
+    )
     .map((step) => step.output as ReviewAssessment);
+}
+
+function currentReviewAssessment(context: WorkflowNodeContext): ReviewAssessment {
+  return latestOutput<ReviewAssessment>(context, ["recoverReviewAssessment", "assessReview"]);
 }
 
 function reviewRoundsForOutput(context: WorkflowNodeContext): ReviewAssessment[] {
@@ -1129,6 +1472,7 @@ function latestBlockedReason(context: WorkflowNodeContext): { reason: string; ev
     "challengeBlocker",
     "runReview",
     "assessReview",
+    "reviewAssessmentRecoveryBlocked",
     "finalizeDelivery",
     "inspectCi",
     "assessTrackedCi",
@@ -1238,9 +1582,9 @@ export const autoimplementWorkflow = defineWorkflow({
           "Do not devise, improve, replace, document, or implement a plan.",
           "Return blocked when no single clear existing plan can be found.",
           "Report whether its canonical documentation is current, missing, or stale.",
-          `Task: ${request.task}`,
-          `Repository: ${request.repository ?? "current repository"}`,
-          `Referenced documents: ${JSON.stringify(request.documents ?? [])}`,
+          `Task: ${boundPromptText(request.task)}`,
+          `Repository: ${boundPromptText(request.repository ?? "current repository", MAX_PROMPT_CHARS_SCOPE)}`,
+          `Referenced documents: ${projectBoundedJson(request.documents ?? [], MAX_PROMPT_CHARS_DOCUMENTS)}`,
         ].join("\n");
       },
       expectedOutput:
@@ -1294,12 +1638,12 @@ export const autoimplementWorkflow = defineWorkflow({
           "Before any forward route, confirm that its accepted output belongs to the current work attempt and that observed local and remote heads match the accepted publication. Otherwise retry, replan, or block.",
           "Choose retry only when the timed-out stage must run again. Choose verify when accepted implementation output exists and verification is next. Choose review when accepted publication output exists. Choose ci only after comment inspection routed to CI. Choose deliver only after CI is green or classified unrelated. Choose replan when evidence invalidates the approved plan. Choose blocked only when no safe route exists.",
           "Do not skip required implementation, verification, review, CI, authorization, or delivery checks.",
-          `Task: ${request.task}`,
-          `Approved plan: ${JSON.stringify(currentPlan(context))}`,
-          `Authorized scope: ${request.scope ?? request.repository ?? "the current repository and task"}`,
-          `Timeout: ${JSON.stringify(guard)}`,
-          `Previous fallback results: ${JSON.stringify(previousFallbacks)}`,
-          `Recent workflow attempts: ${JSON.stringify(recentWorkflowAttempts(context))}`,
+          `Task: ${boundPromptText(request.task)}`,
+          `Approved plan: ${projectBoundedJson(currentPlan(context), MAX_PROMPT_CHARS_PLAN)}`,
+          `Authorized scope: ${boundPromptText(request.scope ?? request.repository ?? "the current repository and task", MAX_PROMPT_CHARS_SCOPE)}`,
+          `Timeout: ${projectBoundedJson(guard)}`,
+          `Previous fallback results: ${projectBoundedJson(previousFallbacks)}`,
+          `Recent workflow attempts: ${projectBoundedJson(recentWorkflowAttempts(context), MAX_PROMPT_CHARS_ATTEMPTS)}`,
         ].join("\n");
       },
       expectedOutput: `{ "route": "retry" | "verify" | "review" | "ci" | "deliver" | "replan" | "blocked", "reason": "why this is the safest next stage", "evidence": ["state inspected before choosing the route"] }`,
@@ -1329,10 +1673,10 @@ export const autoimplementWorkflow = defineWorkflow({
       prompt: (context) => {
         const request = context.input as AutoimplementInput;
         return [
-          `Implement this task end-to-end: ${request.task}`,
-          `Plan: ${JSON.stringify(currentPlan(context))}`,
-          `Authorized scope: ${request.scope ?? request.repository ?? "the current repository and task"}`,
-          `Constraints: ${JSON.stringify(request.constraints ?? [])}`,
+          `Implement this task end-to-end: ${boundPromptText(request.task)}`,
+          `Plan: ${projectBoundedJson(currentPlan(context), MAX_PROMPT_CHARS_PLAN)}`,
+          `Authorized scope: ${boundPromptText(request.scope ?? request.repository ?? "the current repository and task", MAX_PROMPT_CHARS_SCOPE)}`,
+          `Constraints: ${projectBoundedJson(request.constraints ?? [], MAX_PROMPT_CHARS_CONSTRAINTS)}`,
           "Before changing files, inspect the current worktree, diff, commits, branch, remote state, and matching pull request. Continue existing work and do not repeat completed effects.",
           "Follow repository instructions and use the most elegant long-term production-ready implementation without unnecessary work.",
           "If implementation exposes a new design or scope problem, report it precisely instead of forcing the old plan.",
@@ -1352,7 +1696,7 @@ export const autoimplementWorkflow = defineWorkflow({
           "Choose redesign when new evidence invalidates the plan.",
           "Choose fix for a local implementation issue that does not change the plan.",
           "Choose blocked only for a material issue outside the authorized scope.",
-          `Implementation: ${JSON.stringify(outputs.implement)}`,
+          `Implementation: ${projectBoundedJson(outputs.implement)}`,
         ].join("\n"),
       expectedOutput: `{ "route": "verify" | "redesign" | "fix" | "blocked", "summary": "reason", "evidence": "evidence" }`,
       validate: (value) =>
@@ -1365,14 +1709,27 @@ export const autoimplementWorkflow = defineWorkflow({
     challengeBlockerGuard: compute({
       run: (context) => {
         const challenges = blockerChallenges(context);
+        let origin: BlockerOrigin;
+        try {
+          origin = blockerOrigin(context);
+        } catch (error) {
+          return {
+            route: "blocked",
+            reason: error instanceof Error ? error.message : "No safe blocker recovery exists.",
+            evidence: { previousNode: context.state.steps.at(-1)?.nodeId ?? null },
+          };
+        }
         return challenges.length >= MAX_BLOCKER_CHALLENGES
           ? {
               route: "blocked",
+              origin,
               reason: `Blocker challenge reached the ${MAX_BLOCKER_CHALLENGES}-attempt workflow safety limit.`,
               evidence: { attempts: challenges.length, challenges },
             }
           : {
               route: "challenge",
+              origin,
+              recoveries: BLOCKER_RECOVERIES[origin],
               attempt: challenges.length + 1,
               limit: MAX_BLOCKER_CHALLENGES,
             };
@@ -1382,30 +1739,37 @@ export const autoimplementWorkflow = defineWorkflow({
       statusDetail: "challenging blocker claim",
       prompt: (context) => {
         const request = context.input as AutoimplementInput;
+        const guard = requireRecord(
+          context.outputs.challengeBlockerGuard,
+          "blocker challenge guard",
+        );
         return [
           "Independently challenge the latest claim that autoimplement is blocked.",
-          "Are you really blocked?",
-          "Is this really a blocker right now?",
-          "Can you find a safe way to move forward and finish this?",
-          "Are you getting stuck on something trivial, procedural, reversible, or already authorized?",
+          "Are you really blocked? Is this really a blocker right now? Can you find a safe way to move forward and finish this?",
           "Inspect the task, approved plan, current result, evidence, scope, authority, previous attempts, and viable alternatives.",
-          "Distinguish a true external blocker from ordinary rollout work, local implementation work, a design adjustment, a missing verification step, or a reversible operational task.",
-          "A local test failure, stale package, packaging or artifact mismatch, rollback preparation, or deployment procedure is not by itself outside authority.",
-          "If a safe deployment and rollback path is already authorized, a supported cutover is work to do, not a blocker.",
           "Confirm blocked only when the issue blocks progress now, is outside authority, and has no safe practical path forward.",
+          "For continue, preserve the exact blocker origin and choose only one listed recovery. No recovery may skip implementation, verification, publication, review, comment, CI, or delivery gates.",
           "Return continue with the next practical action when work can proceed. Keep text concise, with at most five alternatives and five evidence items.",
-          `Task: ${request.task}`,
-          `Approved plan: ${JSON.stringify(currentPlan(context))}`,
-          `Current result and claimed blocker: ${JSON.stringify(latestBlockerClaim(context))}`,
-          `Authorized scope: ${request.scope ?? request.repository ?? "the current repository and task"}`,
-          `Constraints and authority: ${JSON.stringify(request.constraints ?? [])}`,
+          `Blocker origin: ${String(guard.origin)}`,
+          `Allowed recoveries: ${projectBoundedJson(guard.recoveries)}`,
+          `Task: ${boundPromptText(request.task)}`,
+          `Approved plan: ${projectBoundedJson(currentPlan(context), MAX_PROMPT_CHARS_PLAN)}`,
+          `Current result and claimed blocker: ${projectBoundedJson(latestBlockerClaim(context), MAX_PROMPT_CHARS_ISSUE)}`,
+          `Authorized scope: ${boundPromptText(request.scope ?? request.repository ?? "the current repository and task", MAX_PROMPT_CHARS_SCOPE)}`,
+          `Constraints and authority: ${projectBoundedJson(request.constraints ?? [], MAX_PROMPT_CHARS_CONSTRAINTS)}`,
           `Merge authorized: ${request.merge === true}`,
-          `Previous blocker challenges: ${JSON.stringify(blockerChallenges(context))}`,
-          `Recent workflow attempts: ${JSON.stringify(recentWorkflowAttempts(context))}`,
+          `Previous blocker challenges: ${projectBoundedJson(blockerChallenges(context), MAX_PROMPT_CHARS_ISSUE)}`,
+          `Recent workflow attempts: ${projectBoundedJson(recentWorkflowAttempts(context), MAX_PROMPT_CHARS_ATTEMPTS)}`,
         ].join("\n");
       },
-      expectedOutput: `{ "route": "continue" | "blocked", "blockingNow": true | false, "outsideAuthority": true | false, "canProceed": true | false, "reason": "concise reason", "nextAction": "practical action or empty when blocked", "alternativesChecked": ["checked alternative"], "evidence": ["concrete evidence"] }`,
+      expectedOutput: `{ "route": "continue" | "blocked", "origin": "exact guarded origin", "recovery": "one allowed recovery", "blockingNow": true | false, "outsideAuthority": true | false, "canProceed": true | false, "reason": "concise reason", "nextAction": "practical action or empty when blocked", "alternativesChecked": ["checked alternative"], "evidence": ["concrete evidence"] }`,
       validate: parseBlockerChallenge,
+    }),
+    routeBlockerRecovery: compute({
+      run: ({ outputs }) => {
+        const challenge = outputs.challengeBlocker as BlockerChallenge;
+        return { route: challenge.recovery, origin: challenge.origin };
+      },
     }),
     planVerification: agent({
       timeoutMs: 15 * 60_000,
@@ -1445,8 +1809,8 @@ export const autoimplementWorkflow = defineWorkflow({
           "Assess the completed local verification commands.",
           "Set passed true only when every required command succeeded without truncated output.",
           "Report exact command outcomes, failures, and checks that still need remote verification.",
-          `Command plan: ${JSON.stringify(latestOutput(context, ["planVerification"]))}`,
-          `Command results: ${JSON.stringify(latestOutput(context, ["runVerification"]))}`,
+          `Command plan: ${projectBoundedJson(latestOutput(context, ["planVerification"]))}`,
+          `Command results: ${projectBoundedJson(latestOutput(context, ["runVerification"]))}`,
         ].join("\n"),
       expectedOutput: `{ "passed": true | false, "commands": [{ "command": "exact command", "outcome": "result" }], "failures": ["failure"], "untested": ["remaining check"] }`,
       validate: (value) => requireRecord(value, "verification result"),
@@ -1460,7 +1824,7 @@ export const autoimplementWorkflow = defineWorkflow({
           "Choose redesign for evidence that invalidates the plan.",
           "Choose fix for a local implementation or test issue.",
           "Choose blocked only when the work cannot continue in scope.",
-          `Verification: ${JSON.stringify(outputs.verify)}`,
+          `Verification: ${projectBoundedJson(outputs.verify)}`,
         ].join("\n"),
       expectedOutput: `{ "route": "publish" | "redesign" | "fix" | "blocked", "summary": "reason", "evidence": "evidence" }`,
       validate: (value) =>
@@ -1477,8 +1841,8 @@ export const autoimplementWorkflow = defineWorkflow({
         [
           "Fix the current implementation issue without expanding the approved design.",
           "Inspect the current diff and commits first. Continue any partial fix and change only work that is still missing.",
-          `Issue: ${JSON.stringify(latestIssue(context))}`,
-          `Current plan: ${JSON.stringify(currentPlan(context))}`,
+          `Issue: ${projectBoundedJson(latestIssue(context), MAX_PROMPT_CHARS_ISSUE)}`,
+          `Current plan: ${projectBoundedJson(currentPlan(context), MAX_PROMPT_CHARS_PLAN)}`,
           "Stop after the fix so verification can run again.",
         ].join("\n"),
       expectedOutput: `{ "fixed": "what changed", "files": ["changed file"] }`,
@@ -1496,7 +1860,7 @@ export const autoimplementWorkflow = defineWorkflow({
           "Inspect the complete public diff before every push or PR mutation.",
           "Report every repository that received a pushed pull request with its absolute repository path, branch, base branch, pushed head revision, and PR URL.",
           "Include dependencyFingerprint only when a declared dependency result is relevant to review reuse.",
-          `Requested base branch: ${request.baseBranch ?? "discover each repository default branch"}.`,
+          `Requested base branch: ${boundPromptText(request.baseBranch ?? "discover each repository default branch", MAX_PROMPT_CHARS_SCOPE)}.`,
           "Do not merge yet.",
         ].join("\n");
       },
@@ -1538,7 +1902,7 @@ export const autoimplementWorkflow = defineWorkflow({
           "Diagnose and fix only local reviewer prerequisites or configuration that are in scope.",
           "Do not change the deterministic executable, base branch, or repository command shape, and do not substitute another reviewer.",
           "Choose retry only when the same commands can now produce complete reviews. Choose blocked when omp-reviewer or required configuration remains unavailable.",
-          `Failed batch: ${JSON.stringify(context.outputs.runReview)}`,
+          `Failed batch: ${projectBoundedJson(context.outputs.runReview)}`,
         ].join("\n"),
       expectedOutput: `{ "route": "retry" | "blocked", "reason": "diagnosis and action" }`,
       validate: (value) => {
@@ -1562,16 +1926,45 @@ export const autoimplementWorkflow = defineWorkflow({
           "Set invocationSucceeded false when a complete valid review was not produced.",
           "Record every finding under P0, P1, P2, or lower and mark it as design or implementation.",
           "Do not promote P2 findings to P1 merely to force another review round.",
-          `Selected repositories: ${JSON.stringify(selected.repositories)}`,
-          `Reviewer results: ${JSON.stringify(execution.batch)}`,
+          `Selected repositories: ${projectBoundedJson(selected.repositories, MAX_PROMPT_CHARS_PLAN)}`,
+          `Reviewer results: ${projectBoundedJson(execution.batch, MAX_PROMPT_CHARS_BATCH)}`,
         ].join("\n");
       },
       expectedOutput: `{ "repositories": [{ "id": "repository-id", "invocationSucceeded": true | false, "p0": [{ "kind": "design" | "implementation", "summary": "finding" }], "p1": [], "p2": [], "lower": [], "reason": "assessment" }], "reason": "batch assessment" }`,
       validate: parseReviewAssessment,
     }),
+    recoverReviewAssessment: agent({
+      timeoutMs: 8 * 60_000,
+      statusDetail: "recovering reviewer assessment",
+      prompt: (context) => {
+        const selected = latestOutput<ReviewCommandSelection>(context, ["selectReviewCommands"]);
+        const execution = latestOutput<BatchExecution>(context, ["runReview"]);
+        return [
+          "The first reviewer assessment timed out. Reassess the persisted completed batch once without invoking omp-reviewer or running any commands.",
+          "Return one repository entry for every selected command, using the exact repository id.",
+          "Set invocationSucceeded false when a complete valid review was not produced.",
+          "Record every finding under P0, P1, P2, or lower and mark it as design or implementation.",
+          "Do not promote P2 findings to P1 merely to force another review round.",
+          `Selected repositories: ${projectBoundedJson(selected.repositories, MAX_PROMPT_CHARS_PLAN)}`,
+          `Persisted reviewer results: ${projectBoundedJson(execution.batch, MAX_PROMPT_CHARS_BATCH)}`,
+        ].join("\n");
+      },
+      expectedOutput: `{ "repositories": [{ "id": "repository-id", "invocationSucceeded": true | false, "p0": [{ "kind": "design" | "implementation", "summary": "finding" }], "p1": [], "p2": [], "lower": [], "reason": "assessment" }], "reason": "batch assessment" }`,
+      validate: parseReviewAssessment,
+    }),
+    reviewAssessmentRecoveryBlocked: compute({
+      run: () => ({
+        reason:
+          "Reviewer commands completed, but both the primary and bounded recovery assessments timed out.",
+        evidence: { reviewerRerun: false, assessmentsTimedOut: 2 },
+      }),
+    }),
+    routeReviewAssessment: compute({
+      run: (context) => currentReviewAssessment(context),
+    }),
     triageReview: compute({
-      run: ({ outputs }) => {
-        const review = outputs.assessReview as ReviewAssessment;
+      run: (context) => {
+        const review = currentReviewAssessment(context);
         const critical = [...review.p0, ...review.p1];
         return {
           route: critical.some((finding) => finding.kind === "design") ? "redesign" : "fix",
@@ -1583,12 +1976,12 @@ export const autoimplementWorkflow = defineWorkflow({
     addressP2: agent({
       timeoutMs: 30 * 60_000,
       statusDetail: "addressing P2 findings",
-      prompt: ({ outputs }) =>
+      prompt: (context) =>
         [
           "Address valid P2 findings from the last review when the improvement is proportionate and in scope.",
           "Inspect the current diff and commits first. Do not repeat a P2 change that is already present.",
           "Do not rerun omp-reviewer solely because P2 work changes files. Verification will run once, then the workflow continues.",
-          `Review: ${JSON.stringify(outputs.assessReview)}`,
+          `Review: ${projectBoundedJson(currentReviewAssessment(context), MAX_PROMPT_CHARS_REVIEW)}`,
         ].join("\n"),
       expectedOutput: `{ "addressed": ["P2 change"], "skipped": [{ "finding": "finding", "reason": "why" }] }`,
       validate: (value) => requireRecord(value, "P2 result"),
@@ -1615,7 +2008,7 @@ export const autoimplementWorkflow = defineWorkflow({
           "Inspect current inline review comments and PR issue comments for every published pull request.",
           "Handle pull requests one at a time. Reply to and resolve every comment. Ignore stale or irrelevant comments only after explaining why.",
           "Choose redesign for a valid design issue, fix for a local code issue, ci when no actionable comment remains on any PR, or blocked for an external blocker.",
-          `Published repositories: ${JSON.stringify(currentPublishedRepositories(context))}`,
+          `Published repositories: ${publishedRepositoryReferences(context)}`,
         ].join("\n"),
       expectedOutput: `{ "route": "redesign" | "fix" | "ci" | "blocked", "summary": "comment status", "evidence": ["comment or response"] }`,
       validate: (value) =>
@@ -1627,13 +2020,13 @@ export const autoimplementWorkflow = defineWorkflow({
       prompt: (context) =>
         [
           "Inspect every published pull request once without waiting for completion.",
-          "Return one target per repository and current PR head.",
+          "Return one target per exact published repository id. The workflow derives and validates repository paths, heads, and PR URLs from that id.",
           "Choose green, failed, pending, or unavailable for each target.",
-          "When pending, provide an exact supported gh pr checks --watch or gh run watch command with the repository id, absolute repository cwd, timeoutMs at most 300000, and maxOutputChars at most 1000000. The workflow binds it to the target PR before execution.",
+          "When pending, provide an exact supported gh pr checks --watch or gh run watch command with timeoutMs at most 300000 and maxOutputChars at most 1000000. The workflow binds its id, cwd, and PR before execution.",
           "Separate failures caused by this change from unrelated failures. Do not invent an ETA.",
-          `Published repositories: ${JSON.stringify(currentPublishedRepositories(context))}`,
+          `Published repositories: ${publishedRepositoryReferences(context)}`,
         ].join("\n"),
-      expectedOutput: `{ "targets": [{ "repository": "/absolute/repository", "headRevision": "revision", "pr": "URL", "route": "green" | "failed" | "pending" | "unavailable", "reason": "status", "relatedFailures": ["failure"], "unrelatedFailures": ["failure"], "trackingCommand": { "id": "repository-id", "command": "gh", "args": ["pr", "checks", "PR URL", "--watch"], "cwd": "/absolute/repository", "timeoutMs": 300000, "maxOutputChars": 1000000 } }] }`,
+      expectedOutput: `{ "targets": [{ "id": "repository-id", "route": "green" | "failed" | "pending" | "unavailable", "reason": "status", "relatedFailures": ["failure"], "unrelatedFailures": ["failure"], "trackingCommand": { "command": "gh", "args": ["pr", "checks", "PR URL", "--watch"], "timeoutMs": 300000, "maxOutputChars": 1000000 } }] }`,
       validate: parseCiInspectionForPublished,
     }),
     trackCi: action({
@@ -1673,7 +2066,7 @@ export const autoimplementWorkflow = defineWorkflow({
           "Diagnose and fix only local gh prerequisites or authentication that are already authorized.",
           "Do not change the PR identity or substitute another command form.",
           "Choose retry only when the same validated commands can now provide useful status. Choose blocked otherwise.",
-          `Failure: ${JSON.stringify(context.outputs.trackCi)}`,
+          `Failure: ${projectBoundedJson(context.outputs.trackCi)}`,
         ].join("\n"),
       expectedOutput: `{ "route": "retry" | "blocked", "reason": "diagnosis" }`,
       validate: (value) => parseRoute(value, ["retry", "blocked"] as const, "CI command repair"),
@@ -1687,8 +2080,8 @@ export const autoimplementWorkflow = defineWorkflow({
           "Assess every CI watch result without starting another wait.",
           "Return one target result for every watched PR and an aggregate route of green, failed, pending, or unavailable.",
           "A timed-out watch normally remains pending. Separate related from unrelated failures. Do not invent an ETA.",
-          `Initial inspection: ${JSON.stringify(inspected)}`,
-          `Tracking results: ${JSON.stringify(execution.batch)}`,
+          `Initial inspection: ${projectBoundedJson(inspected)}`,
+          `Tracking results: ${projectBoundedJson(execution.batch)}`,
         ].join("\n");
       },
       expectedOutput: `{ "route": "green" | "failed" | "pending" | "unavailable", "reason": "status", "targets": [{ "id": "repository-id", "route": "green" | "failed" | "pending" | "unavailable", "reason": "status" }], "relatedFailures": ["failure"], "unrelatedFailures": ["failure"] }`,
@@ -1713,7 +2106,7 @@ export const autoimplementWorkflow = defineWorkflow({
         [
           "Classify the current CI failure.",
           "Choose redesign when it invalidates the plan, fix for a related local issue, unrelated when the failures are demonstrably outside this change, or blocked when required CI cannot be verified.",
-          `CI: ${JSON.stringify(latestOutput(context, ["inspectCi", "assessTrackedCi"]))}`,
+          `CI: ${projectBoundedJson(latestOutput(context, ["inspectCi", "assessTrackedCi"]))}`,
         ].join("\n"),
       expectedOutput: `{ "route": "redesign" | "fix" | "unrelated" | "blocked", "reason": "classification", "evidence": ["failure"] }`,
       validate: (value) =>
@@ -1735,12 +2128,13 @@ export const autoimplementWorkflow = defineWorkflow({
           "Before each mutation, inspect the current PR head, merge state, and existing final report. Do not merge an already merged expected head or post a duplicate report.",
           "Use each repository's required merge method.",
           "Post a final report with the implementation summary and exact validation commands on every PR only when that report is missing.",
-          "Keep the existing top-level merged, pr, reportComment, and reason fields. For several PRs, use the first PR for the top-level compatibility fields and include every result under repositories.",
+          "Return top-level merged, reportComment, and reason fields. For several PRs, use the first result for the top-level compatibility fields and include every result under repositories.",
+          "Key every repository result by exact published id. The workflow derives repository paths and PR URLs before persisting the result.",
           "Return blocked instead of claiming completion when a required merge or report action fails.",
-          `Published repositories: ${JSON.stringify(currentPublishedRepositories(context))}`,
+          `Published repositories: ${publishedRepositoryReferences(context)}`,
         ].join("\n");
       },
-      expectedOutput: `{ "status": "completed" | "blocked", "merged": true | false, "pr": "first PR URL", "reportComment": "first report URL or summary", "reason": "aggregate result", "repositories": [{ "repository": "/absolute/repository", "pr": "URL", "merged": true | false, "reportComment": "URL or summary", "reason": "result" }] }`,
+      expectedOutput: `{ "status": "completed" | "blocked", "merged": true | false, "reportComment": "first report URL or summary", "reason": "aggregate result", "repositories": [{ "id": "repository-id", "merged": true | false, "reportComment": "URL or summary", "reason": "result" }] }`,
       validate: parseDeliveryResult,
     }),
     blocked: compute({
@@ -1852,7 +2246,23 @@ export const autoimplementWorkflow = defineWorkflow({
     },
     {
       from: "challengeBlocker",
-      switch: { on: "$.route", cases: { continue: "redesign", blocked: "blocked" } },
+      switch: { on: "$.route", cases: { continue: "routeBlockerRecovery", blocked: "blocked" } },
+    },
+    {
+      from: "routeBlockerRecovery",
+      switch: {
+        on: "$.route",
+        cases: {
+          redesign: "redesign",
+          fix: "fix",
+          planVerification: "planVerification",
+          repairReviewCommand: "repairReviewCommand",
+          selectReviewCommands: "selectReviewCommands",
+          inspectComments: "inspectComments",
+          inspectCi: "inspectCi",
+          opportunisticTest: "opportunisticTest",
+        },
+      },
     },
     {
       from: "planVerification",
@@ -1935,6 +2345,29 @@ export const autoimplementWorkflow = defineWorkflow({
     },
     {
       from: "assessReview",
+      switch: {
+        on: "$result.outcome",
+        cases: {
+          ok: "routeReviewAssessment",
+          timed_out: "recoverReviewAssessment",
+          failed: "propagateSupportedFailure",
+        },
+      },
+    },
+    {
+      from: "recoverReviewAssessment",
+      switch: {
+        on: "$result.outcome",
+        cases: {
+          ok: "routeReviewAssessment",
+          timed_out: "reviewAssessmentRecoveryBlocked",
+          failed: "propagateSupportedFailure",
+        },
+      },
+    },
+    { from: "reviewAssessmentRecoveryBlocked", to: "blocked" },
+    {
+      from: "routeReviewAssessment",
       switch: {
         on: "$.route",
         cases: {

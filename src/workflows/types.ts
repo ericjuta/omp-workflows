@@ -97,6 +97,9 @@ export type WorkflowEdge =
       };
     };
 
+/** Restricts the tools available while an agent step executes. */
+export type AgentToolPolicy = "observation-only";
+
 /**
  * A model-shaped step. The engine sends the prompt into the pi conversation
  * and the model completes the step by calling the `workflow` tool with a JSON
@@ -109,6 +112,7 @@ export type AgentNodeDefinition = WorkflowNodeCommon & {
   nodeType: "agent";
   prompt: (context: WorkflowNodeContext) => MaybePromise<string>;
   expectedOutput?: string;
+  toolPolicy?: AgentToolPolicy;
   validate?: (output: unknown, context: WorkflowNodeContext) => MaybePromise<unknown>;
 };
 
@@ -701,6 +705,7 @@ export type WorkflowNodeSnapshot = {
   statusDetail?: string;
   summary?: string;
   expectedOutput?: string;
+  toolPolicy?: AgentToolPolicy;
   actionExecution?: "function" | "shell";
   mountPath?: string[];
   localNodeId?: string;
@@ -843,6 +848,7 @@ export type AgentStepContract = {
   nodeId: string;
   attemptId: string;
   expectedOutput?: string;
+  toolPolicy?: AgentToolPolicy;
 };
 
 /** Optional human-facing labels for an agent step. They never affect execution. */

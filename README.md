@@ -215,7 +215,7 @@ waits in process until the scheduled next check, and loops until its stop
 condition or check limit. Its input supports `task`, `everyMinutes`, `stopWhen`,
 `maxChecks`, and an optional `checkTimeoutMinutes`.
 
-Monitor is observation-only by default. An explicit `repair` policy authorizes its composed `autoplan` and `autoimplement` path. The monitor checks the target again after repair and stops when the same issue and target evidence return without progress. Project and global workflows can replace the built-in `monitor` by using the same file name.
+Monitor is observation-only by default. An explicit `repair` policy authorizes its composed `autoplan` and `autoimplement` path. The runtime blocks mutating tools during each observation check. After an authorized repair, the monitor rechecks the target and stops when the same issue and target evidence return without progress. Project and global workflows can replace the built-in `monitor` by using the same file name.
 
 A monitor occupies the session's one active workflow slot. If its OMP or Pi
 runner stops during the interval, the run parks. On resume, the interval node
@@ -240,8 +240,16 @@ tails that directory and re-renders on every state change:
 omp-workflows view          # interactive picker, live updates
 omp-workflows view <runId>  # jump straight to one run
 omp-workflows runs          # plain list of recent runs
+omp-workflows runs --project /path/to/project
+omp-workflows doctor <runId> # deep read-only bundle diagnostics
 omp-workflows view --once   # print a snapshot and exit (good for scripts)
 ```
+
+Run lists combine persisted bundles with the read-only controller queue. A
+waiting run and its continuation appear as one family row, while an explicit
+child run ID still opens that exact physical bundle. `doctor` isolates malformed
+historical bundles and reports unavailable project-host evidence instead of
+failing when an old checkout has moved.
 
 The run detail view draws the workflow as a boxed graph, like the acpx replay
 viewer. Included nodes use hierarchical labels such as `implementation › redesign › plan`. Every card has a centered step-name header and a divider above its

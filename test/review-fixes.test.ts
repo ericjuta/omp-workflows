@@ -606,11 +606,12 @@ describe("nudge delivery failures", () => {
   it("fails the pending step promptly when the reminder cannot be sent", async () => {
     let sends = 0;
     const executor = new ConversationStepExecutor({
-      sendPrompt: () => {
+      sendPrompt: (delivery) => {
         sends += 1;
         if (sends > 1) {
           throw new Error("reminder delivery failed");
         }
+        delivery.onSent(false);
       },
     });
     const request: AgentStepRequest = {

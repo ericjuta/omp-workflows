@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { compileWorkflowDefinition, compositionMetadata } from "../src/workflows/composition.js";
 import {
+  agent,
   checkpoint,
   compute,
   defineWorkflow,
@@ -130,6 +131,49 @@ describe("workflow composition", () => {
       .map((line) => JSON.parse(line) as WorkflowTraceEvent);
     expect(trace.filter((event) => event.type === "include_entered")).toHaveLength(1);
     expect(trace.filter((event) => event.type === "include_exited")).toHaveLength(1);
+  });
+
+  it("preserves an included agent tool policy through the executor contract", async () => {
+    const observer = defineWorkflow({
+      name: "observer",
+      startAt: "inspect",
+      exits: { done: { from: "inspect" } },
+      nodes: {
+        inspect: agent({
+          prompt: () => "Inspect the target",
+          toolPolicy: "observation-only",
+        }),
+      },
+      edges: [],
+    });
+    const parent = defineWorkflow({
+      name: "observer-parent",
+      startAt: "start",
+      includes: { observer: includeWorkflow(observer) },
+      nodes: {
+        start: compute({ run: () => ({ ready: true }) }),
+        finish: compute({ run: ({ outputs }) => outputs.observer }),
+      },
+      edges: [
+        { from: "start", to: "observer" },
+        { from: "observer.done", to: "finish" },
+      ],
+    });
+    const executor = new ScriptedExecutor().respond("observer/inspect", {
+      output: { observed: true },
+    });
+    const engine = new WorkflowEngine({
+      executor,
+      outputRoot: await makeTempDir("pi-workflows-composed-agent-policy"),
+    });
+
+    await engine.run(parent, {});
+
+    expect(executor.requests).toHaveLength(1);
+    expect(executor.requests[0]?.contract).toMatchObject({
+      nodeId: "observer/inspect",
+      toolPolicy: "observation-only",
+    });
   });
 
   it("starts every re-entry with empty child-local state", async () => {

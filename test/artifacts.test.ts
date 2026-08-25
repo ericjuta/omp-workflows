@@ -83,6 +83,11 @@ describe("decodeValueWith / resolveArtifacts", () => {
     const decoded = decodeValueWith(encoded, (ref) => `«${ref.bytes} bytes»`);
     expect(decoded).toEqual({ text: `«${BIG.length} bytes»` });
   });
+  it("treats malformed artifact and escape sentinels as user data", () => {
+    const malformed = { artifact: { $artifact: null }, escaped: { $escaped: null } };
+    expect(isArtifactValue(malformed.artifact)).toBe(false);
+    expect(decodeValueWith(malformed, () => "unexpected")).toEqual(malformed);
+  });
 
   it("rejects references that escape the bundle", async () => {
     const runDir = await makeTempDir("pi-workflows-artifacts");

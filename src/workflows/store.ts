@@ -1,9 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ArtifactWriter, encodeValue } from "./artifacts.js";
 import { compositionMetadata } from "./composition.js";
+import { redactSensitiveText } from "./text.js";
 import type {
   WorkflowDefinition,
   WorkflowDefinitionSnapshot,
@@ -823,6 +824,234 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+const WORKFLOW_NODE_TYPES: Record<string, true> = {
+  agent: true,
+  compute: true,
+  notify: true,
+  action: true,
+  checkpoint: true,
+};
+
+const WORKFLOW_NODE_OUTCOMES: Record<string, true> = {
+  ok: true,
+  timed_out: true,
+  failed: true,
+  cancelled: true,
+};
+
+function isWorkflowSourceShape(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (value.kind === "builtin") {
+    return isNonEmptyString(value.id) && isNonEmptyString(value.revision);
+  }
+  if (value.kind === "file") {
+    return isNonEmptyString(value.path) && isNonEmptyString(value.hash);
+  }
+  return false;
+}
+
+function isActionReceiptShape(value: unknown): boolean {
+  if (!isRecord(value) || (value.actionType !== "shell" && value.actionType !== "function")) {
+    return false;
+  }
+  if (value.command !== undefined && typeof value.command !== "string") return false;
+  if (
+    value.args !== undefined &&
+    (!Array.isArray(value.args) || value.args.some((argument) => typeof argument !== "string"))
+  ) {
+    return false;
+  }
+  if (value.cwd !== undefined && typeof value.cwd !== "string") return false;
+  if (
+    value.exitCode !== undefined &&
+    value.exitCode !== null &&
+    !Number.isSafeInteger(value.exitCode)
+  ) {
+    return false;
+  }
+  if (value.signal !== undefined && value.signal !== null && typeof value.signal !== "string") {
+    return false;
+  }
+  return (
+    value.durationMs === undefined ||
+    (typeof value.durationMs === "number" && Number.isFinite(value.durationMs))
+  );
+}
+
+function isProjectionStep(value: unknown): value is { nodeId: string; outcome: string } {
+  if (!isRecord(value)) return false;
+  return (
+    isNonEmptyString(value.attemptId) &&
+    isNonEmptyString(value.nodeId) &&
+    isNonEmptyString(value.nodeType) &&
+    WORKFLOW_NODE_TYPES[value.nodeType] === true &&
+    isNonEmptyString(value.outcome) &&
+    WORKFLOW_NODE_OUTCOMES[value.outcome] === true &&
+    isValidTimestamp(value.startedAt) &&
+    isValidTimestamp(value.finishedAt) &&
+    (value.error === undefined || typeof value.error === "string") &&
+    (value.action === undefined || isActionReceiptShape(value.action))
+  );
+}
+
+function isNodeResultShape(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return (
+    isNonEmptyString(value.attemptId) &&
+    isNonEmptyString(value.nodeId) &&
+    isNonEmptyString(value.nodeType) &&
+    WORKFLOW_NODE_TYPES[value.nodeType] === true &&
+    isNonEmptyString(value.outcome) &&
+    WORKFLOW_NODE_OUTCOMES[value.outcome] === true &&
+    isValidTimestamp(value.startedAt) &&
+    isValidTimestamp(value.finishedAt) &&
+    typeof value.durationMs === "number" &&
+    Number.isFinite(value.durationMs) &&
+    (value.error === undefined || typeof value.error === "string")
+  );
+}
+
+function isUpdateRecordShape(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return (
+    isNonEmptyString(value.updateId) &&
+    Number.isSafeInteger(value.seq) &&
+    (value.seq as number) >= 1 &&
+    isValidTimestamp(value.at) &&
+    isNonEmptyString(value.runId) &&
+    isNonEmptyString(value.nodeId) &&
+    isNonEmptyString(value.attemptId) &&
+    isNonEmptyString(value.type) &&
+    isNonEmptyString(value.key) &&
+    isRecord(value.data)
+  );
+}
+
+function isHumanDecisionReceiptShape(value: unknown): boolean {
+  if (!isRecord(value) || !isRecord(value.response)) return false;
+  return isNonEmptyString(value.nodeId) && isNonEmptyString(value.response.choice);
+}
+
+function validateRunManifestShape(manifest: WorkflowRunManifest): string | undefined {
+  const record = manifest as unknown as Record<string, unknown>;
+  if (!isNonEmptyString(record.runId)) return "malformed_manifest: runId must be a string";
+  if (!isNonEmptyString(record.workflowName)) {
+    return "malformed_manifest: workflowName must be a string";
+  }
+  if (record.runTitle !== undefined && typeof record.runTitle !== "string") {
+    return "malformed_manifest: runTitle must be a string when present";
+  }
+  if (!isValidTimestamp(record.startedAt)) {
+    return "malformed_manifest: startedAt must be a valid timestamp string";
+  }
+  if (record.finishedAt !== undefined && !isValidTimestamp(record.finishedAt)) {
+    return "malformed_manifest: finishedAt must be a valid timestamp string when present";
+  }
+  if (!isNonEmptyString(record.status) || WORKFLOW_RUN_STATUSES[record.status] !== true) {
+    return "malformed_manifest: status is invalid";
+  }
+  if (record.traceSchema !== TRACE_EVENT_SCHEMA) {
+    return "malformed_manifest: traceSchema is invalid";
+  }
+  if (!isRecord(record.paths)) return "malformed_manifest: paths must be a record";
+  for (const field of ["workflow", "state", "trace"] as const) {
+    if (!isNonEmptyString(record.paths[field])) {
+      return `malformed_manifest: paths.${field} must be a non-empty string`;
+    }
+  }
+  for (const field of ["session", "artifacts"] as const) {
+    if (record.paths[field] !== undefined && !isNonEmptyString(record.paths[field])) {
+      return `malformed_manifest: paths.${field} must be a non-empty string when present`;
+    }
+  }
+  if (record.workflowSource !== undefined && !isWorkflowSourceShape(record.workflowSource)) {
+    return "malformed_manifest: workflowSource is invalid";
+  }
+  if (record.definitionDigest !== undefined && typeof record.definitionDigest !== "string") {
+    return "malformed_manifest: definitionDigest must be a string when present";
+  }
+  return undefined;
+}
+function isDefinitionSnapshotShape(value: unknown): value is WorkflowDefinitionSnapshot {
+  if (!isRecord(value) || value.schema !== DEFINITION_SNAPSHOT_SCHEMA) return false;
+  if (!isNonEmptyString(value.name) || !isNonEmptyString(value.startAt)) return false;
+  if (!isRecord(value.nodes) || !Array.isArray(value.edges)) return false;
+  for (const node of Object.values(value.nodes)) {
+    if (!isRecord(node) || !isNonEmptyString(node.nodeType)) return false;
+    if (WORKFLOW_NODE_TYPES[node.nodeType] !== true) return false;
+    for (const field of ["statusDetail", "summary", "localNodeId"] as const) {
+      if (node[field] !== undefined && typeof node[field] !== "string") return false;
+    }
+    if (
+      node.toolPolicy !== undefined &&
+      (node.nodeType !== "agent" || node.toolPolicy !== "observation-only")
+    ) {
+      return false;
+    }
+    if (
+      node.mountPath !== undefined &&
+      (!Array.isArray(node.mountPath) || node.mountPath.some((part) => typeof part !== "string"))
+    ) {
+      return false;
+    }
+    if (
+      node.includeTransition !== undefined &&
+      node.includeTransition !== "entry" &&
+      node.includeTransition !== "exit"
+    ) {
+      return false;
+    }
+    if (node.humanDecision !== undefined) {
+      if (!isRecord(node.humanDecision) || !isNonEmptyString(node.humanDecision.audience)) {
+        return false;
+      }
+      if (
+        !isRecord(node.humanDecision.choices) ||
+        Object.values(node.humanDecision.choices).some(
+          (choice) => !isRecord(choice) || !isNonEmptyString(choice.label),
+        )
+      ) {
+        return false;
+      }
+    }
+  }
+  for (const edge of value.edges) {
+    if (!isRecord(edge) || !isNonEmptyString(edge.from)) return false;
+    if ("to" in edge) {
+      if (!isNonEmptyString(edge.to)) return false;
+      continue;
+    }
+    if (!isRecord(edge.switch) || !isNonEmptyString(edge.switch.on)) return false;
+    if (
+      !isRecord(edge.switch.cases) ||
+      Object.values(edge.switch.cases).some((target) => !isNonEmptyString(target))
+    ) {
+      return false;
+    }
+  }
+  if (value.composition !== undefined) {
+    if (!isRecord(value.composition) || !Array.isArray(value.composition.mounts)) return false;
+    for (const mount of value.composition.mounts) {
+      if (
+        !isRecord(mount) ||
+        !Array.isArray(mount.mountPath) ||
+        mount.mountPath.some((part) => typeof part !== "string") ||
+        !isNonEmptyString(mount.workflowName) ||
+        !isNonEmptyString(mount.entryNode) ||
+        !isRecord(mount.exits) ||
+        Object.values(mount.exits).some((target) => !isNonEmptyString(target))
+      ) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 function validateSessionEventRecord(record: WorkflowSessionEventRecord): void {
   if (!Number.isSafeInteger(record.seq) || record.seq < 1) {
     throw new Error("Session event seq must be a positive safe integer");
@@ -863,6 +1092,32 @@ function validateSessionEventRecord(record: WorkflowSessionEventRecord): void {
   if (record.type.startsWith("tool_execution_") && !isNonEmptyString(record.toolCallId)) {
     throw new Error(`${record.type} requires toolCallId`);
   }
+}
+
+function isSessionEntryRecordShape(value: unknown): value is WorkflowSessionEntryRecord {
+  if (!isRecord(value)) return false;
+  return (
+    Number.isSafeInteger(value.seq) &&
+    (value.seq as number) >= 1 &&
+    isValidTimestamp(value.at) &&
+    isRecord(value.entry)
+  );
+}
+
+function isTraceEventShape(value: unknown): value is WorkflowTraceEvent {
+  if (!isRecord(value)) return false;
+  return (
+    Number.isSafeInteger(value.seq) &&
+    (value.seq as number) >= 1 &&
+    isValidTimestamp(value.at) &&
+    isNonEmptyString(value.scope) &&
+    ["run", "node", "agent", "action", "session"].includes(value.scope) &&
+    isNonEmptyString(value.type) &&
+    isNonEmptyString(value.runId) &&
+    (value.nodeId === undefined || isNonEmptyString(value.nodeId)) &&
+    (value.attemptId === undefined || isNonEmptyString(value.attemptId)) &&
+    isRecord(value.payload)
+  );
 }
 
 function sessionRelationshipDiagnostics(
@@ -1049,6 +1304,8 @@ export type LoadedRunBundle = {
   snapshot: WorkflowDefinitionSnapshot | null;
   /** Full durable trace when loaded by the current reader. */
   traceEvents?: WorkflowTraceEvent[];
+  /** Parse health for the loaded trace stream. */
+  traceIntegrity?: Pick<NdjsonRead<WorkflowTraceEvent>, "exists" | "tornTail" | "malformed">;
   sessionBinding: WorkflowSessionBinding | null;
   sessionEntries: WorkflowSessionEntryRecord[];
   sessionEvents: WorkflowSessionEventRecord[];
@@ -1058,6 +1315,553 @@ export type LoadedRunBundle = {
   sessionSegments: SessionCaptureSegment[];
 };
 
+export type WorkflowRunProjection = {
+  runDir: string;
+  runId: string;
+  workflowName: string;
+  workflowId?: string;
+  revision?: string;
+  status: string;
+  effectiveStatus?: string;
+  startedAt: string;
+  updatedAt?: string;
+  durationMs?: number;
+  paused?: boolean;
+  pausedAgeMs?: number;
+  currentNode?: string;
+  failedNodeId?: string;
+  errorSummary?: string;
+  errorCode?: string;
+  parentRunId?: string;
+  continuationRunId?: string;
+  waitingOn?: unknown;
+  runTitle?: string;
+  project?: string;
+  sessionBinding?: WorkflowSessionBinding | null;
+  input?: unknown;
+  warnings: string[];
+};
+
+/** Read a fast run projection from disk without loading traces or session streams. */
+export async function readRunProjection(runDir: string): Promise<WorkflowRunProjection | null> {
+  try {
+    return await readRunProjectionUnchecked(runDir);
+  } catch (error) {
+    return {
+      runDir,
+      runId: path.basename(runDir),
+      workflowName: "unknown",
+      status: "unreadable",
+      startedAt: "",
+      warnings: [
+        redactSensitiveText(
+          `unreadable_bundle: ${failureMessageForDiagnostic(error).replace(/\s+/g, " ")}`,
+          500,
+        ),
+      ],
+    };
+  }
+}
+
+function incompatibleRunProjection(runDir: string, schemaWarning: string): WorkflowRunProjection {
+  const resetInstruction =
+    "Reset this workflow run by deleting its local run directory, then start a new run.";
+  return {
+    runDir,
+    runId: path.basename(runDir),
+    workflowName: "unknown",
+    status: "unreadable",
+    startedAt: "",
+    errorSummary: resetInstruction,
+    warnings: [redactSensitiveText(`${schemaWarning}; ${resetInstruction}`, 500)],
+  };
+}
+const WORKFLOW_RUN_STATUSES: Record<string, true> = {
+  running: true,
+  waiting: true,
+  completed: true,
+  failed: true,
+  timed_out: true,
+  cancelled: true,
+};
+const TERMINAL_WORKFLOW_RUN_STATUSES: Record<string, true> = {
+  completed: true,
+  failed: true,
+  timed_out: true,
+  cancelled: true,
+};
+
+function validateRunStateShape(state: WorkflowRunState): string | undefined {
+  const record = state as unknown as Record<string, unknown>;
+  if (!Number.isSafeInteger(record.traceSeq) || (record.traceSeq as number) < 0) {
+    return "malformed_state: traceSeq must be a non-negative safe integer";
+  }
+  if (!isRecord(record.outputs)) {
+    return "malformed_state: outputs must be a record";
+  }
+  if (
+    !isRecord(record.results) ||
+    Object.values(record.results).some((result) => !isNodeResultShape(result))
+  ) {
+    return "malformed_state: results must be a record of node results";
+  }
+  if (!Array.isArray(record.steps)) {
+    return "malformed_state: steps must be an array";
+  }
+  if (record.steps.some((step) => !isProjectionStep(step))) {
+    return "malformed_state: steps must contain valid step records";
+  }
+  if (
+    record.updates !== undefined &&
+    (!Array.isArray(record.updates) ||
+      record.updates.some((update) => !isUpdateRecordShape(update)))
+  ) {
+    return "malformed_state: updates must be an array of update records when present";
+  }
+  if (!isNonEmptyString(record.runId)) {
+    return "malformed_state: runId must be a non-empty string";
+  }
+  if (!isNonEmptyString(record.workflowName)) {
+    return "malformed_state: workflowName must be a non-empty string";
+  }
+  if (!isNonEmptyString(record.status) || WORKFLOW_RUN_STATUSES[record.status] !== true) {
+    return "malformed_state: status is invalid";
+  }
+  if (!isValidTimestamp(record.startedAt)) {
+    return "malformed_state: startedAt must be a valid timestamp string";
+  }
+  if (!isValidTimestamp(record.updatedAt)) {
+    return "malformed_state: updatedAt must be a valid timestamp string";
+  }
+  if (record.finishedAt !== undefined && !isValidTimestamp(record.finishedAt)) {
+    return "malformed_state: finishedAt must be a valid timestamp string when present";
+  }
+  for (const field of [
+    "parentRunId",
+    "runTitle",
+    "currentNode",
+    "waitingOn",
+    "error",
+    "currentAttemptId",
+    "statusDetail",
+    "definitionDigest",
+  ] as const) {
+    if (record[field] !== undefined && typeof record[field] !== "string") {
+      return `malformed_state: ${field} must be a string when present`;
+    }
+  }
+  if (record.currentNodeStartedAt !== undefined && !isValidTimestamp(record.currentNodeStartedAt)) {
+    return "malformed_state: currentNodeStartedAt must be a valid timestamp string when present";
+  }
+  if (record.paused !== undefined && typeof record.paused !== "boolean") {
+    return "malformed_state: paused must be a boolean when present";
+  }
+  if (record.workflowSource !== undefined && !isWorkflowSourceShape(record.workflowSource)) {
+    return "malformed_state: workflowSource is invalid";
+  }
+  if (record.humanDecision !== undefined && !isHumanDecisionReceiptShape(record.humanDecision)) {
+    return "malformed_state: humanDecision is invalid";
+  }
+  return undefined;
+}
+
+function validateProjectionState(state: WorkflowRunState): string | undefined {
+  const malformedShape = validateRunStateShape(state);
+  if (malformedShape !== undefined) return malformedShape;
+  const record = state as unknown as Record<string, unknown>;
+  if (
+    TERMINAL_WORKFLOW_RUN_STATUSES[record.status as string] === true &&
+    !isValidTimestamp(record.finishedAt)
+  ) {
+    return "malformed_state: finishedAt must be a valid timestamp for a terminal run";
+  }
+  if (record.status === "waiting" && !isNonEmptyString(record.waitingOn)) {
+    return "malformed_state: waitingOn must be a non-empty string for a waiting run";
+  }
+  return undefined;
+}
+
+function validateSessionBinding(binding: WorkflowSessionBinding): string | undefined {
+  const record = binding as unknown as Record<string, unknown>;
+  if (!isNonEmptyString(record.runId)) {
+    return "malformed_session_binding: runId must be a non-empty string";
+  }
+  if (!isNonEmptyString(record.piSessionId)) {
+    return "malformed_session_binding: piSessionId must be a non-empty string";
+  }
+  if (!isNonEmptyString(record.cwd)) {
+    return "malformed_session_binding: cwd must be a non-empty string";
+  }
+  if (!isValidTimestamp(record.boundAt)) {
+    return "malformed_session_binding: boundAt must be a valid timestamp string";
+  }
+  if (record.piSessionFile !== undefined && !isNonEmptyString(record.piSessionFile)) {
+    return "malformed_session_binding: piSessionFile must be a non-empty string when present";
+  }
+  return undefined;
+}
+
+function isValidTimestamp(value: unknown): value is string {
+  return isNonEmptyString(value) && !Number.isNaN(Date.parse(value));
+}
+
+async function readRunProjectionUnchecked(runDir: string): Promise<WorkflowRunProjection | null> {
+  const warnings: string[] = [];
+  const manifest = await readJsonFile<WorkflowRunManifest>(path.join(runDir, MANIFEST_PATH));
+  if (!manifest) {
+    warnings.push("unreadable_or_missing_manifest");
+  } else if (manifest.schema !== RUN_BUNDLE_SCHEMA) {
+    return incompatibleRunProjection(
+      runDir,
+      `incompatible_manifest_schema: ${String(manifest.schema)}`,
+    );
+  }
+
+  const paths: Partial<WorkflowRunManifest["paths"]> =
+    typeof manifest?.paths === "object" && manifest.paths !== null ? manifest.paths : {};
+  const statePath = resolveBundlePath(runDir, paths.state, STATE_PATH);
+  const state = await readJsonFile<WorkflowRunState>(statePath);
+
+  if (!state) {
+    warnings.push("unreadable_or_missing_state");
+  } else if (state.schema !== RUN_STATE_SCHEMA) {
+    return incompatibleRunProjection(runDir, `incompatible_state_schema: ${String(state.schema)}`);
+  }
+  if (state) {
+    const malformedStateWarning = validateProjectionState(state);
+    if (malformedStateWarning !== undefined) {
+      return incompatibleRunProjection(runDir, malformedStateWarning);
+    }
+  }
+
+  if (!manifest && !state) {
+    return {
+      runDir,
+      runId: path.basename(runDir),
+      workflowName: "unknown",
+      status: "unreadable",
+      startedAt: "",
+      warnings: ["unreadable_bundle: missing or unreadable manifest and state"],
+    };
+  }
+
+  const manifestRunId = manifest?.runId;
+  const manifestWorkflowName = manifest?.workflowName;
+  const manifestStatus = manifest?.status;
+  const manifestStartedAt = manifest?.startedAt;
+  const runId =
+    state?.runId ?? (isNonEmptyString(manifestRunId) ? manifestRunId : path.basename(runDir));
+  const workflowName =
+    state?.workflowName ??
+    (isNonEmptyString(manifestWorkflowName) ? manifestWorkflowName : "unknown");
+  const status = state?.status ?? (isNonEmptyString(manifestStatus) ? manifestStatus : "unknown");
+  const startedAt =
+    state?.startedAt ?? (isValidTimestamp(manifestStartedAt) ? manifestStartedAt : "");
+  const updatedAtCandidate = state?.updatedAt ?? state?.finishedAt ?? manifest?.finishedAt;
+  const updatedAt =
+    typeof updatedAtCandidate === "string" && updatedAtCandidate.length > 0
+      ? updatedAtCandidate
+      : undefined;
+  const paused = state?.paused;
+  const currentNode = state?.currentNode;
+  const waitingOn = state?.waitingOn;
+  const runTitle =
+    state?.runTitle ?? (typeof manifest?.runTitle === "string" ? manifest.runTitle : undefined);
+  const parentRunId = state?.parentRunId;
+  const input = state?.input;
+
+  let revision: string | undefined;
+  let workflowId: string | undefined;
+  const workflowSourceCandidate = state?.workflowSource ?? manifest?.workflowSource;
+  const workflowSource = isWorkflowSourceShape(workflowSourceCandidate)
+    ? (workflowSourceCandidate as WorkflowRunState["workflowSource"])
+    : undefined;
+  if (workflowSource?.kind === "builtin") {
+    revision = workflowSource.revision;
+    workflowId = workflowSource.id;
+  }
+
+  let failedNodeId: string | undefined;
+  let errorSummary: string | undefined;
+  if (status === "failed" || status === "timed_out") {
+    const steps = state?.steps ?? [];
+    for (let index = steps.length - 1; index >= 0; index -= 1) {
+      const step = steps[index];
+      if (step?.outcome !== "failed" && step?.outcome !== "timed_out") continue;
+      failedNodeId = step.nodeId;
+      if (step.error !== undefined) {
+        errorSummary = redactSensitiveText(failureMessageForDiagnostic(step.error), 500);
+      }
+      break;
+    }
+    failedNodeId ??= state?.currentNode;
+    if (errorSummary === undefined && state?.error !== undefined) {
+      errorSummary = redactSensitiveText(failureMessageForDiagnostic(state.error), 500);
+    }
+  }
+
+  let durationMs: number | undefined;
+  let pausedAgeMs: number | undefined;
+  const nowMs = Date.now();
+  if (startedAt) {
+    const startMs = Date.parse(startedAt);
+    if (!Number.isNaN(startMs)) {
+      if (startMs > nowMs + 60_000) {
+        warnings.push("duration_anomaly: started_in_future");
+      }
+      if (status === "running" || status === "waiting") {
+        durationMs = Math.max(0, nowMs - startMs);
+      } else {
+        const endMs =
+          updatedAt !== undefined && !Number.isNaN(Date.parse(updatedAt))
+            ? Date.parse(updatedAt)
+            : startMs;
+        durationMs = Math.max(0, endMs - startMs);
+      }
+    } else {
+      warnings.push("invalid_started_at_timestamp");
+    }
+  }
+
+  if (paused === true) {
+    const pausedSinceMs = updatedAt === undefined ? Number.NaN : Date.parse(updatedAt);
+    pausedAgeMs = Number.isNaN(pausedSinceMs)
+      ? (durationMs ?? 0)
+      : Math.max(0, nowMs - pausedSinceMs);
+  }
+
+  if (manifest && state) {
+    if (manifest.runId !== state.runId) {
+      warnings.push(
+        `manifest_state_run_id_mismatch: manifest=${manifest.runId}, state=${state.runId}`,
+      );
+    }
+    if (manifest.workflowName !== state.workflowName) {
+      warnings.push(
+        `manifest_state_workflow_name_mismatch: manifest=${manifest.workflowName}, state=${state.workflowName}`,
+      );
+    }
+  }
+
+  const snapshotPath = resolveBundlePath(runDir, paths.workflow, WORKFLOW_SNAPSHOT_PATH);
+  const snapshotCandidate = await readJsonFile<WorkflowDefinitionSnapshot>(snapshotPath);
+  const snapshot = isDefinitionSnapshotShape(snapshotCandidate) ? snapshotCandidate : null;
+  if (!snapshotCandidate) {
+    warnings.push("missing_definition_snapshot");
+  } else if (snapshotCandidate.schema !== DEFINITION_SNAPSHOT_SCHEMA) {
+    warnings.push(`incompatible_snapshot_schema: ${String(snapshotCandidate.schema)}`);
+  } else if (!snapshot) {
+    warnings.push("malformed_definition_snapshot");
+  } else {
+    if (currentNode && !snapshot.nodes[currentNode]) {
+      const isCompositionNode =
+        snapshot.composition !== undefined &&
+        (snapshot.composition.mounts.some((m) =>
+          currentNode.startsWith(`${m.mountPath.join("/")}/`),
+        ) ||
+          Object.keys(snapshot.nodes).some((k) => currentNode.startsWith(`${k}/`)));
+      if (!isCompositionNode) {
+        warnings.push(`current_node_not_in_snapshot: ${currentNode}`);
+      }
+    }
+  }
+
+  let sessionBinding: WorkflowSessionBinding | null = null;
+  const sessionDir = resolveBundlePath(runDir, paths.session, SESSION_DIR);
+  sessionBinding = await readJsonFile<WorkflowSessionBinding>(
+    path.join(sessionDir, "binding.json"),
+  );
+  if (paths.session !== undefined && !sessionBinding) {
+    warnings.push("missing_session_binding");
+  } else if (sessionBinding && sessionBinding.schema !== SESSION_BINDING_SCHEMA) {
+    warnings.push(`incompatible_session_binding_schema: ${sessionBinding.schema}`);
+    sessionBinding = null;
+  }
+  if (sessionBinding?.schema === SESSION_BINDING_SCHEMA) {
+    const malformedBindingWarning = validateSessionBinding(sessionBinding);
+    if (malformedBindingWarning !== undefined) {
+      warnings.push(malformedBindingWarning);
+      sessionBinding = null;
+    }
+  }
+
+  let project: string | undefined;
+  if (sessionBinding?.cwd) {
+    project = sessionBinding.cwd;
+  } else if (typeof input === "object" && input !== null) {
+    const rec = input as Record<string, unknown>;
+    if (typeof rec.repository === "string") {
+      project = rec.repository;
+    } else if (typeof rec.project === "string") {
+      project = rec.project;
+    } else if (typeof rec.cwd === "string") {
+      project = rec.cwd;
+    }
+  }
+
+  return {
+    runDir,
+    runId,
+    workflowName,
+    ...(workflowId !== undefined ? { workflowId } : {}),
+    ...(revision !== undefined ? { revision } : {}),
+    status,
+    startedAt,
+    ...(updatedAt !== undefined ? { updatedAt } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(paused !== undefined ? { paused } : {}),
+    ...(pausedAgeMs !== undefined ? { pausedAgeMs } : {}),
+    ...(currentNode !== undefined ? { currentNode } : {}),
+    ...(failedNodeId !== undefined ? { failedNodeId } : {}),
+    ...(errorSummary !== undefined ? { errorSummary } : {}),
+    ...(parentRunId !== undefined ? { parentRunId } : {}),
+    ...(waitingOn !== undefined ? { waitingOn } : {}),
+    ...(runTitle !== undefined ? { runTitle } : {}),
+    ...(project !== undefined ? { project } : {}),
+    sessionBinding,
+    ...(input !== undefined ? { input } : {}),
+    warnings: warnings.slice(0, 8).map((warning) => redactSensitiveText(warning, 500)),
+  };
+}
+
+export type ListRunProjectionsOptions = {
+  project?: string;
+  liveOnly?: boolean;
+  limit?: number;
+};
+
+export type ListRunProjectionsResult = {
+  items: WorkflowRunProjection[];
+  warnings: string[];
+};
+
+function extractProjectCandidates(projection: {
+  project?: string;
+  sessionBinding?: WorkflowSessionBinding | null;
+  input?: unknown;
+}): string[] {
+  const candidates: string[] = [];
+  if (projection.sessionBinding?.cwd && projection.sessionBinding.cwd.trim().length > 0) {
+    candidates.push(projection.sessionBinding.cwd.trim());
+  }
+  if (typeof projection.input === "object" && projection.input !== null) {
+    const rec = projection.input as Record<string, unknown>;
+    if (typeof rec.repository === "string" && rec.repository.trim().length > 0) {
+      candidates.push(rec.repository.trim());
+    }
+    if (typeof rec.project === "string" && rec.project.trim().length > 0) {
+      candidates.push(rec.project.trim());
+    }
+    if (typeof rec.cwd === "string" && rec.cwd.trim().length > 0) {
+      candidates.push(rec.cwd.trim());
+    }
+  }
+  if (
+    projection.project &&
+    projection.project.trim().length > 0 &&
+    !candidates.includes(projection.project.trim())
+  ) {
+    candidates.push(projection.project.trim());
+  }
+  return candidates;
+}
+
+/** Fast list of run projections under `outputRoot`, avoiding trace and session stream loads. */
+export async function listRunProjections(
+  outputRoot: string,
+  options: ListRunProjectionsOptions = {},
+): Promise<ListRunProjectionsResult> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(outputRoot);
+  } catch (error) {
+    return {
+      items: [],
+      warnings: isMissingPath(error)
+        ? []
+        : [
+            redactSensitiveText(
+              `[runs] unreadable_directory: ${failureMessageForDiagnostic(error)}`,
+              240,
+            ),
+          ],
+    };
+  }
+  const projections: WorkflowRunProjection[] = [];
+  const aggregateWarnings: string[] = [];
+  for (const entry of entries) {
+    const runDir = path.join(outputRoot, entry);
+    try {
+      const stat = await fs.stat(runDir);
+      if (!stat.isDirectory()) continue;
+    } catch (error) {
+      aggregateWarnings.push(
+        redactSensitiveText(
+          `[${entry.slice(0, 160)}] unreadable_run_directory: ${failureMessageForDiagnostic(error)}`,
+          500,
+        ),
+      );
+      continue;
+    }
+    const projection = await readRunProjection(runDir);
+    if (projection === null) continue;
+    projections.push(projection);
+    for (const warning of projection.warnings) {
+      aggregateWarnings.push(`[${projection.runId}] ${warning}`);
+    }
+  }
+  projections.sort((a, b) =>
+    (typeof b.startedAt === "string" ? b.startedAt : "").localeCompare(
+      typeof a.startedAt === "string" ? a.startedAt : "",
+    ),
+  );
+  let filtered = projections;
+  if (options.project !== undefined) {
+    const target = path.resolve(options.project);
+    filtered = filtered.filter((projection) => {
+      const candidates = extractProjectCandidates(projection);
+      return candidates.some((candidate) => {
+        const resolved = path.resolve(candidate);
+        return resolved === target || resolved.startsWith(`${target}${path.sep}`);
+      });
+    });
+  }
+  if (options.liveOnly === true) {
+    filtered = filtered.filter(
+      (projection) =>
+        projection.paused === true ||
+        projection.status === "running" ||
+        projection.status === "waiting" ||
+        projection.status === "queued",
+    );
+  }
+  if (options.limit !== undefined && options.limit >= 0) {
+    filtered = filtered.slice(0, options.limit);
+  }
+  return { items: filtered, warnings: aggregateWarnings.slice(0, 100) };
+}
+
+/**
+ * Read run state without loading traces or session streams. Returns null when
+ * the manifest or state is missing, unreadable, or schema-incompatible.
+ */
+export async function readRunState(runDir: string): Promise<WorkflowRunState | null> {
+  const manifest = await readJsonFile<WorkflowRunManifest>(path.join(runDir, MANIFEST_PATH));
+  if (!manifest || manifest.schema !== RUN_BUNDLE_SCHEMA) {
+    return null;
+  }
+  if (validateRunManifestShape(manifest) !== undefined) return null;
+  const paths: Partial<WorkflowRunManifest["paths"]> =
+    typeof manifest.paths === "object" && manifest.paths !== null ? manifest.paths : {};
+  const statePath = resolveBundlePath(runDir, paths.state, STATE_PATH);
+  const state = await readJsonFile<WorkflowRunState>(statePath);
+  if (!state || state.schema !== RUN_STATE_SCHEMA) {
+    return null;
+  }
+  if (validateRunStateShape(state) !== undefined) return null;
+  return state;
+}
+
 /** Read the final trace record without loading the rest of a run bundle. */
 export async function readLastTraceEvent(
   runDir: string,
@@ -1065,6 +1869,7 @@ export async function readLastTraceEvent(
 ): Promise<WorkflowTraceEvent | null> {
   const events = await readNdjsonFile<WorkflowTraceEvent>(
     resolveBundlePath(runDir, tracePath, TRACE_PATH),
+    isTraceEventShape,
   );
   return events.records.at(-1) ?? null;
 }
@@ -1084,6 +1889,7 @@ export async function readRunBundle(
     return null;
   }
   // A schema-tagged manifest may still be malformed (e.g. hand-edited);
+  if (validateRunManifestShape(manifest) !== undefined) return null;
   // treat anything unexpected as an unreadable bundle rather than throwing.
   const paths: Partial<WorkflowRunManifest["paths"]> =
     typeof manifest.paths === "object" && manifest.paths !== null ? manifest.paths : {};
@@ -1093,17 +1899,28 @@ export async function readRunBundle(
   if (!state || state.schema !== RUN_STATE_SCHEMA) {
     return null;
   }
-  const snapshot = await readJsonFile<WorkflowDefinitionSnapshot>(
+  if (validateRunStateShape(state) !== undefined) return null;
+  const snapshotCandidate = await readJsonFile<WorkflowDefinitionSnapshot>(
     resolveBundlePath(runDir, paths.workflow, WORKFLOW_SNAPSHOT_PATH),
   );
+  const snapshot = isDefinitionSnapshotShape(snapshotCandidate) ? snapshotCandidate : null;
   const trace =
     options.includeTrace === true
-      ? await readNdjsonFile<WorkflowTraceEvent>(resolveBundlePath(runDir, paths.trace, TRACE_PATH))
+      ? await readNdjsonFile<WorkflowTraceEvent>(
+          resolveBundlePath(runDir, paths.trace, TRACE_PATH),
+          isTraceEventShape,
+        )
       : undefined;
   const sessionDir = resolveBundlePath(runDir, paths.session, SESSION_DIR);
-  const sessionBinding = await readJsonFile<WorkflowSessionBinding>(
+  let sessionBinding = await readJsonFile<WorkflowSessionBinding>(
     path.join(sessionDir, "binding.json"),
   );
+  if (
+    sessionBinding?.schema !== SESSION_BINDING_SCHEMA ||
+    validateSessionBinding(sessionBinding) !== undefined
+  ) {
+    sessionBinding = null;
+  }
   const entries = await readNdjsonFile<WorkflowSessionEntryRecord>(
     path.join(sessionDir, "entries.ndjson"),
   );
@@ -1132,9 +1949,13 @@ export async function readRunBundle(
   }
   for (const attemptId of segmentIds) {
     const segmentDir = path.join(sessionDir, "segments", attemptId);
-    const binding = await readJsonFile<WorkflowSessionBinding>(
-      path.join(segmentDir, "binding.json"),
-    );
+    let binding = await readJsonFile<WorkflowSessionBinding>(path.join(segmentDir, "binding.json"));
+    if (
+      binding?.schema !== SESSION_BINDING_SCHEMA ||
+      (binding !== null && validateSessionBinding(binding) !== undefined)
+    ) {
+      binding = null;
+    }
     const segmentEntries = await readNdjsonFile<WorkflowSessionEntryRecord>(
       path.join(segmentDir, "entries.ndjson"),
     );
@@ -1174,7 +1995,16 @@ export async function readRunBundle(
     manifest,
     state,
     snapshot,
-    ...(trace !== undefined ? { traceEvents: trace.records } : {}),
+    ...(trace !== undefined
+      ? {
+          traceEvents: trace.records,
+          traceIntegrity: {
+            exists: trace.exists,
+            tornTail: trace.tornTail,
+            malformed: trace.malformed,
+          },
+        }
+      : {}),
     sessionBinding,
     sessionEntries: entries.records,
     sessionEvents: events.records,
@@ -1238,7 +2068,10 @@ type NdjsonRead<T> = {
   malformed: boolean;
 };
 
-async function readNdjsonFile<T>(filePath: string): Promise<NdjsonRead<T>> {
+async function readNdjsonFile<T>(
+  filePath: string,
+  isRecordShape?: (value: unknown) => value is T,
+): Promise<NdjsonRead<T>> {
   let raw: string;
   try {
     raw = await fs.readFile(filePath, "utf8");
@@ -1257,7 +2090,12 @@ async function readNdjsonFile<T>(filePath: string): Promise<NdjsonRead<T>> {
       continue;
     }
     try {
-      records.push(JSON.parse(line) as T);
+      const parsed: unknown = JSON.parse(line);
+      if (isRecordShape !== undefined && !isRecordShape(parsed)) {
+        malformed = true;
+        continue;
+      }
+      records.push(parsed as T);
     } catch {
       malformed = true;
     }
@@ -1300,6 +2138,15 @@ function assessSessionIntegrity(input: {
   if (input.runTerminal && input.capture.status === "recording") {
     diagnostics.push("terminal run still reports recording capture");
   }
+  const validEntries: WorkflowSessionEntryRecord[] = [];
+  for (const entry of input.entries.records) {
+    if (!isSessionEntryRecordShape(entry)) {
+      diagnostics.push("session entry is missing required envelope fields");
+      break;
+    }
+    validEntries.push(entry);
+  }
+  const validEvents: WorkflowSessionEventRecord[] = [];
   let expected = 1;
   for (const event of input.events.records) {
     try {
@@ -1312,9 +2159,10 @@ function assessSessionIntegrity(input: {
       diagnostics.push(`session event sequence gap at ${expected}`);
       break;
     }
+    validEvents.push(event);
     expected += 1;
   }
-  diagnostics.push(...sessionRelationshipDiagnostics(input.entries.records, input.events.records));
+  diagnostics.push(...sessionRelationshipDiagnostics(validEntries, validEvents));
   if (input.capture.status !== "recording") {
     const lastEventSeq = input.events.records.at(-1)?.seq ?? 0;
     if (
@@ -1388,6 +2236,18 @@ export function createDefinitionSnapshot(workflow: WorkflowDefinition): Workflow
   };
 }
 
+/**
+ * Canonical SHA-256 digest of a workflow's definition snapshot.
+ * Serializes the canonical JSON snapshot and returns sha256:<hex>.
+ */
+export function definitionSnapshotDigest(snapshot: WorkflowDefinitionSnapshot): string {
+  return `sha256:${createHash("sha256").update(JSON.stringify(snapshot)).digest("hex")}`;
+}
+
+export function definitionDigest(workflow: WorkflowDefinition): string {
+  return definitionSnapshotDigest(createDefinitionSnapshot(workflow));
+}
+
 function snapshotNode(
   workflow: WorkflowDefinition,
   nodeId: string,
@@ -1424,6 +2284,9 @@ function snapshotNode(
   };
   if (node.nodeType === "agent" && node.expectedOutput !== undefined) {
     common.expectedOutput = node.expectedOutput;
+  }
+  if (node.nodeType === "agent" && node.toolPolicy !== undefined) {
+    common.toolPolicy = node.toolPolicy;
   }
   if (node.nodeType === "notify") {
     common.summary = node.kind ?? "progress";

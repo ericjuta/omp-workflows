@@ -54,6 +54,14 @@ function published(
     ],
   };
 }
+function publishedState() {
+  return {
+    repositories: published().repositories.map(({ pushed: _pushed, ...entry }) => ({
+      id: repositoryId(entry.repository),
+      ...entry,
+    })),
+  };
+}
 
 function autoimplementWithTimeout(nodeId: string, timeoutMs: number) {
   const node = autoimplementWorkflow.nodes[nodeId];
@@ -86,15 +94,13 @@ function cleanReview(headRevision = "abc123") {
 
 function ciInspection(
   route: "green" | "failed" | "pending" | "unavailable",
-  headRevision = "abc123",
-  pr = "https://example.test/pr/1",
+  _headRevision = "abc123",
+  _pr = "https://example.test/pr/1",
 ) {
   return {
     targets: [
       {
-        repository,
-        headRevision,
-        pr,
+        id: repositoryId(repository),
         route,
         reason: route,
         relatedFailures: [],
@@ -102,10 +108,8 @@ function ciInspection(
         ...(route === "pending"
           ? {
               trackingCommand: {
-                id: repositoryId(repository),
                 command: "gh",
                 args: ["pr", "checks", "--watch"],
-                cwd: repository,
                 timeoutMs: 300_000,
                 maxOutputChars: 1_000_000,
               },
@@ -159,9 +163,30 @@ function commonExecutor(publication: unknown = published()): ScriptedExecutor {
     .respond("publish", { output: publication });
 }
 
-function continueChallenge(reason: string, nextAction: string) {
+function continueChallenge(
+  reason: string,
+  nextAction: string,
+  origin:
+    | "implementation"
+    | "verification"
+    | "reviewer"
+    | "comments"
+    | "ci"
+    | "delivery" = "implementation",
+  recovery:
+    | "redesign"
+    | "fix"
+    | "planVerification"
+    | "repairReviewCommand"
+    | "selectReviewCommands"
+    | "inspectComments"
+    | "inspectCi"
+    | "opportunisticTest" = "redesign",
+) {
   return {
     route: "continue",
+    origin,
+    recovery,
     blockingNow: false,
     outsideAuthority: false,
     canProceed: true,
@@ -172,9 +197,21 @@ function continueChallenge(reason: string, nextAction: string) {
   };
 }
 
-function confirmedChallenge(reason: string) {
+function confirmedChallenge(
+  reason: string,
+  origin:
+    | "implementation"
+    | "verification"
+    | "reviewer"
+    | "comments"
+    | "ci"
+    | "delivery" = "implementation",
+  recovery = "redesign",
+) {
   return {
     route: "blocked",
+    origin,
+    recovery,
     blockingNow: true,
     outsideAuthority: true,
     canProceed: false,
@@ -464,6 +501,23 @@ describe("built-in autoimplement", () => {
         }),
       ),
     ).toMatchObject({ route: "run", repositories: [normalizedPublished] });
+    const changedHead = { ...normalizedPublished, headRevision: "def456" };
+    expect(
+      await selectReview.run(
+        reviewSelectionContext({
+          outputs: { publish: { repositories: [changedHead] } },
+          state: {
+            steps: [
+              {
+                nodeId: "assessReview",
+                outcome: "ok",
+                output: { repositories: [reviewedRepository] },
+              },
+            ],
+          },
+        }),
+      ),
+    ).toMatchObject({ route: "run", repositories: [changedHead] });
 
     await expect(
       validate("repairReviewCommand", { route: "blocked", reason: "reviewer missing" }),
@@ -486,10 +540,21 @@ describe("built-in autoimplement", () => {
       ),
     ).rejects.toThrow();
     await expect(
-      validate("inspectCi", ciInspection("green", "wrong-head"), {
-        outputs: { publish: { repositories: [normalizedPublished] } },
-      }),
-    ).rejects.toThrow("does not match the published repository and head");
+      validate(
+        "inspectCi",
+        {
+          targets: [
+            {
+              ...ciInspection("green").targets[0],
+              id: "not-published",
+            },
+          ],
+        },
+        {
+          outputs: { publish: { repositories: [normalizedPublished] } },
+        },
+      ),
+    ).rejects.toThrow("not a published repository");
     const additionalPublished = {
       ...normalizedPublished,
       id: repositoryId(path.join(repository, "additional")),
@@ -785,24 +850,54 @@ describe("built-in autoimplement", () => {
     await expect(validate("repairCiCommand", { route: "unknown", reason: "bad" })).rejects.toThrow(
       "one of retry, blocked",
     );
+    const challengeContext = {
+      outputs: {
+        challengeBlockerGuard: {
+          route: "challenge",
+          origin: "implementation",
+          recoveries: ["redesign", "fix"],
+        },
+      },
+    };
     await expect(
-      validate("challengeBlocker", continueChallenge("rollout is authorized", "deploy safely")),
+      validate(
+        "challengeBlocker",
+        continueChallenge("rollout is authorized", "deploy safely"),
+        challengeContext,
+      ),
     ).resolves.toMatchObject({ route: "continue", canProceed: true });
     await expect(
-      validate("challengeBlocker", confirmedChallenge("external authorization is required")),
+      validate(
+        "challengeBlocker",
+        confirmedChallenge("external authorization is required"),
+        challengeContext,
+      ),
     ).resolves.toMatchObject({ route: "blocked", outsideAuthority: true });
     await expect(
-      validate("challengeBlocker", {
-        ...confirmedChallenge("contradictory blocker"),
-        canProceed: true,
-      }),
+      validate(
+        "challengeBlocker",
+        { ...confirmedChallenge("contradictory blocker"), canProceed: true },
+        challengeContext,
+      ),
     ).rejects.toThrow("blocked challenge requires");
     await expect(
-      validate("challengeBlocker", {
-        ...continueChallenge("no next action", "deploy safely"),
-        nextAction: "",
-      }),
+      validate(
+        "challengeBlocker",
+        { ...continueChallenge("no next action", "deploy safely"), nextAction: "" },
+        challengeContext,
+      ),
     ).rejects.toThrow("practical nextAction");
+    await expect(
+      validate(
+        "challengeBlocker",
+        {
+          ...continueChallenge("wrong origin", "retry review"),
+          origin: "reviewer",
+          recovery: "selectReviewCommands",
+        },
+        challengeContext,
+      ),
+    ).rejects.toThrow("origin must match");
     await expect(
       validate("inspectComments", { route: "unknown", summary: "bad", evidence: [] }),
     ).rejects.toThrow("route must be one of");
@@ -816,6 +911,19 @@ describe("built-in autoimplement", () => {
         reason: "bad",
       }),
     ).rejects.toThrow("must be an array");
+  });
+
+  it("normalizes repository input to an absolute path", async () => {
+    const parseInput = autoimplementWorkflow.input;
+    if (parseInput === undefined) throw new Error("autoimplement input parser is missing");
+
+    const unnormalized = `${repository}${path.sep}nested${path.sep}..`;
+    expect(parseInput({ task: "demo", repository: unnormalized })).toMatchObject({
+      repository: path.resolve(repository),
+    });
+    expect(parseInput({ task: "demo", repository: "relative/repository" })).toMatchObject({
+      repository: path.resolve("relative/repository"),
+    });
   });
 
   it("projects redesign evidence, plan changes, blocked reasons, and command history", async () => {
@@ -928,12 +1036,31 @@ describe("built-in autoimplement", () => {
     if (track?.nodeType !== "action" || !("run" in track)) {
       throw new Error("trackCi must be a function action");
     }
-    const pending = ciInspection("pending");
+    const pendingTarget = ciInspection("pending").targets[0]!;
+    const pending = {
+      route: "pending",
+      reason: `${pendingTarget.id}: pending`,
+      relatedFailures: [],
+      unrelatedFailures: [],
+      targets: [
+        {
+          ...pendingTarget,
+          repository,
+          headRevision: "abc123",
+          pr: "https://example.test/pr/1",
+          trackingCommand: {
+            ...pendingTarget.trackingCommand!,
+            id: pendingTarget.id,
+            cwd: repository,
+          },
+        },
+      ],
+    };
     expect(
       await track.run(
         makeContext({
           input: { task: "demo", concurrency: { reviewer: 1, ciWatch: 1, verification: 1 } },
-          outputs: { inspectCi: { route: "pending", ...pending } },
+          outputs: { inspectCi: { ...pending } },
           publishUpdate: async () => ({ updateId: "u1", seq: 1, at: "now", type: "x", key: "y" }),
         }),
       ),
@@ -944,7 +1071,7 @@ describe("built-in autoimplement", () => {
       await track.run(
         makeContext({
           input: { task: "demo", concurrency: { reviewer: 1, ciWatch: 1, verification: 1 } },
-          outputs: { inspectCi: { route: "pending", ...pending } },
+          outputs: { inspectCi: { ...pending } },
           publishUpdate: async () => ({ updateId: "u2", seq: 2, at: "now", type: "x", key: "y" }),
         }),
       ),
@@ -999,12 +1126,18 @@ describe("built-in autoimplement", () => {
     if (delivery?.nodeType !== "agent") throw new Error("finalizeDelivery must be agent");
     expect(
       await delivery.prompt(
-        makeContext({ input: { task: "demo", merge: false }, outputs: { publish: published() } }),
+        makeContext({
+          input: { task: "demo", merge: false },
+          outputs: { publish: publishedState() },
+        }),
       ),
     ).toContain("without merging");
     expect(
       await delivery.prompt(
-        makeContext({ input: { task: "demo", merge: true }, outputs: { publish: published() } }),
+        makeContext({
+          input: { task: "demo", merge: true },
+          outputs: { publish: publishedState() },
+        }),
       ),
     ).toContain("merge each");
     expect(() => delivery.validate?.({ status: "invalid" }, makeContext())).toThrow(
@@ -1027,7 +1160,7 @@ describe("built-in autoimplement", () => {
         },
         makeContext({
           input: { task: "demo", merge: false },
-          outputs: { publish: published() },
+          outputs: { publish: publishedState() },
         }),
       ),
     ).toMatchObject({ repositories: [{ repository, merged: false }] });
@@ -1035,8 +1168,9 @@ describe("built-in autoimplement", () => {
     const secondRepository = path.join(path.dirname(repository), "second-repository");
     const multiPublication = {
       repositories: [
-        ...published().repositories,
+        ...publishedState().repositories,
         {
+          id: repositoryId(secondRepository),
           repository: secondRepository,
           branch: "feat/second",
           baseBranch: "main",
@@ -1056,8 +1190,7 @@ describe("built-in autoimplement", () => {
           reason: "ready",
           repositories: [
             {
-              repository,
-              pr: "https://example.test/pr/1",
+              id: repositoryId(repository),
               merged: false,
               reportComment: "done",
               reason: "ready",
@@ -1070,6 +1203,214 @@ describe("built-in autoimplement", () => {
         }),
       ),
     ).toThrow("does not match published repository and PR");
+    const assessment = autoimplementWorkflow.nodes.assessReview;
+    const recovery = autoimplementWorkflow.nodes.recoverReviewAssessment;
+    if (assessment?.nodeType !== "agent" || recovery?.nodeType !== "agent") {
+      throw new Error("review assessment nodes must be agents");
+    }
+    const hugeOutput = "review output ".repeat(10_000);
+    const reviewRepositories = Array.from({ length: 64 }, (_, index) => {
+      const repositoryPath = path.join(
+        path.dirname(repository),
+        `projected-repository-${index}-${"long-path-segment-".repeat(24)}`,
+      );
+      return {
+        id: repositoryId(repositoryPath),
+        repository: repositoryPath,
+        branch: `feat/projected-${index}`,
+        baseBranch: "main",
+        headRevision: `head-${index}`,
+        pr: `https://example.test/pr/projected-${index}`,
+      };
+    });
+    const reviewSelection = {
+      route: "run",
+      repositories: reviewRepositories,
+      commands: reviewRepositories.map((entry) => reviewerCommand(entry.repository)),
+    };
+    const persistedReview = {
+      route: "assess",
+      batch: {
+        schema: "pi-workflows.command-batch-result.v1",
+        completed: reviewRepositories.length,
+        total: reviewRepositories.length,
+        items: reviewRepositories.map((entry) => ({
+          id: entry.id,
+          outcome: "succeeded",
+          exitCode: 0,
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          stdout: hugeOutput,
+          stderr: hugeOutput,
+        })),
+      },
+    };
+    const promptContext = makeContext({
+      outputs: { selectReviewCommands: reviewSelection, runReview: persistedReview },
+    });
+    const assessmentPrompt = await assessment.prompt(promptContext);
+    const recoveryPrompt = await recovery.prompt(promptContext);
+    expect(assessmentPrompt.length).toBeLessThan(40_000);
+    expect(recoveryPrompt.length).toBeLessThan(40_000);
+    expect(assessmentPrompt).toContain("[TRUNCATED");
+    expect(recoveryPrompt).toContain("[TRUNCATED");
+    expect(assessmentPrompt).toContain(`"completed":${reviewRepositories.length}`);
+    expect(recoveryPrompt).toContain(`"total":${reviewRepositories.length}`);
+    for (const entry of reviewRepositories) {
+      expect(assessmentPrompt).toContain(entry.id);
+      expect(recoveryPrompt).toContain(entry.id);
+    }
+    const inspectCi = autoimplementWorkflow.nodes.inspectCi;
+    if (inspectCi?.nodeType !== "agent") throw new Error("inspectCi must be an agent");
+    const publishedContext = makeContext({
+      input: { task: "demo", merge: false },
+      outputs: { publish: { repositories: reviewRepositories } },
+    });
+    const ciPrompt = await inspectCi.prompt(publishedContext);
+    const deliveryPrompt = await delivery.prompt(publishedContext);
+    expect(ciPrompt.length).toBeLessThan(32_000);
+    expect(deliveryPrompt.length).toBeLessThan(32_000);
+    for (const entry of reviewRepositories) {
+      expect(ciPrompt).toContain(entry.id);
+      expect(ciPrompt).toContain(entry.pr);
+      expect(ciPrompt).not.toContain(entry.repository);
+      expect(deliveryPrompt).toContain(entry.id);
+      expect(deliveryPrompt).toContain(entry.pr);
+      expect(deliveryPrompt).not.toContain(entry.repository);
+    }
+    const ciResult = await inspectCi.validate?.(
+      {
+        targets: reviewRepositories.map((entry) => ({
+          id: entry.id,
+          route: "green",
+          reason: "green",
+          relatedFailures: [],
+          unrelatedFailures: [],
+        })),
+      },
+      publishedContext,
+    );
+    expect(ciResult).toMatchObject({
+      targets: reviewRepositories.map((entry) => ({
+        repository: entry.repository,
+        headRevision: entry.headRevision,
+        pr: entry.pr,
+      })),
+    });
+    const deliveryResult = await delivery.validate?.(
+      {
+        status: "completed",
+        merged: false,
+        reportComment: "report-0",
+        reason: "ready",
+        repositories: reviewRepositories.map((entry, index) => ({
+          id: entry.id,
+          merged: false,
+          reportComment: `report-${index}`,
+          reason: "ready",
+        })),
+      },
+      publishedContext,
+    );
+    expect(deliveryResult).toMatchObject({
+      pr: reviewRepositories[0]!.pr,
+      repositories: reviewRepositories.map((entry) => ({
+        repository: entry.repository,
+        pr: entry.pr,
+      })),
+    });
+    const cleanRepositories = reviewRepositories.map((entry) => ({
+      id: entry.id,
+      invocationSucceeded: true,
+      p0: [],
+      p1: [],
+      p2: [],
+      lower: [],
+      reason: "clean",
+    }));
+    expect(
+      await assessment.validate?.(
+        { repositories: cleanRepositories, reason: "all clean" },
+        promptContext,
+      ),
+    ).toMatchObject({ route: "clean", repositories: cleanRepositories });
+    expect(
+      await recovery.validate?.(
+        { repositories: cleanRepositories, reason: "all clean" },
+        promptContext,
+      ),
+    ).toMatchObject({ route: "clean", repositories: cleanRepositories });
+    expect(persistedReview.batch.items).toHaveLength(reviewRepositories.length);
+    for (const item of persistedReview.batch.items) {
+      expect(item.stdout).toHaveLength(140_000);
+      expect(item.stderr).toHaveLength(140_000);
+    }
+    const challenge = autoimplementWorkflow.nodes.challengeBlocker;
+    const fix = autoimplementWorkflow.nodes.fix;
+    const implement = autoimplementWorkflow.nodes.implement;
+    if (
+      challenge?.nodeType !== "agent" ||
+      fix?.nodeType !== "agent" ||
+      implement?.nodeType !== "agent"
+    ) {
+      throw new Error("implementation, blocker challenge, and fix nodes must be agents");
+    }
+    const hugePlan = { steps: [hugeOutput], evidence: hugeOutput };
+    const hugeRequest = {
+      task: hugeOutput,
+      scope: hugeOutput,
+      plan: hugePlan,
+      constraints: [hugeOutput],
+    };
+    const implementPrompt = await implement.prompt(makeContext({ input: hugeRequest }));
+    const challengePrompt = await challenge.prompt(
+      makeContext({
+        input: hugeRequest,
+        outputs: {
+          challengeBlockerGuard: {
+            route: "challenge",
+            origin: "implementation",
+            recoveries: ["redesign", "fix"],
+          },
+        },
+        state: {
+          steps: [
+            {
+              nodeId: "classifyImplementation",
+              outcome: "ok",
+              output: { route: "blocked", evidence: hugeOutput },
+              error: hugeOutput,
+              startedAt: "2026-01-01T00:00:00.000Z",
+              finishedAt: "2026-01-01T00:00:01.000Z",
+            },
+          ],
+        },
+      }),
+    );
+    const fixPrompt = await fix.prompt(
+      makeContext({
+        input: { task: "demo", plan: hugePlan },
+        state: {
+          steps: [
+            {
+              nodeId: "classifyImplementation",
+              outcome: "ok",
+              output: { route: "fix", evidence: hugeOutput },
+            },
+          ],
+        },
+      }),
+    );
+    expect(implementPrompt.length).toBeLessThan(40_000);
+    expect(challengePrompt.length).toBeLessThan(90_000);
+    expect(fixPrompt.length).toBeLessThan(50_000);
+    expect(implementPrompt).toContain("[TRUNCATED");
+    expect(challengePrompt).toContain("[TRUNCATED");
+    expect(fixPrompt).toContain("\u2026");
+    expect(hugeRequest.task).toHaveLength(140_000);
+    expect(hugeRequest.scope).toHaveLength(140_000);
+    expect(hugeRequest.constraints[0]).toHaveLength(140_000);
+    expect(hugePlan.steps[0]).toHaveLength(140_000);
   });
 
   it("challenges the Bob artifact mismatch and continues through redesign", async () => {
@@ -1192,9 +1533,7 @@ describe("built-in autoimplement", () => {
     expect(challengeRequest?.prompt).toContain(
       "Can you find a safe way to move forward and finish this?",
     );
-    expect(challengeRequest?.prompt).toContain(
-      "Are you getting stuck on something trivial, procedural, reversible, or already authorized?",
-    );
+    expect(challengeRequest?.prompt).toContain("outside authority");
     expect(challengeRequest?.prompt).toContain("Bob artifact mismatch");
 
     const redesignRequest = executor.requests.find(
@@ -1318,6 +1657,21 @@ describe("built-in autoimplement", () => {
       switch: { cases: { blocked: "challengeBlockerGuard" } },
     });
     expect(edge("assessReview")).toMatchObject({
+      switch: {
+        on: "$result.outcome",
+        cases: { ok: "routeReviewAssessment", timed_out: "recoverReviewAssessment" },
+      },
+    });
+    expect(edge("recoverReviewAssessment")).toMatchObject({
+      switch: {
+        on: "$result.outcome",
+        cases: {
+          ok: "routeReviewAssessment",
+          timed_out: "reviewAssessmentRecoveryBlocked",
+        },
+      },
+    });
+    expect(edge("routeReviewAssessment")).toMatchObject({
       switch: { cases: { blocked: "challengeBlockerGuard" } },
     });
     expect(edge("routeInspectCommentsResult")).toMatchObject({
@@ -1343,8 +1697,79 @@ describe("built-in autoimplement", () => {
     expect(edge("redesign.blocked")).toMatchObject({ to: "blocked" });
     expect(edge("documentation.blocked")).toMatchObject({ to: "blocked" });
     expect(edge("challengeBlocker")).toMatchObject({
-      switch: { cases: { continue: "redesign", blocked: "blocked" } },
+      switch: { cases: { continue: "routeBlockerRecovery", blocked: "blocked" } },
     });
+    const recoveryEdge = edge("routeBlockerRecovery");
+    if (recoveryEdge === undefined || !("switch" in recoveryEdge)) {
+      throw new Error("routeBlockerRecovery must use a switch edge");
+    }
+    const recoveryCases = recoveryEdge.switch.cases;
+    expect(recoveryCases).toEqual({
+      redesign: "redesign",
+      fix: "fix",
+      planVerification: "planVerification",
+      repairReviewCommand: "repairReviewCommand",
+      selectReviewCommands: "selectReviewCommands",
+      inspectComments: "inspectComments",
+      inspectCi: "inspectCi",
+      opportunisticTest: "opportunisticTest",
+    });
+    expect(Object.values(recoveryCases ?? {})).not.toContain("finalizeDelivery");
+    expect(Object.values(recoveryCases ?? {})).not.toContain("finalize");
+  });
+
+  it("derives every blocker origin from the immediate guarded stage", async () => {
+    const guard = autoimplementWorkflow.nodes.challengeBlockerGuard;
+    if (guard?.nodeType !== "compute") {
+      throw new Error("challengeBlockerGuard must be a compute node");
+    }
+    const origins = {
+      classifyImplementation: { origin: "implementation", recoveries: ["redesign", "fix"] },
+      classifyVerification: { origin: "verification", recoveries: ["planVerification", "fix"] },
+      runReview: {
+        origin: "reviewer",
+        recoveries: ["repairReviewCommand", "selectReviewCommands"],
+      },
+      repairReviewCommand: {
+        origin: "reviewer",
+        recoveries: ["repairReviewCommand", "selectReviewCommands"],
+      },
+      routeReviewAssessment: {
+        origin: "reviewer",
+        recoveries: ["repairReviewCommand", "selectReviewCommands"],
+      },
+      routeInspectCommentsResult: { origin: "comments", recoveries: ["inspectComments", "fix"] },
+      routeInspectCiResult: { origin: "ci", recoveries: ["inspectCi", "opportunisticTest"] },
+      repairCiCommand: { origin: "ci", recoveries: ["inspectCi", "opportunisticTest"] },
+      assessTrackedCi: { origin: "ci", recoveries: ["inspectCi", "opportunisticTest"] },
+      classifyCi: { origin: "ci", recoveries: ["inspectCi", "opportunisticTest"] },
+      routeFinalizeDeliveryResult: {
+        origin: "delivery",
+        recoveries: ["inspectComments", "inspectCi"],
+      },
+    } as const;
+    for (const [nodeId, expected] of Object.entries(origins)) {
+      const result = await guard.run({
+        input: { task: "demo" },
+        outputs: {},
+        results: {},
+        state: { steps: [{ nodeId, outcome: "ok", output: { route: "blocked" } }] },
+        signal: new AbortController().signal,
+      } as never);
+      expect(result).toMatchObject({
+        route: "challenge",
+        origin: expected.origin,
+        recoveries: expected.recoveries,
+      });
+    }
+    const unsupported = await guard.run({
+      input: { task: "demo" },
+      outputs: {},
+      results: {},
+      state: { steps: [{ nodeId: "publish", outcome: "ok", output: {} }] },
+      signal: new AbortController().signal,
+    } as never);
+    expect(unsupported).toMatchObject({ route: "blocked" });
   });
 
   it("addresses P2 findings without running a second review round", async () => {
@@ -1368,6 +1793,7 @@ describe("built-in autoimplement", () => {
       .respond("addressP2", {
         output: { addressed: ["simplified branch"], skipped: [] },
       })
+
       .respond("verifyP2", {
         output: {
           passed: true,
@@ -1413,6 +1839,81 @@ describe("built-in autoimplement", () => {
     const result = state.finalOutput as { reviewRounds: Array<{ p2: unknown[] }> };
     expect(result.reviewRounds).toHaveLength(1);
     expect(result.reviewRounds[0]?.p2).toHaveLength(1);
+  });
+  it("reassesses a persisted reviewer batch once after assessment timeout", async () => {
+    const executor = commonExecutor()
+      .respond("assessReview", { hang: true })
+      .respond("recoverReviewAssessment", { output: cleanReview() })
+      .respond("inspectComments", {
+        output: { route: "ci", summary: "clear", evidence: [] },
+      })
+      .respond("inspectCi", { output: ciInspection("green") })
+      .respond("finalizeDelivery", {
+        output: {
+          status: "completed",
+          merged: false,
+          pr: "https://example.test/pr/1",
+          reportComment: "done",
+          reason: "ready",
+        },
+      });
+    const { state } = await new WorkflowEngine({
+      executor,
+      outputRoot: await makeTempDir("pi-workflows-autoimplement-review-assessment-timeout"),
+    }).run(autoimplementWithTimeout("assessReview", 20), {
+      task: "implement demo",
+      ...documentedPlan({ steps: ["change code"] }),
+      repository,
+      merge: false,
+    });
+
+    expect(state.status, state.error).toBe("completed");
+    expect(state.steps.filter((step) => step.nodeId === "runReview")).toHaveLength(1);
+    expect(state.steps.filter((step) => step.nodeId === "assessReview")).toHaveLength(1);
+    expect(state.steps.find((step) => step.nodeId === "assessReview")?.outcome).toBe("timed_out");
+    expect(state.steps.filter((step) => step.nodeId === "recoverReviewAssessment")).toHaveLength(1);
+    expect(
+      executor.requests.find((request) => request.contract.nodeId === "recoverReviewAssessment")
+        ?.prompt,
+    ).toContain("Persisted reviewer results");
+    expect((state.finalOutput as { reviewRounds: unknown[] }).reviewRounds).toHaveLength(1);
+  });
+
+  it("stops after the bounded reviewer assessment recovery also times out", async () => {
+    const primaryTimeout = autoimplementWithTimeout("assessReview", 20);
+    const recovery = primaryTimeout.nodes.recoverReviewAssessment;
+    if (recovery === undefined) throw new Error("recoverReviewAssessment node is missing");
+    const boundedRecovery = {
+      ...primaryTimeout,
+      nodes: {
+        ...primaryTimeout.nodes,
+        recoverReviewAssessment: { ...recovery, timeoutMs: 20 },
+      },
+    };
+    const executor = commonExecutor()
+      .respond("assessReview", { hang: true })
+      .respond("recoverReviewAssessment", { hang: true });
+    const { state } = await new WorkflowEngine({
+      executor,
+      outputRoot: await makeTempDir("pi-workflows-autoimplement-review-recovery-timeout"),
+    }).run(boundedRecovery, {
+      task: "implement demo",
+      ...documentedPlan({ steps: ["change code"] }),
+      repository,
+      merge: false,
+    });
+
+    expect(state.status, state.error).toBe("completed");
+    expect(state.finalOutput).toMatchObject({
+      status: "blocked",
+      reason:
+        "Reviewer commands completed, but both the primary and bounded recovery assessments timed out.",
+    });
+    expect(state.steps.filter((step) => step.nodeId === "runReview")).toHaveLength(1);
+    expect(state.steps.filter((step) => step.nodeId === "recoverReviewAssessment")).toHaveLength(1);
+    expect(
+      executor.requests.some((request) => request.contract.nodeId === "challengeBlocker"),
+    ).toBe(false);
   });
 
   it("runs another review after a P1 implementation fix", async () => {
@@ -1579,7 +2080,11 @@ describe("built-in autoimplement", () => {
       })
       .respond("assessReview", { output: failedReview }, { output: failedReview })
       .respond("challengeBlocker", {
-        output: confirmedChallenge("The reviewer remains unavailable after one repair."),
+        output: confirmedChallenge(
+          "The reviewer remains unavailable after one repair.",
+          "reviewer",
+          "selectReviewCommands",
+        ),
       });
     const { state } = await new WorkflowEngine({
       executor,
@@ -1613,7 +2118,11 @@ describe("built-in autoimplement", () => {
         output: { route: "retry", reason: "reviewer lookup repaired" },
       })
       .respond("challengeBlocker", {
-        output: confirmedChallenge("omp-reviewer is not installed."),
+        output: confirmedChallenge(
+          "omp-reviewer is not installed.",
+          "reviewer",
+          "repairReviewCommand",
+        ),
       });
     const { state } = await new WorkflowEngine({
       executor,
@@ -1689,18 +2198,14 @@ describe("built-in autoimplement", () => {
         output: {
           targets: [
             {
-              repository,
-              headRevision: "head-one",
-              pr: "https://example.test/pr/1",
+              id: repositoryId(repository),
               route: "green",
               reason: "green",
               relatedFailures: [],
               unrelatedFailures: [],
             },
             {
-              repository: secondRepository,
-              headRevision: "head-two",
-              pr: "https://example.test/pr/2",
+              id: repositoryId(secondRepository),
               route: "green",
               reason: "green",
               relatedFailures: [],
@@ -1718,15 +2223,13 @@ describe("built-in autoimplement", () => {
           reason: "ready",
           repositories: [
             {
-              repository,
-              pr: "https://example.test/pr/1",
+              id: repositoryId(repository),
               merged: false,
               reportComment: "done",
               reason: "ready",
             },
             {
-              repository: secondRepository,
-              pr: "https://example.test/pr/2",
+              id: repositoryId(secondRepository),
               merged: false,
               reportComment: "done for second repository",
               reason: "ready",
@@ -1835,7 +2338,7 @@ describe("built-in autoimplement", () => {
       outputRoot: await makeTempDir("pi-workflows-autoimplement-timeout-fallback"),
     });
 
-    const { state } = await engine.run(autoimplementWithTimeout("implement", 20), {
+    const { state } = await engine.run(autoimplementWithTimeout("implement", 500), {
       task: "implement demo",
       ...documentedPlan({ steps: ["change code"] }),
       repository,
@@ -1859,7 +2362,7 @@ describe("built-in autoimplement", () => {
     expect(timedOutAttempt).toMatchObject({
       nodeId: "implement",
       outcome: "timed_out",
-      error: "Timed out after 20ms",
+      error: "Timed out after 500ms",
       durationMs: expect.any(Number),
     });
     expect(Object.keys(timedOutAttempt ?? {}).sort()).toEqual(
@@ -2004,6 +2507,76 @@ describe("built-in autoimplement", () => {
         ),
       ),
     ).rejects.toThrow("without a current published head");
+    const staleHeadContext = {
+      input: { task: "demo", plan: {} },
+      outputs: {
+        publish: published("new-head"),
+        inspectComments: { route: "ci" },
+        assessTrackedCi: { route: "green" },
+        classifyCi: { route: "unrelated" },
+      },
+      results: {},
+      state: {
+        steps: [
+          { nodeId: "publish", outcome: "ok", output: published("old-head") },
+          { nodeId: "inspectComments", outcome: "ok", output: { route: "ci" } },
+          { nodeId: "assessTrackedCi", outcome: "ok", output: { route: "green" } },
+          { nodeId: "fix", outcome: "ok", output: { status: "implemented" } },
+          { nodeId: "publish", outcome: "ok", output: published("new-head") },
+          { nodeId: "inspectCi", outcome: "timed_out", output: null },
+        ],
+      },
+    } as never;
+    await expect(
+      Promise.resolve().then(() =>
+        fallback.validate?.(
+          {
+            route: "deliver",
+            reason: "The old head passed CI.",
+            evidence: ["A prior CI assessment was green."],
+          },
+          staleHeadContext,
+        ),
+      ),
+    ).rejects.toThrow("cannot route to delivery before CI is ready");
+    await expect(
+      Promise.resolve().then(() =>
+        fallback.validate?.(
+          {
+            route: "ci",
+            reason: "The old head comments were clear.",
+            evidence: ["A prior comment inspection routed to CI."],
+          },
+          staleHeadContext,
+        ),
+      ),
+    ).rejects.toThrow("cannot route to CI before comment inspection completed");
+
+    const currentHeadContext = {
+      input: { task: "demo", plan: {} },
+      outputs: {},
+      results: {},
+      state: {
+        steps: [
+          { nodeId: "publish", outcome: "ok", output: published("current-head") },
+          { nodeId: "inspectComments", outcome: "ok", output: { route: "ci" } },
+          { nodeId: "inspectCi", outcome: "ok", output: { route: "green" } },
+          { nodeId: "finalizeDelivery", outcome: "timed_out", output: null },
+        ],
+      },
+    } as never;
+    await expect(
+      Promise.resolve().then(() =>
+        fallback.validate?.(
+          {
+            route: "deliver",
+            reason: "The current published head passed CI.",
+            evidence: ["Current-head comment and CI gates completed in order."],
+          },
+          currentHeadContext,
+        ),
+      ),
+    ).resolves.toMatchObject({ route: "deliver" });
   });
 
   it("keeps failed implementation and cancellation out of timeout fallback", async () => {

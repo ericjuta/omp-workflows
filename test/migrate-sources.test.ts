@@ -5,7 +5,7 @@ import { SqliteControllerStore } from "../src/controllers/sqlite.js";
 import { BuiltinWorkflowCatalog } from "../src/workflows/catalog.js";
 import { compute, defineWorkflow } from "../src/workflows/definition.js";
 import { migrateLegacyWorkflowSources } from "../src/workflows/migrate-sources.js";
-import { WorkflowRunStore, readRunBundle } from "../src/workflows/store.js";
+import { WorkflowRunStore, definitionDigest, readRunBundle } from "../src/workflows/store.js";
 import type { WorkflowRunState } from "../src/workflows/types.js";
 import { makeTempDir } from "./helpers.js";
 
@@ -21,6 +21,7 @@ function catalog(revision = "r1") {
     {
       id: "fixture",
       revision,
+      definitionDigest: definitionDigest(workflow),
       definition: workflow,
       legacySources: [
         {

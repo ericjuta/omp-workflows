@@ -1,5 +1,6 @@
 import { isWorkflowDefinition } from "./definition.js";
 import { BuiltinWorkflowRevisionChangedError } from "./errors.js";
+import { definitionDigest as computeDefinitionDigest } from "./store.js";
 import type { WorkflowDefinition, WorkflowSource } from "./types.js";
 
 const BUILTIN_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
@@ -14,6 +15,7 @@ export type LegacyBuiltinSource = {
 export type BuiltinWorkflowRegistration = {
   id: string;
   revision: string;
+  definitionDigest: string;
   definition: WorkflowDefinition;
   legacySources?: LegacyBuiltinSource[];
 };
@@ -22,6 +24,7 @@ export type BuiltinWorkflowEntry = Readonly<{
   id: string;
   ref: string;
   revision: string;
+  definitionDigest: string;
   definition: WorkflowDefinition;
   legacySources: readonly LegacyBuiltinSource[];
 }>;
@@ -49,6 +52,14 @@ export class BuiltinWorkflowCatalog {
       if (!isWorkflowDefinition(registration.definition)) {
         throw new Error(`Built-in workflow ${registration.id} is not defined with defineWorkflow`);
       }
+      const actualDigest = computeDefinitionDigest(registration.definition);
+      if (actualDigest !== registration.definitionDigest) {
+        throw new Error(
+          `Built-in workflow ${registration.id}@${registration.revision} definition digest changed: ` +
+            `expected ${registration.definitionDigest}, received ${actualDigest}. ` +
+            "Bump both its revision and checked-in definition digest.",
+        );
+      }
       if (this.byId.has(registration.id)) {
         throw new Error(`Duplicate built-in workflow id: ${registration.id}`);
       }
@@ -59,6 +70,7 @@ export class BuiltinWorkflowCatalog {
         id: registration.id,
         ref: `builtin:${registration.id}`,
         revision: registration.revision,
+        definitionDigest: registration.definitionDigest,
         definition: registration.definition,
         legacySources: Object.freeze(
           (registration.legacySources ?? []).map((legacy) =>

@@ -16,7 +16,6 @@ const REVIEW_TIMEOUT_MS = 20 * 60_000;
 const MAX_STRING_CHARS = 4_000;
 const MAX_SUMMARY_CHARS = 8_000;
 const MAX_ITEMS = 40;
-const REPORT_CHARS = 12_000;
 const REVIEW_EVIDENCE_CHARS = 60_000;
 const VERIFICATION_EVIDENCE_CHARS = 32_000;
 const VERIFICATION_REVIEWS_CHARS = 48_000;
@@ -332,10 +331,7 @@ export function formatSanityCheckReport(result: SanityCheckResult): string {
   appendList(lines, "Required changes", result.requiredChanges);
   appendList(lines, "Questions for the contributor", result.questionsForContributor);
   appendList(lines, "Unknowns", result.unknowns);
-  const report = lines.join("\n");
-  return report.length <= REPORT_CHARS
-    ? report
-    : `${report.slice(0, REPORT_CHARS)}\n…[report truncated]`;
+  return lines.join("\n");
 }
 
 async function runReviews(context: WorkflowActionContext): Promise<SanityCheckReview[]> {

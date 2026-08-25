@@ -6,12 +6,19 @@ import {
   decisionDocumentSegments,
   decisionPresentationFingerprint,
   humanDecisionChannelRequest,
+  validateHumanDecisionRequestIntegrity,
 } from "../workflows/decision-presentation.js";
 import {
   formatProgressLine,
   progressRecordsFromTrace,
   progressTracksFromRecords,
 } from "../workflows/progress.js";
+import {
+  selectRecentRuns,
+  summarizeRunBundle,
+  type ContinuationQueueFact,
+  type WorkflowRunListItem,
+} from "../workflows/run-discovery.js";
 import type { LoadedRunBundle } from "../workflows/store.js";
 import type {
   HumanDecisionRequest,
@@ -55,6 +62,66 @@ export function statusLabel(status: WorkflowRunStatus): string {
   return STATUS_COLORS[status](status);
 }
 
+function projectedStatusLabel(status: string): string {
+  if (status in STATUS_COLORS) {
+    return statusLabel(status as WorkflowRunStatus);
+  }
+  if (status === "queued") return ansi.yellow(status);
+  return ansi.red(sanitizeText(status));
+}
+
+/** One compact line per state-only run projection. */
+export function renderRunProjectionLines(runs: WorkflowRunListItem[]): string[] {
+  return runs.map((run) => {
+    const title = run.runTitle ? ` — ${sanitizeText(run.runTitle)}` : "";
+    const duration = run.durationMs === undefined ? "" : ` · ${formatDuration(run.durationMs)}`;
+    const family =
+      run.parentRunId === undefined
+        ? ""
+        : run.continuationRunId === undefined
+          ? ` · continuation of ${sanitizeText(run.parentRunId)}`
+          : ` · continuation ${sanitizeText(run.parentRunId)} → ${sanitizeText(run.continuationRunId)}`;
+    const paused =
+      run.paused === true
+        ? ` · paused${run.pausedAgeMs === undefined ? "" : ` ${formatDuration(run.pausedAgeMs)}`}`
+        : "";
+    const node = run.currentNode ? ` · node ${sanitizeText(run.currentNode)}` : "";
+    const failing = run.failingNode ? ` · failing ${sanitizeText(run.failingNode)}` : "";
+    const warningCount = run.warnings?.length ?? 0;
+    const warnings = warningCount > 0 ? ` · ${warningCount} warning(s)` : "";
+    const error = run.errorSummary
+      ? ` · ${sanitizeText(run.errorSummary).replaceAll(/\s+/g, " ").slice(0, 200)}`
+      : "";
+    return `${projectedStatusLabel(run.status)}  ${ansi.bold(sanitizeText(run.workflowName))}${title}  ${sanitizeText(run.runId)}${duration}${family}${paused}${node}${failing}${warnings}${error}`;
+  });
+}
+
+export type WorkflowDoctorFinding = {
+  severity: "ok" | "warning" | "error";
+  code: string;
+  message: string;
+};
+
+/** Sanitize and render read-only doctor findings for terminal output. */
+export function renderDoctorFindings(
+  runId: string,
+  findings: readonly WorkflowDoctorFinding[],
+): string[] {
+  const lines = [ansi.bold(`Workflow doctor — ${sanitizeText(runId)}`)];
+  for (const finding of findings) {
+    const label =
+      finding.severity === "ok"
+        ? ansi.green("OK")
+        : finding.severity === "warning"
+          ? ansi.yellow("WARN")
+          : ansi.red("ERROR");
+    const code = sanitizeText(finding.code).replaceAll(/\s+/g, " ").slice(0, 80);
+    const message = sanitizeText(finding.message).replaceAll(/\s+/g, " ").trim().slice(0, 500);
+    lines.push(`[${label}] ${code}: ${message}`);
+  }
+  return lines;
+}
+
 function previewValue(rawValue: unknown, maxLength: number): string {
   if (rawValue === undefined) {
     return "";
@@ -68,42 +135,124 @@ function previewValue(rawValue: unknown, maxLength: number): string {
   return singleLine.length <= maxLength ? singleLine : `${singleLine.slice(0, maxLength - 1)}…`;
 }
 
+export type ViewerRunEntry = {
+  run: WorkflowRunListItem;
+  bundle?: LoadedRunBundle;
+};
+
+export function projectViewerRuns(
+  bundles: readonly LoadedRunBundle[],
+  queueFacts: readonly ContinuationQueueFact[] = [],
+): ViewerRunEntry[] {
+  const bundlesById = new Map(bundles.map((bundle) => [bundle.state.runId, bundle]));
+  return selectRecentRuns([...bundles], undefined, queueFacts).map((run) => {
+    const physicalRunId = run.continuationRunId ?? run.runId;
+    const bundle = bundlesById.get(physicalRunId);
+    return { run, ...(bundle === undefined ? {} : { bundle }) };
+  });
+}
+
 /** One line per run for the run picker. */
 export function renderRunListLines(
-  bundles: LoadedRunBundle[],
+  runs: readonly (WorkflowRunListItem | LoadedRunBundle)[],
   selectedIndex: number,
   size: ViewportSize,
   now: Date = new Date(),
+  queueFacts: readonly ContinuationQueueFact[] = [],
 ): string[] {
+  const bundles = runs.filter((run): run is LoadedRunBundle => "state" in run);
+  const displayRuns: readonly WorkflowRunListItem[] =
+    bundles.length === runs.length
+      ? projectViewerRuns(bundles, queueFacts).map((entry) => entry.run)
+      : runs.map((run) => ("state" in run ? summarizeRunBundle(run) : run));
   const lines: string[] = [];
   lines.push(ansi.bold("omp-workflows — runs"));
   lines.push(ansi.dim("↑/↓ select · enter open · q quit"));
   lines.push("");
-  if (bundles.length === 0) {
+  if (displayRuns.length === 0) {
     lines.push(ansi.dim("No workflow runs found."));
     return lines.map((line) => fitWidth(line, size.width));
   }
   const visible = Math.max(1, size.height - lines.length - 1);
+  const effectiveSelectedIndex = Math.min(selectedIndex, displayRuns.length - 1);
   const start = Math.min(
-    Math.max(0, selectedIndex - Math.floor(visible / 2)),
-    Math.max(0, bundles.length - visible),
+    Math.max(0, effectiveSelectedIndex - Math.floor(visible / 2)),
+    Math.max(0, displayRuns.length - visible),
   );
-  for (const [offset, bundle] of bundles.slice(start, start + visible).entries()) {
+  for (const [offset, run] of displayRuns.slice(start, start + visible).entries()) {
     const index = start + offset;
-    const state = bundle.state;
-    const marker = index === selectedIndex ? ansi.cyan("›") : " ";
-    const elapsed = formatDuration(runElapsedMs(state, now));
-    const title = state.runTitle ? ` — ${sanitizeText(state.runTitle)}` : "";
+    const marker = index === effectiveSelectedIndex ? ansi.cyan("›") : " ";
+    const status = projectedStatusLabel(run.effectiveStatus ?? run.status);
+    const title = run.runTitle ? ` — ${sanitizeText(run.runTitle)}` : "";
+    const family =
+      run.parentRunId === undefined
+        ? ""
+        : run.continuationRunId === undefined
+          ? ` · continuation of ${sanitizeText(run.parentRunId)}`
+          : ` · continuation ${sanitizeText(run.parentRunId)} → ${sanitizeText(run.continuationRunId)}`;
+    const duration =
+      run.durationMs !== undefined
+        ? ` · ${formatDuration(run.durationMs)}`
+        : run.startedAt
+          ? ` · ${formatDuration(Math.max(0, now.getTime() - (Date.parse(run.startedAt) || now.getTime())))}`
+          : "";
+    const paused =
+      run.paused === true
+        ? ` · paused${run.pausedAgeMs === undefined ? "" : ` ${formatDuration(run.pausedAgeMs)}`}`
+        : "";
+    const node = run.currentNode ? ` · node ${sanitizeText(run.currentNode)}` : "";
+    const failing = run.failingNode ? ` · failing ${sanitizeText(run.failingNode)}` : "";
+    const warningCount = run.warnings?.length ?? 0;
+    const warnings = warningCount > 0 ? ` · ${warningCount} warning(s)` : "";
+    const error = run.errorSummary
+      ? ` · ${sanitizeText(run.errorSummary).replaceAll(/\s+/g, " ").slice(0, 200)}`
+      : "";
     lines.push(
       fitWidth(
-        `${marker} ${statusLabel(state.status)}  ${ansi.bold(state.workflowName)}${title}  ${ansi.dim(
-          `${state.runId} · ${elapsed}`,
+        `${marker} ${status}  ${ansi.bold(sanitizeText(run.workflowName))}${title}  ${ansi.dim(
+          `${sanitizeText(run.runId)}${duration}${family}${paused}${node}${failing}${warnings}${error}`,
         )}`,
         size.width,
       ),
     );
   }
   return lines;
+}
+
+/** Detail view for a run that is only present in the controller queue. */
+export function renderQueueDetailLines(run: WorkflowRunListItem, size: ViewportSize): string[] {
+  const lines: string[] = [];
+  lines.push(ansi.bold(`Workflow run (queued) — ${sanitizeText(run.runId)}`));
+  lines.push(ansi.dim("q back to list"));
+  lines.push("");
+  lines.push(`Workflow: ${ansi.bold(sanitizeText(run.workflowName))}`);
+  lines.push(`Status:   ${projectedStatusLabel(run.effectiveStatus ?? run.status)}`);
+  if (run.startedAt) {
+    lines.push(`Queued:   ${sanitizeText(run.startedAt)}`);
+  }
+  if (run.project) {
+    lines.push(`Project:  ${sanitizeText(run.project)}`);
+  }
+  if (run.parentRunId) {
+    lines.push(`Parent:   ${sanitizeText(run.parentRunId)}`);
+  }
+  if (run.continuationRunId) {
+    lines.push(`Continuation: ${sanitizeText(run.continuationRunId)}`);
+  }
+  if (run.errorCode) {
+    lines.push(`Error code:   ${ansi.red(sanitizeText(run.errorCode))}`);
+  }
+  if (run.errorSummary) {
+    lines.push(`Error:        ${ansi.red(sanitizeText(run.errorSummary))}`);
+  }
+  if (run.warnings && run.warnings.length > 0) {
+    lines.push(`Warnings:     ${ansi.yellow(run.warnings.map(sanitizeText).join("; "))}`);
+  }
+  lines.push("");
+  lines.push(
+    ansi.dim("This run is tracked in the controller queue and has no on-disk bundle yet."),
+  );
+  return lines.map((line) => fitWidth(line, size.width));
 }
 
 function stepLine(
@@ -120,7 +269,7 @@ function stepLine(
       ? ansi.red(previewValue(step.error, 60))
       : ansi.dim(previewValue(step.output, 60));
   return fitWidth(
-    ` ${marker}${glyph} ${step.nodeId} ${ansi.dim(`(${step.nodeType}, ${formatDuration(durationMs)})`)} ${preview}`,
+    ` ${marker}${glyph} ${sanitizeText(step.nodeId)} ${ansi.dim(`(${sanitizeText(step.nodeType)}, ${formatDuration(durationMs)})`)} ${preview}`,
     width,
   );
 }
@@ -153,7 +302,7 @@ function nodeStatusLine(bundle: LoadedRunBundle, nodeId: string, width: number, 
             .map((choice) => sanitizeText(choice.label))
             .join(
               " / ",
-            )}${request === null ? "" : ` · ${request.presentationDigest.slice(7, 19)}`}`,
+            )}${request === null ? "" : ` · ${sanitizeText(request.presentationDigest.slice(7, 19))}`}`,
     );
   } else if (result) {
     glyph = result.outcome === "ok" ? ansi.green("✓") : ansi.red("✗");
@@ -167,7 +316,10 @@ function nodeStatusLine(bundle: LoadedRunBundle, nodeId: string, width: number, 
       ` ${formatDuration(result.durationMs)}${selected === undefined ? "" : ` · human: ${sanitizeText(selected.label)}`}`,
     );
   }
-  return fitWidth(`  ${glyph} ${nodeId} ${ansi.dim(`[${nodeType}]`)}${suffix}`, width);
+  return fitWidth(
+    `  ${glyph} ${sanitizeText(nodeId)} ${ansi.dim(`[${sanitizeText(nodeType)}]`)}${suffix}`,
+    width,
+  );
 }
 
 /** Pretty-printed JSON body of the selected step for the inspector pane. */
@@ -210,9 +362,12 @@ function inspectorLines(step: WorkflowStepRecord, width: number): string[] {
 function humanDecisionRequest(value: unknown): HumanDecisionRequest | null {
   if (value === null || typeof value !== "object") return null;
   const schema = (value as { schema?: unknown }).schema;
-  return schema === "pi-workflows.human-decision-request.v1"
-    ? (value as HumanDecisionRequest)
-    : null;
+  if (schema !== "pi-workflows.human-decision-request.v1") return null;
+  try {
+    return validateHumanDecisionRequestIntegrity(value as HumanDecisionRequest);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -240,9 +395,12 @@ export function renderRunDetailLines(
       ? ""
       : ` · step ${Math.min(selected, steps.length - 1) + 1}/${steps.length}`;
   const paused = state.paused ? ` · ${ansi.yellow("paused")}` : "";
+  const continuation = state.parentRunId
+    ? ` · continuation ${sanitizeText(state.parentRunId)} → effective ${sanitizeText(state.runId)}`
+    : "";
   lines.push(
     fitWidth(
-      `${statusLabel(state.status)}${paused} · run ${state.runId} · elapsed ${formatDuration(runElapsedMs(state, now))}${position}`,
+      `${statusLabel(state.status)}${paused} · run ${sanitizeText(state.runId)}${continuation} · elapsed ${formatDuration(runElapsedMs(state, now))}${position}`,
       size.width,
     ),
   );
@@ -277,7 +435,7 @@ export function renderRunDetailLines(
       lines.push(
         fitWidth(
           ansi.dim(
-            `${indentation}  ${track.estimate.sampleCount} samples · ${track.estimate.confidence ?? "no"} confidence · updated ${latest?.at ?? "unknown"}`,
+            `${indentation}  ${track.estimate.sampleCount} samples · ${track.estimate.confidence ?? "no"} confidence · updated ${sanitizeText(latest?.at ?? "unknown")}`,
           ),
           size.width,
         ),

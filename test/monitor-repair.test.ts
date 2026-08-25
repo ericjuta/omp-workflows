@@ -158,9 +158,7 @@ function repairExecutor(secondCheck: unknown): ScriptedExecutor {
       output: {
         targets: [
           {
-            repository,
-            headRevision: "revision-two",
-            pr: "https://example.test/pr/2",
+            id: repositoryId(repository),
             route: "green",
             reason: "green",
             relatedFailures: [],

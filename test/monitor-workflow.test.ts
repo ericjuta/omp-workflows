@@ -7,7 +7,7 @@ import monitor, {
 import { WorkflowEngine } from "../src/workflows/engine.js";
 import { WorkflowRunStore } from "../src/workflows/store.js";
 import type { AgentStepExecutor, WorkflowNotificationRequest } from "../src/workflows/types.js";
-import { makeTempDir } from "./helpers.js";
+import { makeTempDir, ScriptedExecutor, waitUntil } from "./helpers.js";
 
 function scriptedExecutor(outputs: unknown[], prompts: string[] = []): AgentStepExecutor {
   const remaining = [...outputs];
@@ -41,8 +41,50 @@ function check(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+function monitorWithFastTimeoutRetry() {
+  const checkNode = monitor.nodes.check;
+  const sleepNode = monitor.nodes.sleep;
+  if (checkNode === undefined || sleepNode?.nodeType !== "compute") {
+    throw new Error("monitor check and sleep nodes are required");
+  }
+  return {
+    ...monitor,
+    nodes: {
+      ...monitor.nodes,
+      check: { ...checkNode, timeoutMs: 20 },
+      sleep: {
+        ...sleepNode,
+        run: async () => ({ waitedMinutes: 1, interrupted: false }),
+      },
+    },
+  };
+}
 
 describe("built-in monitor workflow", () => {
+  it("declares and forwards the observation-only check policy", async () => {
+    expect(monitor.nodes.check).toMatchObject({
+      nodeType: "agent",
+      toolPolicy: "observation-only",
+    });
+    const executor = new ScriptedExecutor().respond("check", { output: check() });
+    const engine = new WorkflowEngine({
+      executor,
+      store: new WorkflowRunStore(await makeTempDir("observation-tool-policy")),
+      notificationSink: {
+        notify() {
+          return { notificationId: "n1", targetSessionId: "s1" };
+        },
+      },
+    });
+
+    await engine.run(monitor, input());
+
+    expect(executor.requests[0]?.contract).toMatchObject({
+      nodeId: "check",
+      toolPolicy: "observation-only",
+    });
+  });
+
   it("defaults to 30 minutes and explicit-user-stop when no finish rule is supplied", () => {
     expect(prepareMonitorInput({ task: "Observe the target" })).toMatchObject({
       everyMinutes: 30,
@@ -116,6 +158,102 @@ describe("built-in monitor workflow", () => {
     expect(result.state.steps.some((step) => step.nodeId === "sleep")).toBe(false);
   });
 
+  it("retries timed-out checks through schedule and sleep, then stops truthfully", async () => {
+    const notifications: WorkflowNotificationRequest[] = [];
+    const executor = new ScriptedExecutor().respond(
+      "check",
+      { hang: true },
+      { hang: true },
+      { hang: true },
+    );
+    const engine = new WorkflowEngine({
+      executor,
+      store: new WorkflowRunStore(await makeTempDir("monitor-check-timeouts")),
+      notificationSink: {
+        notify(request) {
+          notifications.push(request);
+          return { notificationId: `n${notifications.length}`, targetSessionId: "s1" };
+        },
+      },
+    });
+
+    const result = await engine.run(
+      monitorWithFastTimeoutRetry(),
+      input({ everyMinutes: 1, maxChecks: 5 }),
+    );
+
+    expect(result.state.status).toBe("completed");
+    expect(
+      result.state.steps.filter((step) => step.nodeId === "check").map((step) => step.outcome),
+    ).toEqual(["timed_out", "timed_out", "timed_out"]);
+    expect(result.state.steps.filter((step) => step.nodeId === "schedule")).toHaveLength(2);
+    expect(result.state.steps.filter((step) => step.nodeId === "sleep")).toHaveLength(2);
+    expect(
+      result.state.steps
+        .filter((step) => step.nodeId === "recordCheckTimeout")
+        .map((step) => (step.output as { route: string }).route),
+    ).toEqual(["retry", "retry", "stop"]);
+    expect(notifications.map((notification) => notification.content)).toEqual([
+      "Monitor check timed out (1/3); another check will be scheduled after the configured interval.",
+      "Monitor check timed out (2/3); another check will be scheduled after the configured interval.",
+      "Monitor check timed out 3 consecutive times; stopping without a current observation.",
+    ]);
+    expect(result.state.finalOutput).toMatchObject({
+      consecutiveTimeouts: 3,
+      checks: 0,
+      reported: true,
+    });
+    const finalOutput = result.state.finalOutput as Record<string, unknown>;
+    expect(finalOutput).not.toHaveProperty("observation");
+    expect(finalOutput).not.toHaveProperty("report");
+    expect(finalOutput).not.toHaveProperty("progress");
+    expect(finalOutput).not.toHaveProperty("repair");
+  });
+
+  it("keeps cancellation terminal instead of routing it as a timeout retry", async () => {
+    const notifications: WorkflowNotificationRequest[] = [];
+    const executor = new ScriptedExecutor().respond("check", { hang: true });
+    const engine = new WorkflowEngine({
+      executor,
+      store: new WorkflowRunStore(await makeTempDir("monitor-check-cancel")),
+      notificationSink: {
+        notify(request) {
+          notifications.push(request);
+          return { notificationId: "n1", targetSessionId: "s1" };
+        },
+      },
+    });
+    const running = engine.run(monitor, input());
+    await waitUntil(() => executor.requests.length > 0);
+    expect(executor.requests).toHaveLength(1);
+    engine.cancel();
+    const result = await running;
+
+    expect(result.state.status).toBe("cancelled");
+    expect(result.state.steps.some((step) => step.nodeId === "recordCheckTimeout")).toBe(false);
+    expect(notifications).toHaveLength(0);
+  });
+
+  it("routes only timed-out checks through the bounded retry graph", () => {
+    const checkEdge = monitor.edges.find((edge) => edge.from === "check");
+    const timeoutEdge = monitor.edges.find((edge) => edge.from === "recordCheckTimeout");
+    expect(checkEdge).toMatchObject({
+      switch: {
+        on: "$result.outcome",
+        cases: { ok: "estimate", timed_out: "recordCheckTimeout", failed: "recordCheckFailure" },
+      },
+    });
+    expect(timeoutEdge).toMatchObject({
+      switch: {
+        cases: { retry: "checkTimeoutRetryReport", stop: "checkTimeoutStopReport" },
+      },
+    });
+    expect(monitor.edges).toContainEqual({ from: "checkTimeoutRetryReport", to: "schedule" });
+    expect(monitor.edges).toContainEqual({ from: "schedule", to: "sleep" });
+    expect(JSON.stringify([checkEdge, timeoutEdge])).not.toContain("planChange");
+    expect(JSON.stringify([checkEdge, timeoutEdge])).not.toContain("implementation");
+  });
+
   it("publishes progress and adds a model-free estimate to the report", async () => {
     const notifications: WorkflowNotificationRequest[] = [];
     const engine = new WorkflowEngine({
@@ -170,26 +308,26 @@ describe("built-in monitor workflow", () => {
         },
       },
     });
-
     const result = await engine.run(monitor, input());
 
     expect(result.state.status).toBe("completed");
     expect(result.state.updates).toHaveLength(101);
-  }, 10_000);
+  }, 30_000);
 
   it("includes the prior observation and progress summary in the next prompt", async () => {
     const prompts: string[] = [];
     const executor = scriptedExecutor([], prompts);
     const checkNode = monitor.nodes.check;
     if (checkNode?.nodeType !== "agent") throw new Error("check must be an agent node");
+    const previousCheck = check({ observation: "The target is at 4 of 10." });
     const state = {
-      steps: [{ nodeId: "check", outcome: "ok" }],
+      steps: [{ nodeId: "check", outcome: "ok", output: previousCheck }],
     } as never;
     const prompt = await checkNode.prompt({
       input: input(),
       outputs: {
         prepare: prepareMonitorInput(input()),
-        check: check({ observation: "The target is at 4 of 10." }),
+        check: previousCheck,
         estimate: { tracks: [] },
       },
       results: {},
@@ -201,19 +339,22 @@ describe("built-in monitor workflow", () => {
     expect(prompt).toContain("You are the regular Pi model running this check");
     expect(prompt).toContain("publish them with workflow action update");
     expect(prompt).toContain("Do not require the monitored target to implement a Pi-specific");
+    expect(prompt).toContain("This check itself is observation-only");
+    expect(prompt).toContain("Route repair and repair details are forbidden");
     expect(executor).toBeDefined();
   });
 
   it("requires explicit authorization and details for repair routes", () => {
+    const repairDetails = {
+      problem: "Fix the defect",
+      evidence: { failingTest: "test-a" },
+      issueFingerprint: "issue-a-state-1",
+    };
     const repair = check({
       route: "repair",
       observation: "A fixable defect is present.",
       report: "A fixable defect is present.",
-      repair: {
-        problem: "Fix the defect",
-        evidence: { failingTest: "test-a" },
-        issueFingerprint: "issue-a-state-1",
-      },
+      repair: repairDetails,
     });
     expect(() => validateMonitorCheck(repair)).toThrow("authorization");
     expect(validateMonitorCheck(repair, true)).toMatchObject({
@@ -223,6 +364,12 @@ describe("built-in monitor workflow", () => {
     expect(() => validateMonitorCheck({ ...repair, repair: undefined }, true)).toThrow(
       "requires repair details",
     );
+    expect(() => validateMonitorCheck(check({ route: "continue", repair: repairDetails }))).toThrow(
+      "authorization",
+    );
+    expect(() =>
+      validateMonitorCheck(check({ route: "continue", repair: repairDetails }), true),
+    ).toThrow("require route repair");
   });
 
   it("rejects quiet routes, missing reports, duplicate tracks, and unknown fields", () => {

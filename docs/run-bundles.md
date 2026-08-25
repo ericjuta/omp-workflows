@@ -187,9 +187,13 @@ files through `paths`, and reject any path that escapes the bundle directory.
 A serializable snapshot of the graph taken at run start
 (`pi-workflows.definition-snapshot.v1`). Functions such as prompts and
 validators are not serialized. Each node keeps only its metadata (`nodeType`,
-`timeoutMs`, `statusDetail`, `expectedOutput`, `summary`, `actionExecution`),
-and edges are copied verbatim. A fixed `timeoutMs: null` is preserved and means
-that the node has no wall-clock deadline. Timeout callbacks remain omitted.
+`timeoutMs`, `statusDetail`, `expectedOutput`, `toolPolicy`, `summary`,
+`actionExecution`), and edges are copied verbatim. An agent's optional
+`toolPolicy: "observation-only"` is preserved so durable snapshots describe the
+executor policy without relying on workflow or node identity. A fixed
+`timeoutMs: null` is preserved and means that the node has no wall-clock
+deadline. Timeout callbacks remain omitted.
+
 A human-decision snapshot records fixed `onTimeout` duration and response values. A dynamic timeout callback is omitted and marked as dynamic. Included nodes also record `mountPath`, `localNodeId`, and internal entry or exit status. The top-level `composition.mounts` list records every mount, entry, named exit, and child step limit. The snapshot is what lets viewers draw all nodes, including ones that have not run yet. It is immutable after run start.
 
 ## Resume and repair

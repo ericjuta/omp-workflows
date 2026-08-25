@@ -53,6 +53,9 @@ export function assertValidAgentNode(node: AgentNodeDefinition, nodeId = "agent"
   if (node.expectedOutput !== undefined && typeof node.expectedOutput !== "string") {
     fail(`node ${nodeId} expectedOutput must be a string`);
   }
+  if (node.toolPolicy !== undefined && node.toolPolicy !== "observation-only") {
+    fail(`node ${nodeId} toolPolicy must be observation-only`);
+  }
   assertOptionalFunction(node.validate, `node ${nodeId} validate`);
   assertCommonNodeFields(node, nodeId);
 }

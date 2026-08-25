@@ -120,6 +120,9 @@ describe("node constructors", () => {
     expect(() => agent({ prompt: () => "p", expectedOutput: 5 as never })).toThrow(
       /expectedOutput/,
     );
+    expect(() => agent({ prompt: () => "p", toolPolicy: "mutating" as never })).toThrow(
+      /toolPolicy must be observation-only/,
+    );
     expect(() => agent({ prompt: () => "p", validate: "x" as never })).toThrow(/validate/);
     expect(() => agent({ prompt: () => "p", timeoutMs: -1 })).toThrow(/timeoutMs/);
     expect(agent({ prompt: () => "p", timeoutMs: null }).timeoutMs).toBeNull();
@@ -127,6 +130,7 @@ describe("node constructors", () => {
     expect(agent({ prompt: () => "p", timeoutMs: () => null }).timeoutMs).toBeTypeOf("function");
     expect(() => agent({ prompt: () => "p", statusDetail: 1 as never })).toThrow(/statusDetail/);
     expect(agent({ prompt: () => "p" }).nodeType).toBe("agent");
+    expect(agent({ prompt: () => "p" })).not.toHaveProperty("toolPolicy");
   });
 
   it("validates compute nodes", () => {
@@ -193,6 +197,7 @@ describe("definition snapshots", () => {
         start: agent({
           prompt: () => "p",
           expectedOutput: "{}",
+          toolPolicy: "observation-only",
           timeoutMs: 1000,
           statusDetail: "thinking",
         }),
@@ -212,6 +217,7 @@ describe("definition snapshots", () => {
     expect(snapshot.nodes.start).toEqual({
       nodeType: "agent",
       expectedOutput: "{}",
+      toolPolicy: "observation-only",
       timeoutMs: 1000,
       statusDetail: "thinking",
     });

@@ -123,9 +123,11 @@ export {
 export {
   findMatchingLiveRuns,
   isLiveWorkflowStatus,
+  overlayContinuationFamilies,
   selectRecentRuns,
   summarizeRunBundle,
   workflowTaskFingerprint,
+  type ContinuationQueueFact,
   type WorkflowRunListItem,
 } from "./run-discovery.js";
 export {
@@ -137,11 +139,20 @@ export {
   WorkflowRunStore,
   createDefinitionSnapshot,
   createRunId,
+  definitionDigest,
+  definitionSnapshotDigest,
   listRunBundles,
+  listRunProjections,
+  readLastTraceEvent,
   readRunBundle,
+  readRunProjection,
+  readRunState,
   workflowRunsBaseDir,
+  type ListRunProjectionsOptions,
+  type ListRunProjectionsResult,
   type LoadedRunBundle,
   type ReadRunBundleOptions,
+  type WorkflowRunProjection,
 } from "./store.js";
 export type {
   AcceptedHumanDecision,
@@ -149,6 +160,7 @@ export type {
   ResolvedHumanDecision,
   AgentNodeDefinition,
   AgentStepContract,
+  AgentToolPolicy,
   AgentStepExecutor,
   AgentStepPresentation,
   AgentStepRequest,

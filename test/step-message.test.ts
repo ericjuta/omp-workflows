@@ -1,6 +1,7 @@
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
+import { submissionInstruction, type PromptDeliveryKind } from "../src/extension/executor.js";
 import {
   buildWorkflowAgentStepView,
   registerWorkflowAgentStepMessageRenderer,
@@ -108,4 +109,27 @@ describe("workflow agent-step messages", () => {
     expect(expanded.join("\n")).toContain("Large model instructions");
     expect(expanded.every((line) => visibleWidth(line) <= 40)).toBe(true);
   });
+  it.each(["step", "reminder", "resume"] as const)(
+    "preserves the exact model submission instruction for %s delivery",
+    (kind: PromptDeliveryKind) => {
+      const instruction = submissionInstruction(details.contract);
+      const view = buildWorkflowAgentStepView(
+        {
+          content: `Delivery content\n\n${instruction}`,
+          details: { ...details, kind },
+        },
+        true,
+      );
+
+      expect(view.expandedText).toContain(instruction);
+      expect(instruction).toContain(
+        '{"action": "submit", "step": "check", "attempt": "attempt-1", "output": <your result>}',
+      );
+      expect(instruction).toContain('Expected output: { "route": "continue" }');
+      expect(instruction).not.toContain("run-1");
+      expect(instruction).toContain("If the tool reports a validation error");
+      expect(instruction).not.toContain("exactly once");
+      expect(instruction).not.toContain("runId");
+    },
+  );
 });

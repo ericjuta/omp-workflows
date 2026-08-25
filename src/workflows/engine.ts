@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { resolveArtifacts } from "./artifacts.js";
 import {
@@ -27,8 +27,8 @@ import { runShellAction, shellResultFromError } from "./shell.js";
 import {
   RUN_STATE_SCHEMA,
   WorkflowRunStore,
-  createDefinitionSnapshot,
   createRunId,
+  definitionDigest,
   readRunBundle,
 } from "./store.js";
 import type {
@@ -1213,6 +1213,7 @@ export class WorkflowEngine {
           nodeId,
           attemptId,
           ...(node.expectedOutput !== undefined ? { expectedOutput: node.expectedOutput } : {}),
+          ...(node.toolPolicy !== undefined ? { toolPolicy: node.toolPolicy } : {}),
         },
         prompt,
         ...(state.runTitle !== undefined || node.statusDetail !== undefined
@@ -1524,12 +1525,6 @@ function workflowIdentityMismatch(
   return state.definitionDigest !== currentDigest;
 }
 
-function definitionDigest(workflow: WorkflowDefinition): string {
-  return `sha256:${createHash("sha256")
-    .update(JSON.stringify(createDefinitionSnapshot(workflow)))
-    .digest("hex")}`;
-}
-
 function assertJsonSerializable(value: unknown, what: string): void {
   let encoded: string | undefined;
   try {
@@ -1579,7 +1574,7 @@ export function appendStepContract(
     "",
     "While this step is active, you may publish non-completing updates with:",
     `{"action": "update", "step": ${JSON.stringify(nodeId)}, "attempt": ${JSON.stringify(attemptId)}, "update": {"type": "...", "key": "...", "data": {...}}}`,
-    "Complete this step by calling the `workflow` tool exactly once with:",
+    "Submit this step with the `workflow` tool using this exact envelope:",
     `{"action": "submit", "step": ${JSON.stringify(nodeId)}, "attempt": ${JSON.stringify(attemptId)}, "output": <your result>}`,
     `Expected output: ${expectedOutput ?? "a JSON object with your result"}`,
     "The step is complete only after the workflow tool accepts the output.",

@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { errorMessage } from "../workflows/errors.js";
+import { WORKFLOW_OBSERVATION_ONLY_ENV } from "../workflows/observation-tool-policy.js";
 import type {
   AgentStepExecutor,
   AgentStepRequest,
@@ -46,8 +47,9 @@ export type RpcStepExecutorOptions = {
 };
 
 /**
- * Runs agent steps in a headless `omp --mode rpc` child. One child serves one
- * workflow run. The rpc-bridge extension inside the child registers the
+ * Runs agent steps in a headless `omp --mode rpc` child. A child is reused
+ * while consecutive steps share the same tool policy. The rpc-bridge extension
+ * inside the child registers the
  * `workflow` tool and reports submissions over stderr; this executor
  * validates them through `request.accept` and re-prompts on rejection, so
  * the model sees the same tool contract as an in-session run.
@@ -56,6 +58,7 @@ export class RpcStepExecutor implements AgentStepExecutor {
   private readonly options: RpcStepExecutorOptions;
   private child: ChildProcess | null = null;
   private childExited: { code: number | null; signal: string | null } | null = null;
+  private childObservationOnly: boolean | null = null;
   private stderrBuffer = "";
   private actions: StepAction[] = [];
   private submissionWaiters: Array<() => void> = [];
@@ -66,7 +69,8 @@ export class RpcStepExecutor implements AgentStepExecutor {
   }
 
   async runAgentStep(request: AgentStepRequest, signal: AbortSignal): Promise<AgentStepSubmission> {
-    this.ensureStarted();
+    const observationOnly = request.contract.toolPolicy === "observation-only";
+    await this.ensureStarted(observationOnly);
     let prompt = request.prompt;
     for (;;) {
       throwIfAborted(signal);
@@ -88,6 +92,7 @@ export class RpcStepExecutor implements AgentStepExecutor {
   async close(): Promise<void> {
     const child = this.child;
     this.child = null;
+    this.childObservationOnly = null;
     if (child === null) {
       return;
     }
@@ -123,7 +128,10 @@ export class RpcStepExecutor implements AgentStepExecutor {
     return this.childExited;
   }
 
-  private ensureStarted(): void {
+  private async ensureStarted(observationOnly: boolean): Promise<void> {
+    if (this.child !== null && this.childObservationOnly !== observationOnly) {
+      await this.close();
+    }
     if (this.child !== null) {
       const exited = this.currentExit();
       if (exited !== null) {
@@ -137,6 +145,17 @@ export class RpcStepExecutor implements AgentStepExecutor {
       throw new Error("The omp-workflows rpc-bridge extension is missing from this installation");
     }
     const ompBin = this.options.ompBin ?? "omp";
+    this.childObservationOnly = observationOnly;
+    this.childExited = null;
+    this.stderrBuffer = "";
+    this.stdoutBuffer = "";
+    this.actions = [];
+    const env = { ...process.env, ...this.options.env };
+    if (observationOnly) {
+      env[WORKFLOW_OBSERVATION_ONLY_ENV] = "1";
+    } else {
+      delete env[WORKFLOW_OBSERVATION_ONLY_ENV];
+    }
     const child = spawn(
       ompBin,
       [
@@ -153,7 +172,7 @@ export class RpcStepExecutor implements AgentStepExecutor {
       ],
       {
         cwd: this.options.cwd,
-        env: { ...process.env, ...this.options.env },
+        env,
         stdio: ["pipe", "pipe", "pipe"],
         // Own process group: the host kills groups, never individual PIDs,
         // so a killed host cannot leave an orphaned agent working.

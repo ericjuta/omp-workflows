@@ -2,7 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SqliteControllerStore } from "../src/controllers/sqlite.js";
-import { main, parseCliArgs } from "../src/viewer/cli.js";
+import { projectControllerStoreBaseDir } from "../src/controllers/store.js";
+import { diagnoseRun, main, parseCliArgs } from "../src/viewer/cli.js";
 import { checkpoint, compute, defineWorkflow } from "../src/workflows/definition.js";
 import { WorkflowEngine } from "../src/workflows/engine.js";
 import {
@@ -80,6 +81,27 @@ async function makeWaitingCheckpointRun(outputRoot: string): Promise<string> {
   return state.runId;
 }
 
+const continuationWorkflow = defineWorkflow({
+  name: "cli-continuation",
+  startAt: "review",
+  nodes: {
+    review: checkpoint({ summary: "Review" }),
+    finish: compute({ run: () => ({ continued: true }) }),
+  },
+  edges: [{ from: "review", to: "finish" }],
+});
+
+async function makeContinuationFamily(
+  outputRoot: string,
+): Promise<{ parentRunId: string; childRunId: string }> {
+  const parentRunId = "cli-parent";
+  const childRunId = "cli-child";
+  const engine = new WorkflowEngine({ executor: new ScriptedExecutor(), outputRoot });
+  await engine.run(continuationWorkflow, {}, { runId: parentRunId });
+  await engine.continueRun(continuationWorkflow, parentRunId, {}, { runId: childRunId });
+  return { parentRunId, childRunId };
+}
+
 let stdout: string;
 let stderr: string;
 
@@ -107,6 +129,16 @@ describe("parseCliArgs", () => {
     expect(args.command).toBe("view");
     expect(args.dir).toContain(path.join(".pi", "agent", "workflows", "runs"));
     expect(args.once).toBe(false);
+  });
+
+  it("requires exactly one doctor run id", () => {
+    expect(parseCliArgs(["doctor", "run-1", "--dir", "/runs"])).toMatchObject({
+      command: "doctor",
+      runId: "run-1",
+      dir: "/runs",
+    });
+    expect(() => parseCliArgs(["doctor"])).toThrow(/doctor requires <runId>/);
+    expect(() => parseCliArgs(["doctor", "one", "two"])).toThrow(/Unexpected argument/);
   });
 
   it("parses command, run id, dir, and once", () => {
@@ -198,6 +230,19 @@ describe("omp-workflows CLI", () => {
     expect(stdout).toContain(runId);
     expect(stdout).toContain("completed");
   });
+
+  it("reports bounded malformed bundle warnings while listing runs", async () => {
+    const outputRoot = await makeTempDir("pi-workflows-cli-warnings");
+    const badDir = path.join(outputRoot, "broken-run");
+    await fs.mkdir(badDir);
+    await fs.writeFile(path.join(badDir, "manifest.json"), "{not-json");
+
+    expect(await main(["runs", "--dir", outputRoot])).toBe(0);
+    expect(stdout).toContain("broken-run");
+    expect(stdout).toContain("Run discovery warnings:");
+    expect(stdout).toContain("unreadable_bundle");
+  });
+
   it("filters runs by project and reports other live runs", async () => {
     const outputRoot = await makeTempDir("pi-workflows-cli-project");
     const project = await makeTempDir("pi-workflows-cli-project-cwd");
@@ -234,6 +279,179 @@ describe("omp-workflows CLI", () => {
     await makeCompletedRun(outputRoot);
     expect(await main(["view", "--dir", outputRoot, "--once"])).toBe(0);
     expect(stdout).toContain("omp-workflows — runs");
+  });
+
+  it("collapses continuation families while preserving exact child selection without writes", async () => {
+    const outputRoot = await makeTempDir("pi-workflows-cli-family");
+    const controllerDir = await makeTempDir("pi-workflows-cli-family-controller");
+    const { parentRunId, childRunId } = await makeContinuationFamily(outputRoot);
+    const parentStatePath = path.join(outputRoot, parentRunId, "state.json");
+    const childStatePath = path.join(outputRoot, childRunId, "state.json");
+    const parentBefore = await fs.readFile(parentStatePath, "utf8");
+    const childBefore = await fs.readFile(childStatePath, "utf8");
+
+    expect(await main(["runs", "--dir", outputRoot, "--controller-dir", controllerDir])).toBe(0);
+    expect(stdout).toContain(`continuation ${parentRunId} → ${childRunId}`);
+    expect(stdout.match(/cli-continuation/g)).toHaveLength(1);
+
+    stdout = "";
+    expect(
+      await main([
+        "view",
+        childRunId,
+        "--dir",
+        outputRoot,
+        "--controller-dir",
+        controllerDir,
+        "--once",
+      ]),
+    ).toBe(0);
+    expect(stdout).toContain(`run ${childRunId}`);
+    expect(stdout).toContain(`continuation ${parentRunId} → effective ${childRunId}`);
+
+    stdout = "";
+    expect(
+      await main([
+        "view",
+        parentRunId,
+        "--dir",
+        outputRoot,
+        "--controller-dir",
+        controllerDir,
+        "--once",
+      ]),
+    ).toBe(0);
+    expect(stdout).toContain(`run ${childRunId}`);
+    expect(stdout).toContain(`continuation ${parentRunId} → effective ${childRunId}`);
+    await expect(fs.readFile(parentStatePath, "utf8")).resolves.toBe(parentBefore);
+    await expect(fs.readFile(childStatePath, "utf8")).resolves.toBe(childBefore);
+  });
+
+  it("includes a queued continuation from the controller store without writes", async () => {
+    const outputRoot = await makeTempDir("pi-workflows-cli-queued-family");
+    const controllerDir = await makeTempDir("pi-workflows-cli-queued-controller");
+    const parentRunId = await makeWaitingCheckpointRun(outputRoot);
+    const parentStatePath = path.join(outputRoot, parentRunId, "state.json");
+    const parentBefore = await fs.readFile(parentStatePath, "utf8");
+    const databasePath = path.join(controllerDir, "controller.sqlite");
+    const store = new SqliteControllerStore(databasePath);
+    store.enqueueWorkflowRun({
+      runId: "queued-child",
+      workflowName: "cli-checkpoint",
+      workflowSourceRef: "/historical/cli-checkpoint.workflow.ts",
+      input: { answer: "continue" },
+      runnerId: "runner-cli",
+      claimToken: "claim-cli",
+      leaseMs: 1_000,
+      parentRunId,
+      now: "2026-08-25T00:00:00.000Z",
+    });
+    store.close();
+    const databaseBefore = await fs.readFile(databasePath);
+
+    expect(await main(["runs", "--dir", outputRoot, "--controller-dir", controllerDir])).toBe(0);
+    expect(stdout).toContain("queued-child");
+    expect(stdout).toContain(`continuation ${parentRunId} → queued-child`);
+    expect(stdout.trim().split("\n")).toHaveLength(1);
+
+    stdout = "";
+    expect(
+      await main([
+        "view",
+        "queued-child",
+        "--dir",
+        outputRoot,
+        "--controller-dir",
+        controllerDir,
+        "--once",
+      ]),
+    ).toBe(0);
+    expect(stdout).toContain("Workflow run (queued) — queued-child");
+    expect(stdout).toContain(`Parent:   ${parentRunId}`);
+    await expect(fs.readFile(parentStatePath, "utf8")).resolves.toBe(parentBefore);
+    await expect(fs.readFile(databasePath)).resolves.toEqual(databaseBefore);
+  });
+  it("reads queued continuations from the selected project's controller store", async () => {
+    const outputRoot = await makeTempDir("pi-workflows-cli-project-queued-family");
+    const controllerBase = await makeTempDir("pi-workflows-cli-project-controller-base");
+    const project = await makeTempDir("pi-workflows-cli-selected-project");
+    vi.stubEnv("PI_WORKFLOWS_CONTROLLER_DIR", controllerBase);
+    const parentRunId = await makeWaitingCheckpointRun(outputRoot);
+    await bindRunToProject(outputRoot, parentRunId, project);
+    const controllerDir = projectControllerStoreBaseDir(project);
+    await fs.mkdir(controllerDir, { recursive: true });
+    const store = new SqliteControllerStore(path.join(controllerDir, "controller.sqlite"));
+    store.enqueueWorkflowRun({
+      runId: "project-queued-child",
+      workflowName: "cli-checkpoint",
+      workflowSourceRef: "/historical/cli-checkpoint.workflow.ts",
+      input: { answer: "continue" },
+      runnerId: "session-project",
+      claimToken: "claim-project",
+      leaseMs: 1_000,
+      parentRunId,
+      now: "2026-08-25T00:00:00.000Z",
+    });
+    store.close();
+
+    expect(await main(["runs", "--dir", outputRoot, "--project", project])).toBe(0);
+    expect(stdout).toContain("project-queued-child");
+    expect(stdout).toContain(`continuation ${parentRunId} → project-queued-child`);
+  });
+
+  it("reports deep doctor findings for trace and human-decision corruption", async () => {
+    const outputRoot = await makeTempDir("pi-workflows-cli-doctor");
+    const completedRunId = await makeCompletedRun(outputRoot);
+    await fs.appendFile(path.join(outputRoot, completedRunId, "trace.ndjson"), "not-json\n");
+
+    const completedFindings = await diagnoseRun(outputRoot, completedRunId);
+    expect(completedFindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ severity: "error", code: "trace.malformed" }),
+        expect.objectContaining({ severity: "ok", code: "manifest_state.consistent" }),
+      ]),
+    );
+    expect(await main(["doctor", completedRunId, "--dir", outputRoot])).toBe(0);
+    expect(stdout).toContain("trace.malformed");
+
+    stdout = "";
+    const request = await makeWaitingHumanDecisionRun(outputRoot);
+    const statePath = path.join(outputRoot, request.runId, "state.json");
+    const state = JSON.parse(await fs.readFile(statePath, "utf8")) as Record<string, unknown>;
+    await fs.writeFile(
+      statePath,
+      JSON.stringify({
+        ...state,
+        finalOutput: { ...request, subject: { task: "tampered" } },
+      }),
+    );
+
+    const waitingFindings = await diagnoseRun(outputRoot, request.runId);
+    expect(waitingFindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ severity: "error", code: "decision.integrity" }),
+      ]),
+    );
+  });
+
+  it("warns when historical project host evidence is unavailable and completes doctor checks", async () => {
+    const outputRoot = await makeTempDir("pi-workflows-cli-doctor-project");
+    const controllerDir = await makeTempDir("pi-workflows-cli-doctor-controller");
+    const historicalProject = await makeTempDir("pi-workflows-cli-doctor-moved-project");
+    const runId = await makeCompletedRun(outputRoot);
+    await bindRunToProject(outputRoot, runId, historicalProject);
+    await fs.rm(historicalProject, { recursive: true });
+    const statePath = path.join(outputRoot, runId, "state.json");
+    const stateBefore = await fs.readFile(statePath, "utf8");
+
+    expect(
+      await main(["doctor", runId, "--dir", outputRoot, "--controller-dir", controllerDir]),
+    ).toBe(0);
+    expect(stdout).toContain("host.evidence_unavailable");
+    expect(stdout).toContain("manifest_state.consistent");
+    expect(stdout).toContain("trace.sequence");
+    expect(stdout.length).toBeLessThan(20_000);
+    await expect(fs.readFile(statePath, "utf8")).resolves.toBe(stateBefore);
   });
 
   it("cancels a waiting human decision through the immutable cancellation fence", async () => {

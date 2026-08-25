@@ -17,13 +17,26 @@ export const ARTIFACTS_DIR = "artifacts";
 const ARTIFACT_KEY = "$artifact";
 const ESCAPED_KEY = "$escaped";
 
+function isArtifactRef(value: unknown): value is ArtifactRef {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.path === "string" &&
+    typeof record.mediaType === "string" &&
+    Number.isSafeInteger(record.bytes) &&
+    (record.bytes as number) >= 0 &&
+    typeof record.sha256 === "string"
+  );
+}
+
 export function isArtifactValue(value: unknown): value is ArtifactValue {
   return (
     typeof value === "object" &&
     value !== null &&
     !Array.isArray(value) &&
     Object.keys(value).length === 1 &&
-    ARTIFACT_KEY in value
+    ARTIFACT_KEY in value &&
+    isArtifactRef(value.$artifact)
   );
 }
 
@@ -33,7 +46,10 @@ function isEscapedValue(value: unknown): value is { $escaped: Record<string, unk
     value !== null &&
     !Array.isArray(value) &&
     Object.keys(value).length === 1 &&
-    ESCAPED_KEY in value
+    ESCAPED_KEY in value &&
+    typeof value.$escaped === "object" &&
+    value.$escaped !== null &&
+    !Array.isArray(value.$escaped)
   );
 }
 

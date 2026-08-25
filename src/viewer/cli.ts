@@ -16,21 +16,33 @@ import {
 import { sanitizeText } from "../render/ansi.js";
 import { validateHumanDecisionRequestIntegrity } from "../workflows/decision-presentation.js";
 import { HumanDecisionStore } from "../workflows/human-decision.js";
-import { selectRecentRuns } from "../workflows/run-discovery.js";
-import { listRunBundles, readRunBundle, workflowRunsBaseDir } from "../workflows/store.js";
-import type { HumanDecisionRequest } from "../workflows/types.js";
 import {
-  formatDuration,
+  selectRecentRuns,
+  type ContinuationQueueFact,
+  type WorkflowRunListItem,
+} from "../workflows/run-discovery.js";
+import {
+  definitionSnapshotDigest,
+  listRunProjections,
+  readLastTraceEvent,
+  readRunBundle,
+  workflowRunsBaseDir,
+  type WorkflowRunProjection,
+} from "../workflows/store.js";
+import type { HumanDecisionRequest, WorkflowSource } from "../workflows/types.js";
+import {
+  renderDoctorFindings,
+  renderQueueDetailLines,
   renderRunDetailLines,
-  renderRunListLines,
-  runElapsedMs,
-  statusLabel,
+  renderRunProjectionLines,
+  type WorkflowDoctorFinding,
 } from "./render.js";
 import { runViewer } from "./tui.js";
 
 const USAGE = `omp-workflows — workflow runs and controller resources
   omp-workflows view [runId] [--dir <runsDir>] [--once]
   omp-workflows runs [--dir <runsDir>] [--project <dir>]
+  omp-workflows doctor <runId> [--dir <runsDir>]
   omp-workflows cancel <runId> [--dir <runsDir>]
   omp-workflows controllers [--controller-dir <dir>]
   omp-workflows controller <controller> <key> [--controller-dir <dir>]
@@ -42,6 +54,7 @@ Commands:
   view          Open the live workflow TUI. With --once, print a snapshot.
   runs          List recent workflow runs.
   cancel        Abandon a waiting human decision without an interactive session.
+  doctor        Run deep, read-only integrity checks for one run bundle.
   controllers   List durable controller resources.
   controller    Show one resource, its effects, child workflows, and events.
   host          Run, install, control, or inspect the project workflow host.
@@ -64,6 +77,7 @@ export type CliArgs = {
   hostAction?: string;
   dir: string;
   controllerDir: string;
+  controllerDirExplicit: boolean;
   once: boolean;
   json: boolean;
   project?: string | undefined;
@@ -75,6 +89,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
   const command = args[0] && !args[0].startsWith("-") ? (args.shift() as string) : "view";
   let dir = workflowRunsBaseDir();
   let controllerDir = projectControllerStoreBaseDir(process.cwd());
+  let controllerDirExplicit = false;
   let once = false;
   let json = false;
   const positionals: string[] = [];
@@ -87,6 +102,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
       dir = requiredValue(args, "--dir");
     } else if (arg === "--controller-dir") {
       controllerDir = requiredValue(args, "--controller-dir");
+      controllerDirExplicit = true;
     } else if (arg === "--project") {
       project = requiredValue(args, "--project");
     } else if (arg === "--once") {
@@ -94,7 +110,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
     } else if (arg === "--json") {
       json = true;
     } else if (arg === "--help" || arg === "-h") {
-      return { command: "help", dir, controllerDir, once, json };
+      return { command: "help", dir, controllerDir, controllerDirExplicit, once, json };
     } else if (arg === "--") {
       ompArgs.push(...args.splice(0));
     } else if (arg.startsWith("-")) {
@@ -102,6 +118,9 @@ export function parseCliArgs(argv: string[]): CliArgs {
     } else {
       positionals.push(arg);
     }
+  }
+  if (!controllerDirExplicit && project !== undefined) {
+    controllerDir = projectControllerStoreBaseDir(project);
   }
 
   const hostAction = command === "host" ? (positionals[0] ?? "foreground") : undefined;
@@ -127,7 +146,17 @@ export function parseCliArgs(argv: string[]): CliArgs {
     if (hostAction !== "foreground" && ompArgs.length > 0) {
       throw new Error("Extra agent arguments are available only for host foreground");
     }
-    return { command, hostAction, dir, controllerDir, once, json, project, ompArgs };
+    return {
+      command,
+      hostAction,
+      dir,
+      controllerDir,
+      controllerDirExplicit,
+      once,
+      json,
+      project,
+      ompArgs,
+    };
   }
 
   if (command === "controller") {
@@ -140,6 +169,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
       resourceKey: positionals[1] as string,
       dir,
       controllerDir,
+      controllerDirExplicit,
       once,
       json,
     };
@@ -148,7 +178,25 @@ export function parseCliArgs(argv: string[]): CliArgs {
     if (positionals.length !== 1 || (positionals[0] !== "sync" && positionals[0] !== "setup")) {
       throw new Error("herdr requires the sync action");
     }
-    return { command, herdrAction: positionals[0], dir, controllerDir, once, json };
+    return {
+      command,
+      herdrAction: positionals[0],
+      dir,
+      controllerDir,
+      controllerDirExplicit,
+      once,
+      json,
+    };
+  }
+  if (command === "doctor") {
+    const runId = positionals[0];
+    if (runId === undefined) {
+      throw new Error("doctor requires <runId>");
+    }
+    if (positionals.length !== 1) {
+      throw new Error(`Unexpected argument: ${positionals[1]}`);
+    }
+    return { command, runId, dir, controllerDir, controllerDirExplicit, once, json };
   }
   if (command === "cancel") {
     const runId = positionals[0];
@@ -163,6 +211,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
       runId,
       dir,
       controllerDir,
+      controllerDirExplicit,
       once,
       json,
     };
@@ -175,38 +224,47 @@ export function parseCliArgs(argv: string[]): CliArgs {
     ...(positionals[0] !== undefined ? { runId: positionals[0] } : {}),
     dir,
     controllerDir,
+    controllerDirExplicit,
     once,
     json,
     ...(project !== undefined ? { project } : {}),
   };
 }
 
-async function printRuns(dir: string, project?: string): Promise<void> {
-  const bundles = await listRunBundles(dir);
-  const selectedRunIds =
-    project === undefined
-      ? null
-      : new Set(selectRecentRuns(bundles, { project }).map((run) => run.runId));
-  const selectedBundles =
-    selectedRunIds === null
-      ? bundles
-      : bundles.filter((bundle) => selectedRunIds.has(bundle.state.runId));
-  if (selectedBundles.length === 0) {
+function printProjectionWarnings(warnings: readonly string[]): void {
+  if (warnings.length === 0) return;
+  const rendered = warnings
+    .slice(0, 8)
+    .map((warning) => `- ${sanitizeText(warning).replaceAll(/\s+/g, " ").trim().slice(0, 500)}`)
+    .join("\n");
+  const omitted = warnings.length - Math.min(warnings.length, 8);
+  process.stdout.write(
+    `Run discovery warnings:\n${rendered}${omitted > 0 ? `\n- ${omitted} more warning(s) omitted` : ""}\n`,
+  );
+}
+
+async function printRuns(
+  dir: string,
+  controllerDir: string,
+  includeQueueFacts: boolean,
+  project?: string,
+): Promise<void> {
+  const { items: projections, warnings } = await listRunProjections(dir);
+  const queueFacts = includeQueueFacts ? readQueueFacts(controllerDir) : [];
+  const selected = selectRecentRuns(
+    projections,
+    project === undefined ? undefined : { project },
+    queueFacts,
+  );
+  if (selected.length === 0) {
     process.stdout.write(`No workflow runs found in ${dir}\n`);
   } else {
-    for (const bundle of selectedBundles) {
-      const state = bundle.state;
-      const title = state.runTitle ? ` — ${sanitizeText(state.runTitle)}` : "";
-      process.stdout.write(
-        `${statusLabel(state.status)}  ${sanitizeText(state.workflowName)}${title}  ${state.runId}  ${formatDuration(
-          runElapsedMs(state),
-        )}\n`,
-      );
-    }
+    process.stdout.write(`${renderRunProjectionLines(selected).join("\n")}\n`);
   }
+  printProjectionWarnings(warnings);
   if (project !== undefined) {
-    const allLive = selectRecentRuns(bundles, { liveOnly: true });
-    const projectLive = selectRecentRuns(bundles, { liveOnly: true, project });
+    const allLive = selectRecentRuns(projections, { liveOnly: true }, queueFacts);
+    const projectLive = selectRecentRuns(projections, { liveOnly: true, project }, queueFacts);
     const outside = allLive.length - projectLive.length;
     if (outside > 0) {
       process.stdout.write(`${outside} other live run(s) outside this project.\n`);
@@ -214,22 +272,473 @@ async function printRuns(dir: string, project?: string): Promise<void> {
   }
 }
 
-async function printOnce(dir: string, runId: string | undefined): Promise<void> {
-  const bundles = await listRunBundles(dir);
+function selectRequestedRun(
+  projections: readonly WorkflowRunProjection[],
+  families: readonly WorkflowRunListItem[],
+  runId: string,
+): WorkflowRunListItem | undefined {
+  const exact = projections.find((projection) => projection.runId === runId);
+  const family = families.find(
+    (candidate) => candidate.parentRunId === runId && candidate.continuationRunId !== undefined,
+  );
+  const projectedExact = families.find((candidate) => candidate.runId === runId);
+  return exact === undefined
+    ? projectedExact
+    : exact.parentRunId === undefined
+      ? (family ?? exact)
+      : exact;
+}
+
+async function printOnce(
+  dir: string,
+  runId: string | undefined,
+  controllerDir: string,
+  includeQueueFacts: boolean,
+): Promise<void> {
+  const { items: projections, warnings } = await listRunProjections(dir);
+  const queueFacts = includeQueueFacts ? readQueueFacts(controllerDir) : [];
+  const families = selectRecentRuns(projections, undefined, queueFacts);
   const size = { width: process.stdout.columns ?? 100, height: 1_000 };
   if (runId === undefined) {
-    process.stdout.write(`${renderRunListLines(bundles, 0, size).join("\n")}\n`);
+    const lines = renderRunProjectionLines(families);
+    process.stdout.write(`omp-workflows — runs\n${lines.join("\n")}\n`);
+    printProjectionWarnings(warnings);
     return;
   }
-  const match = bundles.find((bundle) => bundle.state.runId === runId);
-  if (!match) {
+  const selected = selectRequestedRun(projections, families, runId);
+  if (selected === undefined) {
     throw new Error(`Run not found: ${runId}`);
   }
-  const bundle = await readRunBundle(match.runDir, { includeTrace: true });
+  const persisted = projections.find((projection) => projection.runId === selected.runId);
+  if (persisted === undefined || persisted.runDir.length === 0) {
+    process.stdout.write(`${renderQueueDetailLines(selected, size).join("\n")}\n`);
+    return;
+  }
+  const bundle = await readRunBundle(persisted.runDir, { includeTrace: true });
   if (!bundle) {
-    throw new Error(`Run bundle unreadable: ${match.runDir}`);
+    throw new Error(`Run bundle unreadable: ${persisted.runDir}`);
   }
   process.stdout.write(`${renderRunDetailLines(bundle, size).join("\n")}\n`);
+}
+
+async function runInteractiveView(
+  dir: string,
+  runId: string | undefined,
+  controllerDir: string,
+  includeQueueFacts: boolean,
+): Promise<void> {
+  if (runId === undefined) {
+    await runViewer({
+      runsDir: dir,
+      queueFacts: () => (includeQueueFacts ? readQueueFacts(controllerDir) : []),
+    });
+    return;
+  }
+  const { items: projections } = await listRunProjections(dir);
+  const families = selectRecentRuns(
+    projections,
+    undefined,
+    includeQueueFacts ? readQueueFacts(controllerDir) : [],
+  );
+  const selected = selectRequestedRun(projections, families, runId);
+  if (selected === undefined) {
+    throw new Error(`Run not found: ${runId}`);
+  }
+  const persisted = projections.find((projection) => projection.runId === selected.runId);
+  if (persisted === undefined || persisted.runDir.length === 0) {
+    const size = { width: process.stdout.columns ?? 100, height: process.stdout.rows ?? 24 };
+    process.stdout.write(`${renderQueueDetailLines(selected, size).join("\n")}\n`);
+    return;
+  }
+  await runViewer({
+    runsDir: dir,
+    runId: selected.runId,
+    queueFacts: () => (includeQueueFacts ? readQueueFacts(controllerDir) : []),
+  });
+}
+
+export type DoctorEvidence = {
+  queueFacts?: readonly ContinuationQueueFact[];
+  hostStatus?: HostStatus;
+  hostWarning?: string;
+};
+
+/** Deep, read-only integrity assessment for one persisted run bundle. */
+export async function diagnoseRun(
+  dir: string,
+  runId: string,
+  evidence: DoctorEvidence = {},
+): Promise<WorkflowDoctorFinding[]> {
+  const findings: WorkflowDoctorFinding[] = [];
+  const { items: projections } = await listRunProjections(dir);
+  const projection = projections.find((candidate) => candidate.runId === runId);
+  if (projection === undefined) {
+    return [{ severity: "error", code: "bundle.not_found", message: `Run not found: ${runId}` }];
+  }
+  for (const warning of projection.warnings) {
+    findings.push({ severity: "warning", code: "projection.warning", message: warning });
+  }
+
+  const bundle = await readRunBundle(projection.runDir, { includeTrace: true });
+  if (bundle === null) {
+    findings.push({
+      severity: "error",
+      code: "bundle.unreadable",
+      message: `Run bundle is unreadable: ${projection.runDir}`,
+    });
+    return findings;
+  }
+
+  const { manifest, state, snapshot } = bundle;
+  const manifestStateMismatches: string[] = [];
+  if (manifest.runId !== state.runId) manifestStateMismatches.push("runId");
+  if (manifest.workflowName !== state.workflowName) manifestStateMismatches.push("workflowName");
+  if (manifest.status !== state.status) manifestStateMismatches.push("status");
+  if (manifest.startedAt !== state.startedAt) manifestStateMismatches.push("startedAt");
+  if ((manifest.finishedAt ?? null) !== (state.finishedAt ?? null)) {
+    manifestStateMismatches.push("finishedAt");
+  }
+  if (
+    JSON.stringify(manifest.workflowSource ?? null) !== JSON.stringify(state.workflowSource ?? null)
+  ) {
+    manifestStateMismatches.push("workflowSource");
+  }
+  if ((manifest.definitionDigest ?? null) !== (state.definitionDigest ?? null)) {
+    manifestStateMismatches.push("definitionDigest");
+  }
+  findings.push(
+    manifestStateMismatches.length === 0
+      ? {
+          severity: "ok",
+          code: "manifest_state.consistent",
+          message: "Manifest and state identity fields agree.",
+        }
+      : {
+          severity: "error",
+          code: "manifest_state.mismatch",
+          message: `Manifest and state disagree on ${manifestStateMismatches.join(", ")}.`,
+        },
+  );
+
+  if (snapshot === null) {
+    findings.push({
+      severity: "error",
+      code: "snapshot.missing",
+      message: "Definition snapshot is missing or unreadable.",
+    });
+  } else {
+    const snapshotDigest = definitionSnapshotDigest(snapshot);
+    if (snapshot.name !== state.workflowName) {
+      findings.push({
+        severity: "error",
+        code: "snapshot.name_mismatch",
+        message: `Snapshot workflow ${snapshot.name} does not match state workflow ${state.workflowName}.`,
+      });
+    } else {
+      findings.push({
+        severity: "ok",
+        code: "snapshot.identity",
+        message: `Definition snapshot ${snapshotDigest} matches workflow ${state.workflowName}.`,
+      });
+    }
+    if (state.definitionDigest !== undefined && state.definitionDigest !== snapshotDigest) {
+      findings.push({
+        severity: "error",
+        code: "snapshot.digest_mismatch",
+        message: `State digest ${state.definitionDigest} does not match snapshot digest ${snapshotDigest}.`,
+      });
+    }
+    if (state.currentNode !== undefined && snapshot.nodes[state.currentNode] === undefined) {
+      findings.push({
+        severity: "warning",
+        code: "snapshot.current_node_missing",
+        message: `Current node ${state.currentNode} is not present in the definition snapshot.`,
+      });
+    }
+  }
+
+  const source: WorkflowSource | undefined = state.workflowSource;
+  if (source?.kind === "builtin") {
+    findings.push({
+      severity: "ok",
+      code: "builtin.identity",
+      message: `Built-in identity is ${source.id}@${source.revision}.`,
+    });
+  } else if (source?.kind === "file") {
+    findings.push({
+      severity: "ok",
+      code: "file.identity",
+      message: `File identity hash is ${source.hash}.`,
+    });
+  } else {
+    findings.push({
+      severity: "warning",
+      code: "source.missing",
+      message: "Run has no immutable workflow source identity.",
+    });
+  }
+
+  if (bundle.traceIntegrity?.malformed === true) {
+    findings.push({
+      severity: "error",
+      code: "trace.malformed",
+      message: "Trace contains a malformed NDJSON record before its tail.",
+    });
+  }
+  if (bundle.traceIntegrity?.tornTail === true) {
+    findings.push({
+      severity: "warning",
+      code: "trace.torn_tail",
+      message: "Trace has an incomplete final NDJSON record.",
+    });
+  }
+  const trace = bundle.traceEvents ?? [];
+  let expectedSeq = 1;
+  let traceSequenceValid = true;
+  for (const event of trace) {
+    if (event.seq !== expectedSeq || event.runId !== state.runId) {
+      traceSequenceValid = false;
+      break;
+    }
+    expectedSeq += 1;
+  }
+  findings.push(
+    traceSequenceValid
+      ? {
+          severity: "ok",
+          code: "trace.sequence",
+          message: `Trace sequence is contiguous across ${trace.length} event(s).`,
+        }
+      : {
+          severity: "error",
+          code: "trace.sequence",
+          message: "Trace sequence is non-contiguous or contains a foreign run id.",
+        },
+  );
+  const lastTraceEvent = await readLastTraceEvent(bundle.runDir, manifest.paths.trace);
+  const lastTraceSeq = lastTraceEvent?.seq ?? 0;
+  if (state.traceSeq !== lastTraceSeq) {
+    findings.push({
+      severity: "error",
+      code: "trace.state_disagreement",
+      message: `State traceSeq ${state.traceSeq} does not match trace tail ${lastTraceSeq}.`,
+    });
+  } else {
+    findings.push({
+      severity: "ok",
+      code: "trace.state_agreement",
+      message: `State agrees with trace tail sequence ${lastTraceSeq}.`,
+    });
+  }
+  const terminalStatusByEvent: Record<string, string> = {
+    run_completed: "completed",
+    run_failed: "failed",
+    run_interrupted: "failed",
+    run_timed_out: "timed_out",
+    run_cancelled: "cancelled",
+    run_waiting: "waiting",
+  };
+  const tailStatus = lastTraceEvent ? terminalStatusByEvent[lastTraceEvent.type] : undefined;
+  if (tailStatus !== undefined && tailStatus !== state.status) {
+    findings.push({
+      severity: "error",
+      code: "trace.status_disagreement",
+      message: `Trace tail implies ${tailStatus}, but state status is ${state.status}.`,
+    });
+  }
+
+  const sessionSeverity = bundle.sessionIntegrity.status === "invalid" ? "error" : "ok";
+  findings.push({
+    severity: sessionSeverity,
+    code: "session.integrity",
+    message:
+      bundle.sessionIntegrity.diagnostics.length === 0
+        ? `Session capture status is ${bundle.sessionIntegrity.status}.`
+        : `${bundle.sessionIntegrity.status}: ${bundle.sessionIntegrity.diagnostics.join("; ")}`,
+  });
+  for (const segment of bundle.sessionSegments) {
+    findings.push({
+      severity: segment.integrity.status === "invalid" ? "error" : "ok",
+      code: "session.segment_integrity",
+      message:
+        segment.integrity.diagnostics.length === 0
+          ? `Segment ${segment.attemptId} status is ${segment.integrity.status}.`
+          : `Segment ${segment.attemptId}: ${segment.integrity.diagnostics.join("; ")}`,
+    });
+  }
+
+  const queueFacts = evidence.queueFacts ?? [];
+  const childIds = new Set(
+    projections
+      .filter((candidate) => candidate.parentRunId === runId)
+      .map((candidate) => candidate.runId),
+  );
+  for (const fact of queueFacts) {
+    if (fact.parentRunId === runId) childIds.add(fact.runId);
+  }
+  if (state.parentRunId !== undefined) {
+    const parentExists = projections.some((candidate) => candidate.runId === state.parentRunId);
+    findings.push({
+      severity: parentExists ? "ok" : "error",
+      code: "continuation.parent",
+      message: parentExists
+        ? `Continuation parent ${state.parentRunId} is present.`
+        : `Continuation parent ${state.parentRunId} is missing.`,
+    });
+  }
+  if (childIds.size > 1) {
+    findings.push({
+      severity: "error",
+      code: "continuation.duplicate_children",
+      message: `Parent has multiple continuation children: ${[...childIds].join(", ")}.`,
+    });
+  } else if (childIds.size === 1) {
+    findings.push({
+      severity: "ok",
+      code: "continuation.child",
+      message: `Continuation child is ${[...childIds][0]}.`,
+    });
+  }
+  const currentQueueFact = queueFacts.find((fact) => fact.runId === runId);
+  if (currentQueueFact !== undefined) {
+    findings.push({
+      severity: "ok",
+      code: "queue.evidence",
+      message: `Queue status is ${currentQueueFact.status ?? "unknown"}.`,
+    });
+  }
+  if (evidence.hostStatus !== undefined) {
+    findings.push({
+      severity: evidence.hostStatus.classification === "healthy" ? "ok" : "warning",
+      code: "host.evidence",
+      message: `Project host is ${evidence.hostStatus.classification}: ${evidence.hostStatus.detail}`,
+    });
+  } else if (evidence.hostWarning !== undefined) {
+    findings.push({
+      severity: "warning",
+      code: "host.evidence_unavailable",
+      message: evidence.hostWarning.slice(0, 500),
+    });
+  }
+
+  if (state.status === "waiting") {
+    const output = state.finalOutput;
+    if (
+      typeof output === "object" &&
+      output !== null &&
+      "schema" in output &&
+      output.schema === "pi-workflows.human-decision-request.v1"
+    ) {
+      try {
+        const request = validateHumanDecisionRequestIntegrity(output as HumanDecisionRequest);
+        if (request.runId !== runId) {
+          throw new Error(`request belongs to run ${request.runId}`);
+        }
+        findings.push({
+          severity: "ok",
+          code: "decision.integrity",
+          message: `Waiting human decision ${request.decisionId} is valid.`,
+        });
+      } catch (error) {
+        findings.push({
+          severity: "error",
+          code: "decision.integrity",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    } else {
+      findings.push({
+        severity: "ok",
+        code: "decision.not_applicable",
+        message: "Run is waiting at a plain checkpoint, not a human decision.",
+      });
+    }
+  }
+
+  const startedMs = Date.parse(state.startedAt);
+  const updatedMs = Date.parse(state.updatedAt);
+  const finishedMs = state.finishedAt === undefined ? undefined : Date.parse(state.finishedAt);
+  if (
+    Number.isNaN(startedMs) ||
+    Number.isNaN(updatedMs) ||
+    (finishedMs !== undefined && Number.isNaN(finishedMs))
+  ) {
+    findings.push({
+      severity: "error",
+      code: "timing.invalid",
+      message: "Run contains an invalid lifecycle timestamp.",
+    });
+  } else if (updatedMs < startedMs || (finishedMs !== undefined && finishedMs < startedMs)) {
+    findings.push({
+      severity: "error",
+      code: "timing.order",
+      message: "Run lifecycle timestamps are out of order.",
+    });
+  } else {
+    findings.push({
+      severity: "ok",
+      code: "timing.order",
+      message: "Run lifecycle timestamps are ordered.",
+    });
+  }
+
+  const lastFailure = [...state.steps]
+    .reverse()
+    .find((step) => step.outcome === "failed" || step.outcome === "timed_out");
+  if (lastFailure !== undefined) {
+    findings.push({
+      severity: "warning",
+      code: "step.last_failure",
+      message: `${lastFailure.nodeId} ${lastFailure.outcome}: ${(lastFailure.error ?? "no error text").slice(0, 500)}`,
+    });
+  }
+  return findings.slice(0, 100);
+}
+
+function readQueueFacts(controllerDir: string): ContinuationQueueFact[] {
+  const store = openControllerStore(controllerDir);
+  if (store === undefined) return [];
+  try {
+    return store.listWorkflowRuns().map((row) => ({
+      runId: row.runId,
+      parentRunId: row.parentRunId,
+      status: row.status,
+      startedAt: row.startedAt ?? row.createdAt,
+      workflowName: row.workflowName,
+      input: row.input,
+      ...(row.errorMessage === null ? {} : { errorSummary: row.errorMessage.slice(0, 500) }),
+      ...(row.errorCode === null ? {} : { errorCode: row.errorCode }),
+    }));
+  } finally {
+    store.close();
+  }
+}
+
+async function printDoctor(
+  dir: string,
+  runId: string,
+  controllerDir: string,
+  includeQueueFacts: boolean,
+): Promise<void> {
+  const queueFacts = includeQueueFacts ? readQueueFacts(controllerDir) : [];
+  const { items } = await listRunProjections(dir);
+  const projection = items.find((candidate) => candidate.runId === runId);
+  let hostStatus: HostStatus | undefined;
+  let hostWarning: string | undefined;
+  if (projection?.project !== undefined) {
+    try {
+      hostStatus = readHostStatus(projection.project);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      hostWarning = `Host evidence unavailable for historical project ${projection.project}: ${detail}`;
+    }
+  }
+  const findings = await diagnoseRun(dir, runId, {
+    queueFacts,
+    ...(hostStatus !== undefined ? { hostStatus } : {}),
+    ...(hostWarning !== undefined ? { hostWarning } : {}),
+  });
+  process.stdout.write(`${renderDoctorFindings(runId, findings).join("\n")}\n`);
 }
 
 function printControllers(controllerDir: string): void {
@@ -319,12 +828,23 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   try {
+    const includeQueueFacts =
+      args.controllerDirExplicit ||
+      args.project !== undefined ||
+      path.resolve(args.dir) === path.resolve(workflowRunsBaseDir());
     if (args.command === "help") {
       process.stdout.write(USAGE);
       return 0;
     }
     if (args.command === "runs") {
-      await printRuns(args.dir, args.project);
+      await printRuns(args.dir, args.controllerDir, includeQueueFacts, args.project);
+      return 0;
+    }
+    if (args.command === "doctor") {
+      if (args.runId === undefined) {
+        throw new Error("doctor requires <runId>");
+      }
+      await printDoctor(args.dir, args.runId, args.controllerDir, includeQueueFacts);
       return 0;
     }
     if (args.command === "controllers") {
@@ -356,10 +876,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
     if (args.command === "view") {
       if (args.once || !process.stdout.isTTY) {
-        await printOnce(args.dir, args.runId);
+        await printOnce(args.dir, args.runId, args.controllerDir, includeQueueFacts);
         return 0;
       }
-      await runViewer({ runsDir: args.dir, runId: args.runId });
+      await runInteractiveView(args.dir, args.runId, args.controllerDir, includeQueueFacts);
       return 0;
     }
     process.stderr.write(`Unknown command: ${args.command}\n\n${USAGE}`);

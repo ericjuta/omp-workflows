@@ -35,6 +35,7 @@ const MAX_TRACKS = 256;
 const MAX_OBSERVATION_CHARS = 8_000;
 const MAX_REPORT_CHARS = 4_000;
 const MAX_REASON_CHARS = 2_000;
+const MAX_CONSECUTIVE_CHECK_TIMEOUTS = 3;
 
 export type MonitorRepairPolicy = {
   authorized: true;
@@ -79,6 +80,12 @@ type MonitorCheck = {
   reason: string;
 };
 type MonitorEstimate = { tracks: ProgressTrackState[] };
+type MonitorCheckTimeout = {
+  route: "retry" | "stop";
+  consecutiveTimeouts: number;
+  reason: string;
+};
+type MonitorCheckFailure = { route: "stop"; reason: string };
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -257,8 +264,11 @@ export function validateMonitorCheck(output: unknown, repairAuthorized = false):
   if (value.route !== "continue" && value.route !== "repair" && value.route !== "stop") {
     throw new Error("route must be continue, repair, or stop");
   }
-  if (value.route === "repair" && !repairAuthorized) {
-    throw new Error("route repair requires explicit monitor repair authorization");
+  if (!repairAuthorized && (value.route === "repair" || value.repair !== undefined)) {
+    throw new Error("monitor repair requires explicit monitor repair authorization");
+  }
+  if (value.route !== "repair" && value.repair !== undefined) {
+    throw new Error("monitor repair details require route repair");
   }
   const check: MonitorCheck = {
     route: value.route,
@@ -481,10 +491,16 @@ const monitorWorkflow: WorkflowDefinition = defineWorkflow({
     prepare: compute({ run: ({ input }) => prepareMonitorInput(input) }),
     check: agent({
       statusDetail: "checking monitored target",
+      toolPolicy: "observation-only",
       timeoutMs: ({ outputs }) => configFrom(outputs).checkTimeoutMinutes * 60_000,
       prompt: (context) => {
         const config = configFrom(context.outputs);
-        const previous = context.outputs.check as MonitorCheck | undefined;
+        const previous = context.state.steps
+          .slice()
+          .reverse()
+          .find((step) => step.nodeId === "check" && step.outcome === "ok")?.output as
+          | MonitorCheck
+          | undefined;
         const priorEstimate = context.outputs.estimate as MonitorEstimate | undefined;
         return [
           `Perform monitoring check ${completedChecks(context) + 1} of at most ${config.maxChecks}.`,
@@ -496,10 +512,11 @@ const monitorWorkflow: WorkflowDefinition = defineWorkflow({
           priorEstimate?.tracks.length
             ? `Previous progress: ${formatProgressReport(priorEstimate.tracks.map((track) => track.estimate))}`
             : "There is no previous measured progress.",
+          "This check itself is observation-only. Do not edit files, change target state, invoke mutating commands, or perform a repair.",
           config.repair === undefined
-            ? "Observe only. This monitor has no mutation authorization."
-            : "Repair is explicitly authorized within the supplied repair policy. Choose repair only for a concrete issue that can be changed within that scope. Include a stable issue fingerprint based on the issue and observed target state. Do not change protected model, benchmark, credential, hardware, spending, or scope decisions.",
-          "Use available tools to inspect the current source of truth.",
+            ? "This monitor has no mutation authorization. Route repair and repair details are forbidden."
+            : "Repair is authorized only through the existing repair workflow. When a concrete in-scope issue is observed, request route repair with a stable issue fingerprint; do not perform the mutation during this check. Protected model, benchmark, credential, hardware, spending, and scope decisions remain forbidden.",
+          "Use available read-only tools to inspect the current source of truth.",
           "You are the regular Pi model running this check and the observation adapter. When useful measurable facts appear during the check, publish them with workflow action update. Include the latest tracks in the final submission. Do not require the monitored target to implement a Pi-specific progress API, file, store, schema, or command.",
           "Every accepted check must include a concise user-facing report. Add progress tracks only when the target provides measurable facts. Submit observed counts and target-provided finish times; do not invent rates or an ETA.",
           config.repair === undefined
@@ -511,6 +528,83 @@ const monitorWorkflow: WorkflowDefinition = defineWorkflow({
         '{ "route": "continue" | "repair" | "stop", "observation": "current factual state", "report": "concise status update", "progress": { "tracks": [{ "key": "stable-key", "data": { "schema": "pi-workflows.progress.v1", "status": "running", "completed": 1, "total": 2, "unit": "items" } }] } (optional), "repair": { "problem": "fixable issue", "evidence": "observed evidence", "issueFingerprint": "stable issue and target-state fingerprint" } (required for repair), "reason": "short reason" }',
       validate: (output, context) =>
         validateMonitorCheck(output, configFrom(context.outputs).repair !== undefined),
+    }),
+    recordCheckTimeout: compute({
+      run: (context) => {
+        let consecutiveTimeouts = 0;
+        for (let index = context.state.steps.length - 1; index >= 0; index -= 1) {
+          const step = context.state.steps[index];
+          if (step?.nodeId !== "check") continue;
+          if (step.outcome !== "timed_out") break;
+          consecutiveTimeouts += 1;
+        }
+        const route = consecutiveTimeouts >= MAX_CONSECUTIVE_CHECK_TIMEOUTS ? "stop" : "retry";
+        return {
+          route,
+          consecutiveTimeouts,
+          reason:
+            route === "retry"
+              ? `Monitor check timed out (${consecutiveTimeouts}/${MAX_CONSECUTIVE_CHECK_TIMEOUTS}); another check will be scheduled after the configured interval.`
+              : `Monitor check timed out ${consecutiveTimeouts} consecutive times; stopping without a current observation.`,
+        };
+      },
+    }),
+    recordCheckFailure: compute({
+      run: (context) => {
+        const failed = context.state.steps
+          .slice()
+          .reverse()
+          .find((step) => step.nodeId === "check" && step.outcome === "failed");
+        return {
+          route: "stop",
+          reason: `Monitor check failed without an accepted observation: ${failed?.error ?? "unknown check failure"}`,
+        };
+      },
+    }),
+    checkTimeoutRetryReport: notify({
+      statusDetail: "reporting monitor check timeout",
+      kind: "progress",
+      message: ({ outputs }) => {
+        const timeout = outputs.recordCheckTimeout as MonitorCheckTimeout;
+        return timeout.reason;
+      },
+    }),
+    checkTimeoutStopReport: notify({
+      statusDetail: "reporting monitor timeout limit",
+      kind: "final",
+      message: ({ outputs }) => {
+        const timeout = outputs.recordCheckTimeout as MonitorCheckTimeout;
+        return timeout.reason;
+      },
+    }),
+    checkFailureReport: notify({
+      statusDetail: "reporting monitor check failure",
+      kind: "final",
+      message: ({ outputs }) => {
+        const failure = outputs.recordCheckFailure as MonitorCheckFailure;
+        return failure.reason;
+      },
+    }),
+    finishCheckTimeout: compute({
+      run: (context) => {
+        const timeout = context.outputs.recordCheckTimeout as MonitorCheckTimeout;
+        return {
+          reason: timeout.reason,
+          consecutiveTimeouts: timeout.consecutiveTimeouts,
+          checks: completedChecks(context),
+          reported: true,
+        };
+      },
+    }),
+    finishCheckFailure: compute({
+      run: (context) => {
+        const failure = context.outputs.recordCheckFailure as MonitorCheckFailure;
+        return {
+          reason: failure.reason,
+          checks: completedChecks(context),
+          reported: true,
+        };
+      },
     }),
     estimate: compute({ run: ({ outputs }) => estimateTracks(outputs) }),
     publish_progress: action({
@@ -624,7 +718,28 @@ const monitorWorkflow: WorkflowDefinition = defineWorkflow({
   },
   edges: [
     { from: "prepare", to: "check" },
-    { from: "check", to: "estimate" },
+    {
+      from: "check",
+      switch: {
+        on: "$result.outcome",
+        cases: {
+          ok: "estimate",
+          timed_out: "recordCheckTimeout",
+          failed: "recordCheckFailure",
+        },
+      },
+    },
+    {
+      from: "recordCheckTimeout",
+      switch: {
+        on: "$.route",
+        cases: { retry: "checkTimeoutRetryReport", stop: "checkTimeoutStopReport" },
+      },
+    },
+    { from: "checkTimeoutRetryReport", to: "schedule" },
+    { from: "checkTimeoutStopReport", to: "finishCheckTimeout" },
+    { from: "recordCheckFailure", to: "checkFailureReport" },
+    { from: "checkFailureReport", to: "finishCheckFailure" },
     { from: "estimate", to: "publish_progress" },
     { from: "publish_progress", to: "report" },
     { from: "report", to: "decide" },

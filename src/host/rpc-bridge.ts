@@ -1,5 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
+  WORKFLOW_OBSERVATION_ONLY_ENV,
+  observationOnlyToolBlockReason,
+} from "../workflows/observation-tool-policy.js";
+import {
   parseWorkflowSubmissionInput,
   WorkflowSubmissionToolParameters,
 } from "../workflows/tool-input.js";
@@ -13,6 +17,13 @@ export const RPC_SUBMISSION_PREFIX = "PI_WORKFLOWS_STEP_SUBMISSION ";
  * host validates against the engine and re-prompts on rejection.
  */
 export default function piWorkflowsRpcBridge(pi: ExtensionAPI) {
+  if (process.env[WORKFLOW_OBSERVATION_ONLY_ENV] === "1") {
+    pi.on("tool_call", (event) => {
+      const reason = observationOnlyToolBlockReason(event.toolName, event.input);
+      return reason === null ? undefined : { block: true, reason };
+    });
+  }
+
   pi.registerTool({
     name: "workflow",
     label: "Workflow",

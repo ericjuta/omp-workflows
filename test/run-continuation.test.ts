@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { checkpoint, compute, defineWorkflow } from "../src/workflows/definition.js";
 import { WorkflowEngine } from "../src/workflows/engine.js";
@@ -32,6 +34,10 @@ describe("WorkflowEngine.continueRun", () => {
     const parent = await first.run(waitWorkflow, { change: "big" }, { runId: "parent-1" });
     expect(parent.state.status).toBe("waiting");
     expect(parent.state.waitingOn).toBe("approval");
+    const parentStatePath = path.join(parent.runDir, "state.json");
+    const parentManifestPath = path.join(parent.runDir, "manifest.json");
+    const parentStateBefore = await fs.readFile(parentStatePath, "utf8");
+    const parentManifestBefore = await fs.readFile(parentManifestPath, "utf8");
 
     const second = makeEngine(store);
     const continued = await second.continueRun(waitWorkflow, "parent-1", { approved: true });
@@ -47,6 +53,8 @@ describe("WorkflowEngine.continueRun", () => {
     const bundle = await readRunBundle(continued.runDir);
     const lastOutputs = bundle?.state.outputs ?? {};
     expect(lastOutputs.approval).toBeDefined();
+    expect(await fs.readFile(parentStatePath, "utf8")).toBe(parentStateBefore);
+    expect(await fs.readFile(parentManifestPath, "utf8")).toBe(parentManifestBefore);
   });
 
   it("completes immediately when the checkpoint is the final node", async () => {

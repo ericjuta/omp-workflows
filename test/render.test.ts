@@ -3,8 +3,12 @@ import { fitWidth, stripAnsi, visibleLength } from "../src/render/ansi.js";
 import {
   formatDuration,
   maxDetailScroll,
+  projectViewerRuns,
+  renderDoctorFindings,
+  renderQueueDetailLines,
   renderRunDetailLines,
   renderRunListLines,
+  renderRunProjectionLines,
   runElapsedMs,
 } from "../src/viewer/render.js";
 import { compute, defineWorkflow } from "../src/workflows/definition.js";
@@ -82,6 +86,49 @@ describe("runElapsedMs", () => {
     expect(runElapsedMs(makeBundle().state, NOW)).toBe(60_000);
   });
 });
+describe("terminal rendering safety", () => {
+  it("removes control sequences from queue and bundle metadata", () => {
+    const hostile = "owned\u001b]52;c;payload\u0007\nforged-row";
+    const bundle = makeBundle({
+      runId: hostile,
+      statusDetail: hostile,
+      steps: [
+        {
+          attemptId: "a",
+          nodeId: hostile,
+          nodeType: "compute",
+          outcome: "ok",
+          startedAt: "2026-07-19T00:00:00.000Z",
+          finishedAt: "2026-07-19T00:00:01.000Z",
+          prompt: null,
+          output: hostile,
+        },
+      ],
+    });
+    const rendered = [
+      ...renderQueueDetailLines(
+        {
+          runId: hostile,
+          workflowName: hostile,
+          status: "queued",
+          startedAt: hostile,
+          warnings: [hostile],
+        },
+        { width: 500, height: 50 },
+      ),
+      ...renderRunDetailLines(bundle, { width: 500, height: 100 }, NOW),
+    ].map(stripAnsi);
+
+    for (const line of rendered) {
+      expect(
+        [...line].every((character) => {
+          const codePoint = character.codePointAt(0) ?? 0;
+          return codePoint > 31 && codePoint !== 127;
+        }),
+      ).toBe(true);
+    }
+  });
+});
 
 describe("renderRunListLines", () => {
   const size = { width: 100, height: 20 };
@@ -98,6 +145,55 @@ describe("renderRunListLines", () => {
     expect(runLines).toHaveLength(2);
     expect(runLines[0]).toMatch(/^ {2}running/);
     expect(runLines[1]).toMatch(/^› completed/);
+  });
+
+  it("renders a waiting parent and active child as one family picker row", () => {
+    const parent = makeBundle({
+      runId: "family-parent",
+      status: "waiting",
+      waitingOn: "review",
+    });
+    const child = makeBundle({
+      runId: "family-child",
+      parentRunId: "family-parent",
+      status: "running",
+    });
+    const lines = renderRunListLines([parent, child], 0, size, NOW).map(stripAnsi);
+    const runLines = lines.filter((line) => line.includes("demo"));
+    expect(runLines).toHaveLength(1);
+    expect(runLines[0]).toContain("family-child");
+    expect(runLines[0]).toContain("continuation family-parent → family-child");
+    expect(projectViewerRuns([parent, child])).toMatchObject([
+      { run: { runId: "family-child", parentRunId: "family-parent" }, bundle: child },
+    ]);
+  });
+
+  it("projects a queued continuation into the family picker row", () => {
+    const parent = makeBundle({
+      runId: "queued-parent",
+      status: "waiting",
+      waitingOn: "review",
+    });
+    const queueFacts = [
+      {
+        runId: "queued-child",
+        parentRunId: "queued-parent",
+        status: "starting",
+        startedAt: "2026-07-19T00:00:45.000Z",
+        workflowName: "demo",
+      },
+    ];
+    const lines = renderRunListLines([parent], 0, size, NOW, queueFacts).map(stripAnsi);
+    const runLines = lines.filter((line) => line.includes("demo"));
+    expect(runLines).toHaveLength(1);
+    expect(runLines[0]).toContain("queued");
+    expect(runLines[0]).toContain("continuation queued-parent → queued-child");
+    expect(projectViewerRuns([parent], queueFacts)).toEqual([
+      expect.objectContaining({
+        run: expect.objectContaining({ runId: "queued-child", parentRunId: "queued-parent" }),
+      }),
+    ]);
+    expect(projectViewerRuns([parent], queueFacts)[0]).not.toHaveProperty("bundle");
   });
 });
 
@@ -131,6 +227,17 @@ describe("renderRunListLines edges", () => {
 
 describe("renderRunDetailLines", () => {
   const size = { width: 100, height: 50 };
+
+  it("renders an exact continuation child with an explicit parent/effective link", () => {
+    const child = makeBundle({
+      runId: "detail-child",
+      parentRunId: "detail-parent",
+      status: "running",
+    });
+    const text = renderRunDetailLines(child, size, NOW).map(stripAnsi).join("\n");
+    expect(text).toContain("run detail-child");
+    expect(text).toContain("continuation detail-parent → effective detail-child");
+  });
 
   it("renders progress history, measured ETA, sample count, and confidence", () => {
     const bundle = makeBundle();
@@ -391,6 +498,26 @@ describe("human decision presentation rendering", () => {
     expect(text).not.toContain("hiddenMachineValue");
     expect(text).not.toContain("do-not-show");
   });
+
+  it("renders malformed schema-tagged decision output as ordinary JSON", () => {
+    const malformed = { schema: "pi-workflows.human-decision-request.v1" };
+    const bundle = makeBundle({
+      steps: [
+        {
+          attemptId: "malformed-decision-attempt",
+          nodeId: "one",
+          nodeType: "checkpoint",
+          outcome: "ok",
+          startedAt: "2026-08-19T00:00:00.000Z",
+          finishedAt: "2026-08-19T00:00:01.000Z",
+          prompt: null,
+          output: malformed,
+        },
+      ],
+    });
+
+    expect(() => renderRunDetailLines(bundle, { width: 100, height: 100 }, NOW)).not.toThrow();
+  });
 });
 
 function agentProgressEvent(
@@ -450,6 +577,50 @@ function progressEvent(seq: number, at: string, completed: number) {
     },
   };
 }
+
+describe("projection and doctor rendering", () => {
+  it("renders continuation identity, diagnostics, and bounded errors", () => {
+    const [line] = renderRunProjectionLines([
+      {
+        runId: "child",
+        workflowName: "demo",
+        status: "failed",
+        startedAt: NOW.toISOString(),
+        durationMs: 2_000,
+        parentRunId: "parent",
+        continuationRunId: "child",
+        paused: true,
+        pausedAgeMs: 3_000,
+        currentNode: "review",
+        failingNode: "review",
+        warnings: ["bad state"],
+        errorSummary: "x".repeat(600),
+      },
+    ]);
+    const plain = stripAnsi(line ?? "");
+    expect(plain).toContain("continuation parent → child");
+    expect(plain).toContain("paused 3.0s");
+    expect(plain).toContain("failing review");
+    expect(plain).toContain("1 warning(s)");
+    expect(plain.length).toBeLessThan(500);
+  });
+
+  it("sanitizes model-controlled doctor finding fields", () => {
+    const lines = renderDoctorFindings("run\u001b]8;;https://evil.test\u0007id", [
+      {
+        severity: "error",
+        code: "bad\ncode",
+        message: "unsafe\u001b]8;;https://evil.test\u0007link\nnext",
+      },
+    ]);
+    const plain = stripAnsi(lines.join("\n"));
+    expect(plain).toContain("bad code");
+    expect(plain).toContain("unsafe");
+    expect(plain).toContain("next");
+    expect(plain).not.toContain("\u001b");
+    expect(plain).not.toContain("\u0007");
+  });
+});
 
 describe("ansi helpers", () => {
   it("strips ANSI and measures visible length", () => {

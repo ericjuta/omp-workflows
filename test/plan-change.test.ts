@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import planChangeWorkflow from "../src/builtins/plan-change.workflow.js";
 import { WorkflowEngine } from "../src/workflows/engine.js";
@@ -56,6 +57,11 @@ describe("plan-change workflow", () => {
   });
 
   it("rejects unknown input fields before applying approval defaults", async () => {
+    const parseInput = planChangeWorkflow.input;
+    if (parseInput === undefined) throw new Error("plan-change input parser is missing");
+    expect(parseInput({ task: "change the implementation", repository: "." })).toMatchObject({
+      repository: path.resolve("."),
+    });
     const engine = new WorkflowEngine({
       outputRoot: await makeTempDir("plan-change-invalid"),
       executor: planningExecutor({ summary: "plan", steps: ["one"] }),

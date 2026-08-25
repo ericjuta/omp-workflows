@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import * as codingAgentModule from "@earendil-works/pi-coding-agent";
@@ -47,21 +47,29 @@ import {
 } from "../workflows/human-decision.js";
 import { discoverWorkflows, resolveWorkflowRef } from "../workflows/loader.js";
 import { migrateLegacyWorkflowSources } from "../workflows/migrate-sources.js";
+import { observationOnlyToolBlockReason } from "../workflows/observation-tool-policy.js";
 import { appendProgressHistory, progressRecordsFromTrace } from "../workflows/progress.js";
 import {
   findMatchingLiveRuns,
   isLiveWorkflowStatus,
   selectRecentRuns,
   workflowTaskFingerprint,
+  type ContinuationQueueFact,
+  type WorkflowRunListItem,
 } from "../workflows/run-discovery.js";
 import {
   createRunId,
-  listRunBundles,
-  readLastTraceEvent,
-  readRunBundle,
-  WorkflowRunStore,
   createDefinitionSnapshot,
+  definitionSnapshotDigest,
+  listRunBundles,
+  listRunProjections,
+  readLastTraceEvent,
+  readRunProjection,
+  readRunBundle,
+  readRunState,
+  WorkflowRunStore,
 } from "../workflows/store.js";
+import { redactSensitiveText } from "../workflows/text.js";
 import type {
   AcceptedHumanDecision,
   ResolvedHumanDecision,
@@ -94,7 +102,11 @@ import {
   deferredTurnSourceEventId,
   type DeferredTurnDescriptor,
 } from "./deferred-turn.js";
-import { ConversationStepExecutor } from "./executor.js";
+import {
+  classifyAssistantTurn,
+  ConversationStepExecutor,
+  type AssistantTurnOutcome,
+} from "./executor.js";
 import {
   HerdrWorkflowViewer,
   parseViewerPlacement,
@@ -238,10 +250,6 @@ type StartRunOptions = {
   claimToken?: string;
 };
 
-function definitionDigest(snapshot: WorkflowDefinitionSnapshot): string {
-  return `sha256:${createHash("sha256").update(JSON.stringify(snapshot)).digest("hex")}`;
-}
-
 function launchSourceIdentity(workflow: WorkflowDefinition, root: unknown): unknown {
   return {
     root,
@@ -288,11 +296,7 @@ function parsePreparedLaunchOptions(value: unknown): PreparedLaunchOptions {
 }
 
 function safeLaunchError(error: unknown): { code: string; message: string } {
-  const raw = errorMessage(error)
-    .replace(/Bearer\s+\S+/giu, "Bearer [redacted]")
-    .replace(/(token|api[_-]?key|secret|password)(\s*[:=]\s*)\S+/giu, "$1$2[redacted]")
-    .replaceAll("\n", " ")
-    .trim();
+  const raw = redactSensitiveText(errorMessage(error)).replaceAll("\n", " ").trim();
   const code = /not found|cannot find|unknown workflow/iu.test(raw)
     ? "workflow_not_found"
     : /source changed|source mismatch/iu.test(raw)
@@ -388,9 +392,14 @@ function workflowStateSummary(state: WorkflowRunState): JsonObject {
   const error =
     state.error === undefined
       ? undefined
-      : state.error.length <= MAX_STATUS_ERROR_CHARS
-        ? state.error
-        : `${state.error.slice(0, MAX_STATUS_ERROR_CHARS)}\n… [error truncated]`;
+      : redactSensitiveText(state.error, MAX_STATUS_ERROR_CHARS);
+  let failingNode: string | undefined;
+  for (let index = state.steps.length - 1; index >= 0; index -= 1) {
+    const step = state.steps[index];
+    if (step?.outcome !== "failed" && step?.outcome !== "timed_out") continue;
+    failingNode = step.nodeId;
+    break;
+  }
   return {
     active: state.status === "running",
     runId: state.runId,
@@ -402,12 +411,48 @@ function workflowStateSummary(state: WorkflowRunState): JsonObject {
       ...record,
       data: data as JsonObject,
     })),
+    ...(state.parentRunId !== undefined
+      ? { parentRunId: state.parentRunId, continuationRunId: state.runId }
+      : {}),
     ...(state.currentNode !== undefined ? { currentNode: state.currentNode } : {}),
+    ...(failingNode !== undefined ? { failingNode } : {}),
     ...(state.waitingOn !== undefined ? { waitingOn: state.waitingOn } : {}),
     ...(state.startedAt !== undefined ? { startedAt: state.startedAt } : {}),
     ...(state.finishedAt !== undefined ? { finishedAt: state.finishedAt } : {}),
     ...(error !== undefined ? { error } : {}),
   };
+}
+
+function compactRunFact(value: string, maxChars = 160): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length <= maxChars ? compact : `${compact.slice(0, maxChars)}…`;
+}
+
+function workflowRunListLabel(run: WorkflowRunListItem): string {
+  const node = run.failingNode ?? run.currentNode;
+  return [
+    `${run.workflowName} ${run.status}${run.paused === true ? " paused" : ""} (${run.runId}${run.parentRunId !== undefined ? `; continuation of ${run.parentRunId}` : ""})`,
+    node === undefined ? "" : `${run.failingNode === undefined ? "at" : "failing"} ${node}`,
+    run.errorSummary === undefined ? "" : `error: ${compactRunFact(run.errorSummary)}`,
+    run.warnings?.[0] === undefined ? "" : `warning: ${compactRunFact(run.warnings[0])}`,
+  ]
+    .filter(Boolean)
+    .join("; ");
+}
+
+function workflowRunStatusMessage(run: WorkflowRunListItem): string {
+  const node = run.failingNode ?? run.currentNode;
+  return `${[
+    `Workflow ${run.workflowName} is ${run.status}${run.paused === true ? " and paused" : ""} (run ${run.runId})`,
+    run.parentRunId === undefined ? "" : `effective continuation of ${run.parentRunId}`,
+    node === undefined
+      ? ""
+      : `${run.failingNode === undefined ? "current node" : "failing node"} ${node}`,
+    run.errorSummary === undefined ? "" : `error: ${compactRunFact(run.errorSummary)}`,
+    run.warnings?.[0] === undefined ? "" : `warning: ${compactRunFact(run.warnings[0])}`,
+  ]
+    .filter(Boolean)
+    .join("; ")}.`;
 }
 
 type WidgetSource = {
@@ -459,6 +504,22 @@ export default function piWorkflows(pi: ExtensionAPI) {
     runQueueStore ??= new SqliteControllerStore(projectControllerStorePath(cwd));
     return runQueueStore;
   };
+  const extensionQueueFacts = (ctx: ExtensionContext): ContinuationQueueFact[] =>
+    ensureRunQueueStore(ctx.cwd)
+      .listWorkflowRuns()
+      .map((row) => ({
+        runId: row.runId,
+        parentRunId: row.parentRunId,
+        status: row.status,
+        startedAt: row.startedAt ?? row.createdAt,
+        workflowName: row.workflowName,
+        input: row.input,
+        project: ctx.cwd,
+        ...(row.errorMessage === null
+          ? {}
+          : { errorSummary: redactSensitiveText(row.errorMessage, 500) }),
+        ...(row.errorCode === null ? {} : { errorCode: row.errorCode }),
+      }));
 
   // Session-addressed delivery: each session polls only its durable outbox.
   // Run events remain an audit feed and never enter a conversation.
@@ -566,7 +627,8 @@ export default function piWorkflows(pi: ExtensionAPI) {
   };
   let activeRun: ActiveRun | null = null;
   let systemTurnAbort: { contract: AgentStepContract; intentId?: string } | null = null;
-  let suppressWorkflowAssistantTail = false;
+  let assistantTurnOutcome: AssistantTurnOutcome = { kind: "semantic_settle" };
+  let observationOnlyTurnActive = false;
   let lastExpiredAttempt: { contract: AgentStepContract; reason: string } | null = null;
   // The interactive run currently parked at a checkpoint, if any.
   let lastWaitingRunId: string | null = null;
@@ -1016,7 +1078,6 @@ export default function piWorkflows(pi: ExtensionAPI) {
           resolution: "presentation",
           send: (turnIntentId) => {
             presentationPending = run.generation;
-            suppressWorkflowAssistantTail = false;
             pi.sendMessage(
               {
                 customType: PRESENTATION_MESSAGE_TYPE,
@@ -1295,7 +1356,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
               ? `builtin:${workflowSource.id}`
               : workflowSource.path,
           workflowSource: launchSourceIdentity(workflow, workflowSource),
-          definitionDigest: definitionDigest(snapshot),
+          definitionDigest: definitionSnapshotDigest(snapshot),
           input,
           launchOptions: preparedLaunchOptions(options),
           runnerId,
@@ -1325,13 +1386,14 @@ export default function piWorkflows(pi: ExtensionAPI) {
     }
 
     const executor = new ConversationStepExecutor({
-      sendPrompt: ({ prompt, contract, presentation, kind, streaming }) => {
+      sendPrompt: ({ prompt, contract, presentation, kind, onSent }) => {
         turnCoordinator.sendNatural(
           {
             runId,
             targetSessionId: originSessionId(ctx, runId),
             resolution: "workflowPrompt",
             send: (turnIntentId) => {
+              const agentAlreadyActive = !ctx.isIdle();
               const details: WorkflowAgentStepMessageDetails = {
                 schema: WORKFLOW_AGENT_STEP_MESSAGE_SCHEMA,
                 kind,
@@ -1348,9 +1410,10 @@ export default function piWorkflows(pi: ExtensionAPI) {
                 },
                 {
                   triggerTurn: true,
-                  deliverAs: streaming ? "steer" : "followUp",
+                  deliverAs: agentAlreadyActive ? "steer" : "followUp",
                 },
               );
+              onSent(agentAlreadyActive);
             },
           },
           ctx.isIdle() && systemTurnAbort === null,
@@ -1727,9 +1790,9 @@ export default function piWorkflows(pi: ExtensionAPI) {
       if ((await store.readCancellation(request.decisionId)) !== null) continue;
       if ((await store.readResolved(request.decisionId)) !== null) continue;
       if ((await store.readContinuation(request.decisionId)) !== null) continue;
-      const bundle = await readRunBundle(path.join(outputRoot, request.runId));
+      const projection = await readRunProjection(path.join(outputRoot, request.runId));
       const stale =
-        bundle === null || !isLiveWorkflowStatus(bundle.state.status, bundle.state.paused);
+        projection === null || !isLiveWorkflowStatus(projection.status, projection.paused);
       items.push({
         decisionId: request.decisionId,
         runId: request.runId,
@@ -1748,15 +1811,17 @@ export default function piWorkflows(pi: ExtensionAPI) {
     kind: "definitions" | "runs" = "definitions",
   ): Promise<WorkflowControlResult> => {
     const outputRoot = new WorkflowRunStore().outputRoot;
-    const bundles = await listRunBundles(outputRoot);
+    const { items: projections, warnings: projectionWarnings } =
+      await listRunProjections(outputRoot);
+    const queueFacts = extensionQueueFacts(ctx);
+    const allRuns = selectRecentRuns(projections, undefined, queueFacts);
     const waitingDecisions = await listOpenHumanDecisions(outputRoot);
     if (kind === "runs") {
-      if (!Number.isInteger(offset) || offset < 0 || offset > bundles.length) {
+      if (!Number.isInteger(offset) || offset < 0 || offset > allRuns.length) {
         throw new Error(
-          `Workflow run list offset must be an integer from 0 through ${bundles.length}.`,
+          `Workflow run list offset must be an integer from 0 through ${allRuns.length}.`,
         );
       }
-      const allRuns = selectRecentRuns(bundles);
       const page = allRuns.slice(offset, offset + 50);
       const nextOffset = offset + page.length;
       const omitted = allRuns.length - nextOffset;
@@ -1768,7 +1833,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
               ? "No workflow runs found."
               : `${waitingDecisions.length} waiting human decision(s); cancel the owning run to prune a leftover decision.`
             : [
-                `Workflow runs: ${page.map((run) => `${run.workflowName} ${run.status} (${run.runId})`).join(", ")}.`,
+                `Workflow runs: ${page.map(workflowRunListLabel).join(", ")}.`,
                 omitted > 0 ? `${omitted} more omitted; list again with offset ${nextOffset}.` : "",
                 waitingDecisions.length > 0
                   ? `${waitingDecisions.length} waiting human decision(s)${stale > 0 ? `, ${stale} stale` : ""}. Cancel the owning run to prune a leftover decision.`
@@ -1783,12 +1848,15 @@ export default function piWorkflows(pi: ExtensionAPI) {
           omitted,
           ...(omitted > 0 ? { nextOffset } : {}),
           ...(waitingDecisions.length > 0 ? { waitingDecisions } : {}),
+          ...(projectionWarnings.length > 0
+            ? { projectionWarnings: projectionWarnings.slice(0, 8) }
+            : {}),
         },
         ...(page.length === 0 ? { level: "warning" as const } : {}),
       };
     }
 
-    const recentRuns = selectRecentRuns(bundles, { limit: 8, liveOnly: true });
+    const recentRuns = selectRecentRuns(projections, { limit: 8, liveOnly: true }, queueFacts);
     const discovered = await discoverWorkflows({ cwd: ctx.cwd }, builtinWorkflowCatalog);
     if (discovered.length === 0) {
       return {
@@ -1807,6 +1875,9 @@ export default function piWorkflows(pi: ExtensionAPI) {
           offset: 0,
           ...(recentRuns.length > 0 ? { recentRuns: recentRuns as JsonObject[] } : {}),
           ...(waitingDecisions.length > 0 ? { waitingDecisions } : {}),
+          ...(projectionWarnings.length > 0
+            ? { projectionWarnings: projectionWarnings.slice(0, 8) }
+            : {}),
         },
         level: "warning",
       };
@@ -1861,6 +1932,9 @@ export default function piWorkflows(pi: ExtensionAPI) {
         ...(omitted > 0 ? { nextOffset } : {}),
         ...(recentRuns.length > 0 ? { recentRuns: recentRuns as JsonObject[] } : {}),
         ...(waitingDecisions.length > 0 ? { waitingDecisions } : {}),
+        ...(projectionWarnings.length > 0
+          ? { projectionWarnings: projectionWarnings.slice(0, 8) }
+          : {}),
       },
     };
   };
@@ -2030,6 +2104,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
     }
     activeRun.suppressTurnIntent = true;
     activeRun.engine.pause();
+    activeRun.executor.hold("pause");
     renderWidget(ctx);
     return {
       message: `Pausing workflow ${activeRun.workflowName}; the current step will finish before the run holds.`,
@@ -2085,9 +2160,15 @@ export default function piWorkflows(pi: ExtensionAPI) {
       queued: record.status === "queued",
       workflowName: record.workflowName,
       runId: record.runId,
+      ...(record.parentRunId === null
+        ? {}
+        : { parentRunId: record.parentRunId, continuationRunId: record.runId }),
       status: record.status,
+      effectiveStatus: record.status,
       ...(record.errorCode === null ? {} : { errorCode: record.errorCode }),
-      ...(record.errorMessage === null ? {} : { error: record.errorMessage }),
+      ...(record.errorMessage === null
+        ? {}
+        : { error: redactSensitiveText(record.errorMessage, 500) }),
     },
     ...(["failed", "cancelled"].includes(record.status) ? { level: "warning" as const } : {}),
   });
@@ -2097,16 +2178,80 @@ export default function piWorkflows(pi: ExtensionAPI) {
     runId?: string,
   ): Promise<WorkflowControlResult> => {
     if (runId !== undefined) {
-      const bundle = await readRunBundle(new WorkflowRunStore().runDirFor(runId));
-      if (bundle === null) {
-        const launch = ensureRunQueueStore(ctx.cwd).getWorkflowRun(runId);
+      const outputRoot = new WorkflowRunStore().outputRoot;
+      const launch = ensureRunQueueStore(ctx.cwd).getWorkflowRun(runId);
+      const { items: projections, warnings: projectionWarnings } =
+        await listRunProjections(outputRoot);
+      const projectionsById = new Map(
+        projections.map((projection) => [projection.runId, projection]),
+      );
+      const requestedProjection = projectionsById.get(runId);
+      if (
+        requestedProjection === undefined &&
+        launch !== undefined &&
+        launch.parentRunId !== null
+      ) {
+        return workflowLaunchStatus(launch);
+      }
+      if (requestedProjection?.parentRunId !== undefined) {
+        const [requestedRun] = selectRecentRuns([requestedProjection]);
+        if (requestedRun === undefined) throw new Error(`Workflow run not found: ${runId}`);
+        const state = await readRunState(requestedProjection.runDir).catch(() => null);
+        return {
+          message: workflowRunStatusMessage(requestedRun),
+          details: {
+            ...(requestedRun as JsonObject),
+            ...(state === null ? {} : workflowStateSummary(state)),
+            active: isLiveWorkflowStatus(requestedRun.status, requestedRun.paused),
+            runId: requestedRun.runId,
+            parentRunId: requestedProjection.parentRunId,
+            ...(requestedRun.warnings !== undefined ? { warnings: requestedRun.warnings } : {}),
+            ...(projectionWarnings.length > 0
+              ? { projectionWarnings: projectionWarnings.slice(0, 8) }
+              : {}),
+          },
+        };
+      }
+      let familyRootId = runId;
+      const ancestors = new Set<string>();
+      while (!ancestors.has(familyRootId)) {
+        ancestors.add(familyRootId);
+        const parentRunId = projectionsById.get(familyRootId)?.parentRunId;
+        if (parentRunId === undefined || !projectionsById.has(parentRunId)) break;
+        familyRootId = parentRunId;
+      }
+      const runs = selectRecentRuns(projections, undefined, extensionQueueFacts(ctx));
+      const run = runs.find(
+        (candidate) =>
+          candidate.runId === runId ||
+          candidate.parentRunId === runId ||
+          candidate.continuationRunId === runId ||
+          candidate.parentRunId === familyRootId,
+      );
+      if (run === undefined) {
         if (launch === undefined) throw new Error(`Workflow run not found: ${runId}`);
         return workflowLaunchStatus(launch);
       }
-      const { state } = bundle;
+      const effectiveRunId = run.continuationRunId ?? run.runId;
+      const effectiveRunDir =
+        projectionsById.get(effectiveRunId)?.runDir ?? path.join(outputRoot, effectiveRunId);
+      const state = await readRunState(effectiveRunDir).catch(() => null);
       return {
-        message: `Workflow ${state.workflowName} is ${state.status} (run ${state.runId}).`,
-        details: workflowStateSummary(state),
+        message: workflowRunStatusMessage(run),
+        details: {
+          ...(run as JsonObject),
+          ...(state === null ? {} : workflowStateSummary(state)),
+          active: isLiveWorkflowStatus(run.status, run.paused),
+          runId: run.runId,
+          ...(run.parentRunId !== undefined ? { parentRunId: run.parentRunId } : {}),
+          ...(run.continuationRunId !== undefined
+            ? { continuationRunId: run.continuationRunId }
+            : {}),
+          ...(run.warnings !== undefined ? { warnings: run.warnings } : {}),
+          ...(projectionWarnings.length > 0
+            ? { projectionWarnings: projectionWarnings.slice(0, 8) }
+            : {}),
+        },
       };
     }
     const state = activeRun?.lastState ?? widgetSource?.state;
@@ -2117,15 +2262,20 @@ export default function piWorkflows(pi: ExtensionAPI) {
       if (queued !== undefined) return workflowLaunchStatus(queued);
 
       const outputRoot = new WorkflowRunStore().outputRoot;
-      const liveRuns = selectRecentRuns(await listRunBundles(outputRoot), { liveOnly: true });
+      const { items: projections, warnings: projectionWarnings } =
+        await listRunProjections(outputRoot);
+      const liveRuns = selectRecentRuns(projections, { liveOnly: true }, extensionQueueFacts(ctx));
       const waitingDecisions = await listOpenHumanDecisions(outputRoot);
       if (liveRuns.length === 1) {
         const run = liveRuns[0] as (typeof liveRuns)[number];
         return {
-          message: `Workflow ${run.workflowName} is ${run.status} (run ${run.runId}).`,
+          message: workflowRunStatusMessage(run),
           details: {
             ...(run as JsonObject),
             ...(waitingDecisions.length > 0 ? { waitingDecisions } : {}),
+            ...(projectionWarnings.length > 0
+              ? { projectionWarnings: projectionWarnings.slice(0, 8) }
+              : {}),
           },
         };
       }
@@ -2136,6 +2286,9 @@ export default function piWorkflows(pi: ExtensionAPI) {
             active: false,
             runs: liveRuns as JsonObject[],
             ...(waitingDecisions.length > 0 ? { waitingDecisions } : {}),
+            ...(projectionWarnings.length > 0
+              ? { projectionWarnings: projectionWarnings.slice(0, 8) }
+              : {}),
           },
           level: "warning",
         };
@@ -2702,12 +2855,14 @@ export default function piWorkflows(pi: ExtensionAPI) {
     const workflow = resolved.definition;
     const workflowSource = resolved.source;
     if (options.parentRunId === undefined) {
+      const { items: projections } = await listRunProjections(new WorkflowRunStore().outputRoot);
       const matching = findMatchingLiveRuns(
-        await listRunBundles(new WorkflowRunStore().outputRoot),
+        projections,
         {
           workflowName: workflow.name,
           fingerprint: workflowTaskFingerprint(input),
         },
+        extensionQueueFacts(ctx),
       );
       if (matching.length > 0) {
         const existingRun = matching[0] as (typeof matching)[number];
@@ -2741,7 +2896,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
         workflowSourceRef:
           workflowSource.kind === "builtin" ? `builtin:${workflowSource.id}` : workflowSource.path,
         workflowSource: launchSourceIdentity(workflow, workflowSource),
-        definitionDigest: definitionDigest(snapshot),
+        definitionDigest: definitionSnapshotDigest(snapshot),
         input,
         launchOptions: preparedLaunchOptions(options),
         runnerId,
@@ -2802,7 +2957,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
           launchSourceIdentity(resolved.definition, resolved.source),
           claimed.workflowSource,
         ) ||
-        definitionDigest(snapshot) !== claimed.definitionDigest
+        definitionSnapshotDigest(snapshot) !== claimed.definitionDigest
       ) {
         throw new Error("Workflow source changed after the launch was queued");
       }
@@ -3227,7 +3382,6 @@ export default function piWorkflows(pi: ExtensionAPI) {
           if (!result.accepted) {
             throw new Error(result.message);
           }
-          suppressWorkflowAssistantTail = true;
           return {
             content: [{ type: "text", text: result.message }],
             details: { action: "submit", step: params.step, accepted: true },
@@ -3322,7 +3476,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
   });
 
   pi.on("agent_start", () => {
-    suppressWorkflowAssistantTail = false;
+    assistantTurnOutcome = { kind: "semantic_settle" };
     if (!activeRun && presentationPending === null && presentationAbort) {
       // A normal user turn started while an async presentation prompt was
       // still resolving. The user's new request supersedes that old result.
@@ -3333,14 +3487,9 @@ export default function piWorkflows(pi: ExtensionAPI) {
   });
 
   pi.on("agent_end", (event, ctx) => {
-    suppressWorkflowAssistantTail = false;
-    const aborted = event.messages.some(
-      (message) =>
-        typeof message === "object" &&
-        message !== null &&
-        "stopReason" in message &&
-        (message as { stopReason?: string }).stopReason === "aborted",
-    );
+    assistantTurnOutcome = classifyAssistantTurn(event.messages);
+    observationOnlyTurnActive = false;
+    const aborted = assistantTurnOutcome.kind === "user_abort";
     if (aborted && systemTurnAbort !== null) {
       systemTurnAbort = null;
       return;
@@ -3352,7 +3501,9 @@ export default function piWorkflows(pi: ExtensionAPI) {
     // An aborted turn means the user hit escape to take the conversation
     // back. Nudging or dispatching the next step would immediately steal it
     // again, so hold the run until an explicit /workflow resume.
-    if (!aborted || runHeld()) {
+    if (!aborted) return;
+    if (runHeld()) {
+      run.executor.hold();
       return;
     }
     run.suppressTurnIntent = true;
@@ -3382,19 +3533,25 @@ export default function piWorkflows(pi: ExtensionAPI) {
   });
 
   pi.on("message_end", (event) => {
-    if (suppressWorkflowAssistantTail && event.message.role === "assistant") {
-      const message = {
-        ...event.message,
-        content: event.message.content.filter((part) => part.type !== "text"),
-      };
-      activeRun?.recorder?.handleMessageEnd({ ...event, message });
-      return { message };
-    }
     activeRun?.recorder?.handleMessageEnd(event);
   });
 
   pi.on("tool_execution_start", (event) => {
     activeRun?.recorder?.handleToolStart(event);
+  });
+  pi.on("tool_call", (event) => {
+    if (
+      !observationOnlyTurnActive &&
+      activeRun?.executor.pendingToolPolicy !== "observation-only"
+    ) {
+      return undefined;
+    }
+    // The submission itself can advance or finish the workflow before the
+    // assistant turn ends. Keep the observation policy latched for every
+    // later tool call in that same turn.
+    observationOnlyTurnActive = true;
+    const reason = observationOnlyToolBlockReason(event.toolName, event.input);
+    return reason === null ? undefined : { block: true, reason };
   });
 
   pi.on("tool_execution_update", (event) => {
@@ -3407,6 +3564,8 @@ export default function piWorkflows(pi: ExtensionAPI) {
 
   pi.on("agent_settled", async (_event, ctx) => {
     systemTurnAbort = null;
+    const settledOutcome = assistantTurnOutcome;
+    assistantTurnOutcome = { kind: "semantic_settle" };
     if (activeRun === null) {
       try {
         const prepared = ensureRunQueueStore(ctx.cwd).findSessionReservation(
@@ -3425,6 +3584,7 @@ export default function piWorkflows(pi: ExtensionAPI) {
         return;
       }
     }
+    activeRun?.executor.setStreaming(false);
     const flushedNatural = turnCoordinator.flushNatural(
       ctx.isIdle() && !sessionClosed && !runHeld(),
     );
@@ -3436,8 +3596,39 @@ export default function piWorkflows(pi: ExtensionAPI) {
     }
     await run.recorder?.synchronize(ctx).catch(() => undefined);
     run.recorder?.settleAttempt();
-    run.executor.setStreaming(false);
-    if (flushedNatural === 0) run.executor.handleAgentSettled();
+    if (flushedNatural === 0) {
+      if (settledOutcome.kind === "context_overflow" && run.executor.canRetryProviderFailure) {
+        if (typeof ctx.compact !== "function") {
+          run.executor.handleAgentSettled({
+            kind: "provider_terminal",
+            diagnostic: `${settledOutcome.diagnostic}. This host cannot compact the conversation automatically.`,
+          });
+        } else {
+          const retryAfterCompaction = () => {
+            if (activeRun === run) run.executor.handleAgentSettled(settledOutcome);
+          };
+          const failCompaction = (error: Error) => {
+            if (activeRun !== run) return;
+            run.executor.handleAgentSettled({
+              kind: "provider_terminal",
+              diagnostic: `Context compaction failed: ${errorMessage(error)}`,
+            });
+          };
+          try {
+            ctx.compact({
+              customInstructions:
+                "Preserve the active workflow step, its current attempt, and the exact workflow submission contract.",
+              onComplete: retryAfterCompaction,
+              onError: failCompaction,
+            });
+          } catch (error) {
+            failCompaction(error instanceof Error ? error : new Error(errorMessage(error)));
+          }
+        }
+      } else {
+        run.executor.handleAgentSettled(settledOutcome);
+      }
+    }
     runSyncPass(ctx);
   });
 
@@ -3445,11 +3636,12 @@ export default function piWorkflows(pi: ExtensionAPI) {
     sessionClosed = true;
     herdrProbeGeneration += 1;
     systemTurnAbort = null;
-    suppressWorkflowAssistantTail = false;
     turnCoordinator.clearDeferred();
+    assistantTurnOutcome = { kind: "semantic_settle" };
     supersedePresentation();
     const run = activeRun;
     if (run !== null) run.suppressTurnIntent = true;
+    run?.executor.hold("pause");
     if (run !== null && run.claimToken !== undefined) {
       // Queued interactive runs park: no terminal event, no recorded partial
       // attempt, and the claim releases so another runner can resume.

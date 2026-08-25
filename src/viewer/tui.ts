@@ -1,9 +1,13 @@
+import type { ContinuationQueueFact } from "../workflows/run-discovery.js";
 import { listRunBundles, readRunBundle } from "../workflows/store.js";
 import type { LoadedRunBundle } from "../workflows/store.js";
 import {
   maxDetailScroll,
+  projectViewerRuns,
+  renderQueueDetailLines,
   renderRunDetailLines,
   renderRunListLines,
+  type ViewerRunEntry,
   type ViewportSize,
 } from "./render.js";
 import { watchRunsDir } from "./watch.js";
@@ -12,11 +16,15 @@ const ALT_SCREEN_ON = "\u001b[?1049h\u001b[?25l";
 const ALT_SCREEN_OFF = "\u001b[?25h\u001b[?1049l";
 const CLEAR = "\u001b[2J\u001b[H";
 
-type ViewerMode = { view: "list" } | { view: "detail"; runDir: string };
+type ViewerMode =
+  | { view: "list" }
+  | { view: "detail"; runDir: string }
+  | { view: "queue"; runId: string };
 
 export type ViewerOptions = {
   runsDir: string;
   runId?: string | undefined;
+  queueFacts?: () => readonly ContinuationQueueFact[];
   /** Redraw interval for elapsed timers while a run is active. */
   tickMs?: number;
 };
@@ -35,6 +43,7 @@ function viewportSize(): ViewportSize {
 export async function runViewer(options: ViewerOptions): Promise<void> {
   let mode: ViewerMode = { view: "list" };
   let bundles: LoadedRunBundle[] = [];
+  let visibleRuns: ViewerRunEntry[] = [];
   let selectedIndex = 0;
   let detailScroll = 0;
   /** Replay position; null follows the latest step live. */
@@ -43,22 +52,51 @@ export async function runViewer(options: ViewerOptions): Promise<void> {
 
   if (options.runId) {
     bundles = await listRunBundles(options.runsDir);
-    const match = bundles.find((bundle) => bundle.state.runId === options.runId);
+    const exactBundle = bundles.find((bundle) => bundle.state.runId === options.runId);
+    const match =
+      exactBundle?.state.parentRunId === undefined
+        ? projectViewerRuns(bundles, options.queueFacts?.() ?? []).find(
+            (entry) =>
+              entry.run.runId === options.runId ||
+              entry.run.parentRunId === options.runId ||
+              entry.run.continuationRunId === options.runId,
+          )
+        : projectViewerRuns([exactBundle])[0];
     if (!match) {
       throw new Error(`Run not found: ${options.runId}`);
     }
-    mode = { view: "detail", runDir: match.runDir };
+    mode = { view: "detail", runDir: match.bundle?.runDir ?? "" };
+    if (match.bundle === undefined) mode = { view: "queue", runId: match.run.runId };
   }
 
   const draw = async () => {
     bundles = await listRunBundles(options.runsDir);
-    selectedIndex = Math.min(selectedIndex, Math.max(0, bundles.length - 1));
     const size = viewportSize();
+    visibleRuns = projectViewerRuns(bundles, options.queueFacts?.() ?? []);
+    selectedIndex = Math.min(selectedIndex, Math.max(0, visibleRuns.length - 1));
     const lines =
       mode.view === "list"
-        ? renderRunListLines(bundles, selectedIndex, size)
-        : await renderDetail(mode.runDir, size);
+        ? renderRunListLines(
+            visibleRuns.map((entry) => entry.run),
+            selectedIndex,
+            size,
+          )
+        : mode.view === "detail"
+          ? await renderDetail(mode.runDir, size)
+          : renderQueueMode(mode.runId, size);
     process.stdout.write(CLEAR + lines.join("\n"));
+  };
+
+  const renderQueueMode = (runId: string, size: ViewportSize): string[] => {
+    const current = visibleRuns.find((entry) => entry.run.runId === runId);
+    if (current?.bundle !== undefined) {
+      mode = { view: "detail", runDir: current.bundle.runDir };
+      void draw();
+      return ["Workflow bundle became available; opening it…"];
+    }
+    return current === undefined
+      ? ["Queued workflow disappeared. Press q to go back."]
+      : renderQueueDetailLines(current.run, size);
   };
 
   const renderDetail = async (runDir: string, size: ViewportSize): Promise<string[]> => {
@@ -94,7 +132,7 @@ export async function runViewer(options: ViewerOptions): Promise<void> {
       const onKey = (data: Buffer) => {
         const key = data.toString("utf8");
         if (key === "q" || key === "\u0003" || key === "\u001b") {
-          if (mode.view === "detail" && key === "q") {
+          if (mode.view !== "list" && key === "q") {
             mode = { view: "list" };
             void draw();
             return;
@@ -131,12 +169,15 @@ export async function runViewer(options: ViewerOptions): Promise<void> {
           selectedIndex = Math.max(0, selectedIndex - 1);
           void draw();
         } else if (key === "\u001b[B" || key === "j") {
-          selectedIndex = Math.min(Math.max(0, bundles.length - 1), selectedIndex + 1);
+          selectedIndex = Math.min(Math.max(0, visibleRuns.length - 1), selectedIndex + 1);
           void draw();
         } else if (key === "\r" || key === "\n") {
-          const selected = bundles[selectedIndex];
+          const selected = visibleRuns[selectedIndex];
           if (selected) {
-            mode = { view: "detail", runDir: selected.runDir };
+            mode = { view: "detail", runDir: selected.bundle?.runDir ?? "" };
+            if (selected.bundle === undefined) {
+              mode = { view: "queue", runId: selected.run.runId };
+            }
             detailScroll = 0;
             selectedStep = null;
             void draw();

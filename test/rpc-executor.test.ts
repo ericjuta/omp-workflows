@@ -1,9 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { HostProcessRegistry } from "../src/host/processes.js";
+import piWorkflowsRpcBridge, { RPC_SUBMISSION_PREFIX } from "../src/host/rpc-bridge.js";
 import { RpcStepExecutor } from "../src/host/rpc-executor.js";
+import { WORKFLOW_OBSERVATION_ONLY_ENV } from "../src/workflows/observation-tool-policy.js";
 import { makeTempDir } from "./helpers.js";
+afterEach(() => vi.unstubAllEnvs());
 
 describe("RpcStepExecutor spawn", () => {
   it("spawns children with extension isolation", async () => {
@@ -74,6 +77,95 @@ sleep 60
       );
     expect(result).not.toBe("resolved");
     await executor.close();
+  });
+  it("selects and reuses children by explicit tool policy, not step identity", async () => {
+    const dir = await makeTempDir("omp-rpc-tool-policy");
+    const policyLog = path.join(dir, "policy.log");
+    const fakeOmp = path.join(dir, "fake-omp.cjs");
+    await fs.writeFile(
+      fakeOmp,
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const readline = require("node:readline");
+fs.appendFileSync(
+  ${JSON.stringify(policyLog)},
+  String(process.env[${JSON.stringify(WORKFLOW_OBSERVATION_ONLY_ENV)}] ?? "<unset>") + ":" + process.pid + "\\n",
+);
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  const event = JSON.parse(line);
+  if (event.type !== "prompt") return;
+  const { step, attempt } = JSON.parse(event.message);
+  process.stderr.write(
+    ${JSON.stringify(RPC_SUBMISSION_PREFIX)} +
+      JSON.stringify({ action: "submit", step, attempt, output: null }) +
+      "\\n",
+  );
+});
+`,
+      { encoding: "utf8", mode: 0o755 },
+    );
+    const executor = new RpcStepExecutor({
+      cwd: dir,
+      registry: new HostProcessRegistry(dir),
+      ompBin: fakeOmp,
+    });
+    const runStep = (contract: Parameters<RpcStepExecutor["runAgentStep"]>[0]["contract"]) =>
+      executor.runAgentStep(
+        {
+          contract,
+          prompt: JSON.stringify({ step: contract.nodeId, attempt: contract.attemptId }),
+          accept: async () => ({ ok: true as const, value: null }),
+        },
+        new AbortController().signal,
+      );
+
+    const restrictedContract = {
+      runId: "r",
+      workflowName: "arbitrary-workflow",
+      nodeId: "arbitrary-node",
+      attemptId: "restricted",
+      toolPolicy: "observation-only" as const,
+    };
+    await runStep(restrictedContract);
+    const restrictedSpawn = (await fs.readFile(policyLog, "utf8")).trim();
+
+    await runStep({ ...restrictedContract, attemptId: "reused" });
+    expect((await fs.readFile(policyLog, "utf8")).trim()).toBe(restrictedSpawn);
+
+    await runStep({
+      runId: "r",
+      workflowName: "monitor",
+      nodeId: "check",
+      attemptId: "unrestricted",
+    });
+    const [restricted, unrestricted] = (await fs.readFile(policyLog, "utf8")).trim().split("\n");
+    expect(restricted?.split(":")[0]).toBe("1");
+    expect(unrestricted?.split(":")[0]).toBe("<unset>");
+    expect(unrestricted?.split(":")[1]).not.toBe(restricted?.split(":")[1]);
+    await executor.close();
+  });
+
+  it("installs the observation allowlist under the generic environment flag", () => {
+    let toolCall: ((event: { toolName: string; input: unknown }) => unknown) | undefined;
+    const api = {
+      registerTool: () => undefined,
+      on: (event: string, handler: (event: { toolName: string; input: unknown }) => unknown) => {
+        if (event === "tool_call") toolCall = handler;
+      },
+    } as never;
+
+    vi.stubEnv(WORKFLOW_OBSERVATION_ONLY_ENV, "");
+    piWorkflowsRpcBridge(api);
+    expect(toolCall).toBeUndefined();
+
+    vi.stubEnv(WORKFLOW_OBSERVATION_ONLY_ENV, "1");
+    piWorkflowsRpcBridge(api);
+
+    expect(toolCall?.({ toolName: "read", input: { path: "state.json" } })).toBeUndefined();
+    expect(toolCall?.({ toolName: "write", input: { path: "state.json", content: "x" } })).toEqual({
+      block: true,
+      reason: "This workflow step is observation-only; tool write is not allowed.",
+    });
   });
 });
 

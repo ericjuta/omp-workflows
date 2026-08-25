@@ -209,7 +209,7 @@ describe("sanity-check workflow", () => {
     ).toThrow(/at most 40/);
   });
 
-  it("formats a bounded final report with evidence and no presentation turn", () => {
+  it("formats a complete final report with evidence and no presentation turn", () => {
     const result = parseSanityCheckResult(finalResult("keep"));
     const report = formatSanityCheckReport(result);
     expect(report).toContain("Sanity Check: keep");
@@ -228,9 +228,10 @@ describe("sanity-check workflow", () => {
     expect(detailed).toContain("Required changes:");
     expect(detailed).toContain("Questions for the contributor:");
     expect(detailed).toContain("Unknowns:");
-    expect(formatSanityCheckReport({ ...result, summary: "x".repeat(20_000) })).toContain(
-      "[report truncated]",
-    );
+    const longSummary = "x".repeat(20_000);
+    const complete = formatSanityCheckReport({ ...result, summary: longSummary });
+    expect(complete).toContain(longSummary);
+    expect(complete).not.toContain("[report truncated]");
     expect(sanityCheckWorkflow.presentationPrompt).toBeUndefined();
     expect(sanityCheckWorkflow.nodes.report).toMatchObject({ nodeType: "notify", kind: "final" });
     expect(sanityCheckWorkflow.edges).toEqual([

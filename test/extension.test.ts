@@ -10,10 +10,11 @@ import {
   deferredTurnSourceEventId,
 } from "../src/extension/deferred-turn.js";
 import piWorkflows from "../src/extension/index.js";
+import { compute, defineWorkflow } from "../src/workflows/definition.js";
 import { createHumanDecisionRequest, HumanDecisionStore } from "../src/workflows/human-decision.js";
-import { listRunBundles, readRunBundle } from "../src/workflows/store.js";
+import { listRunBundles, readRunBundle, WorkflowRunStore } from "../src/workflows/store.js";
 import { stripAnsi } from "../src/workflows/text.js";
-import type { HumanDecisionRequest } from "../src/workflows/types.js";
+import type { HumanDecisionRequest, WorkflowRunState } from "../src/workflows/types.js";
 import { makeTempDir } from "./helpers.js";
 
 type ToolResult = {
@@ -77,6 +78,10 @@ type FakeContext = {
   hasUI: boolean;
   isIdle: () => boolean;
   abort: () => void;
+  compact: (options?: {
+    onComplete?: (result?: unknown) => void;
+    onError?: (error: Error) => void;
+  }) => void;
   sessionManager: {
     getSessionId: () => string;
     getLeafId: () => string | null;
@@ -125,7 +130,7 @@ function makeHarness(options: {
   const messageRenderers = new Map<string, unknown>();
   const listeners = new Map<
     string,
-    ((event?: unknown, ctx?: FakeContext) => void | Promise<void>)[]
+    ((event?: unknown, ctx?: FakeContext) => unknown | Promise<unknown>)[]
   >();
   const shortcuts = new Map<string, (ctx: FakeContext) => void | Promise<void>>();
   const commands = new Map<string, RegisteredCommand>();
@@ -134,6 +139,7 @@ function makeHarness(options: {
   let idle = true;
   let abortCalls = 0;
   let renderRequests = 0;
+  let compactions = 0;
 
   const ctx: FakeContext = {
     cwd: options.cwd,
@@ -143,6 +149,10 @@ function makeHarness(options: {
     abort: () => {
       abortCalls += 1;
       idle = true;
+    },
+    compact: (compactOptions) => {
+      compactions += 1;
+      compactOptions?.onComplete?.();
     },
     sessionManager: {
       getSessionId: () => options.sessionId ?? "test-session",
@@ -228,7 +238,10 @@ function makeHarness(options: {
     registerMessageRenderer: (customType: string, renderer: unknown) => {
       messageRenderers.set(customType, renderer);
     },
-    on: (event: string, listener: (event?: unknown, ctx?: FakeContext) => void | Promise<void>) => {
+    on: (
+      event: string,
+      listener: (event?: unknown, ctx?: FakeContext) => unknown | Promise<unknown>,
+    ) => {
       const queue = listeners.get(event) ?? [];
       queue.push(listener);
       listeners.set(event, queue);
@@ -269,6 +282,9 @@ function makeHarness(options: {
     get renderRequests() {
       return renderRequests;
     },
+    get compactions() {
+      return compactions;
+    },
     setIdle: (value: boolean) => {
       idle = value;
     },
@@ -306,6 +322,34 @@ export default defineWorkflow({
     }),
   },
   edges: [],
+});
+`,
+    "utf8",
+  );
+}
+
+async function writeToolPolicyWorkflow(cwd: string): Promise<void> {
+  const dir = path.join(cwd, ".pi", "workflows");
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(
+    path.join(dir, "tool-policy.workflow.ts"),
+    `import { agent, defineWorkflow } from "@ericjuta/omp-workflows";
+
+export default defineWorkflow({
+  name: "tool-policy",
+  startAt: "restricted",
+  nodes: {
+    restricted: agent({
+      prompt: () => "Inspect without mutation.",
+      expectedOutput: '{ "observed": true }',
+      toolPolicy: "observation-only",
+    }),
+    unrestricted: agent({
+      prompt: () => "Continue without a tool policy.",
+      expectedOutput: '{ "done": true }',
+    }),
+  },
+  edges: [{ from: "restricted", to: "unrestricted" }],
 });
 `,
     "utf8",
@@ -440,6 +484,7 @@ describe("omp-workflows extension", () => {
   });
   it("registers native HITL command and tool surfaces without accepting model answers", async () => {
     const cwd = await makeTempDir("omp-workflows-hitl");
+    vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", await makeTempDir("omp-workflows-hitl-runs"));
     const harness = makeHarness({ cwd, respond: () => {} });
     const hitl = harness.tools.get("hitl");
 
@@ -709,6 +754,13 @@ describe("omp-workflows extension", () => {
       expect(renderedWidget).not.toMatch(/[┏┌┃]/u);
       expect(harness.sentMessages).toHaveLength(1);
       expect(harness.sentMessages[0]?.message.customType).toBe("pi-workflows-agent-step");
+      expect(harness.sentMessages[0]?.message.content).toContain(
+        '"action": "submit", "step": "reply"',
+      );
+      expect(harness.sentMessages[0]?.message.content).toContain(
+        "If the tool reports a validation error, correct the output and call it again.",
+      );
+      expect(harness.sentMessages[0]?.message.content).not.toContain("exactly once");
       expect(harness.sentUserMessages).toHaveLength(0);
 
       const runDirs = await fs.readdir(runsDir);
@@ -1081,7 +1133,7 @@ describe("omp-workflows extension", () => {
     expect(harness.shortcuts.has("ctrl+shift+r")).toBe(false);
   });
 
-  it("removes assistant tail text after an accepted workflow submission", async () => {
+  it("preserves assistant tail text after an accepted workflow submission", async () => {
     const cwd = await makeTempDir("pi-workflows-tail");
     const runsDir = await makeTempDir("pi-workflows-tail-runs");
     vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
@@ -1115,16 +1167,90 @@ describe("omp-workflows extension", () => {
       const [replacement] = await harness.emitAsync("message_end", {
         message: assistantMessage,
       });
-      expect(replacement).toEqual({
-        message: {
-          ...assistantMessage,
-          content: [{ type: "thinking", thinking: "The workflow submission is complete." }],
-        },
+      expect(replacement).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+  it("enforces explicit step tool policies through the submission turn", async () => {
+    const cwd = await makeTempDir("pi-workflows-tool-policy");
+    const runsDir = await makeTempDir("pi-workflows-tool-policy-runs");
+    vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
+    try {
+      await writeToolPolicyWorkflow(cwd);
+      const harness = makeHarness({ cwd, respond: () => {} });
+      await harness.tool.execute("start-tool-policy", {
+        action: "start",
+        workflow: "tool-policy",
       });
+      await harness.emitAsync("agent_settled");
+      await waitFor(() =>
+        harness.sentMessages.some((entry) => {
+          const details = entry.message.details as
+            | { contract?: { toolPolicy?: string } }
+            | undefined;
+          return details?.contract?.toolPolicy === "observation-only";
+        }),
+      );
 
+      const policyMessage = harness.sentMessages.find((entry) => {
+        const details = entry.message.details as { contract?: { toolPolicy?: string } } | undefined;
+        return details?.contract?.toolPolicy === "observation-only";
+      });
+      expect(policyMessage?.message.details).toMatchObject({
+        contract: { toolPolicy: "observation-only" },
+      });
+      const [blocked] = await harness.emitAsync("tool_call", {
+        toolName: "write",
+        input: { path: "result.txt", content: "mutated" },
+      });
+      expect(blocked).toEqual({
+        block: true,
+        reason: "This workflow step is observation-only; tool write is not allowed.",
+      });
+      const [allowedRead] = await harness.emitAsync("tool_call", {
+        toolName: "read",
+        input: { path: "result.txt" },
+      });
+      expect(allowedRead).toBeUndefined();
+
+      const contract = stepFromPrompt(String(policyMessage?.message.content));
+      expect(contract).not.toBeNull();
+      const submission = {
+        action: "submit",
+        ...contract!,
+        output: { observed: true },
+      };
+      const [submitAllowed] = await harness.emitAsync("tool_call", {
+        toolName: "workflow",
+        input: submission,
+      });
+      expect(submitAllowed).toBeUndefined();
+      const messageCount = harness.sentMessages.length;
+      await harness.tool.execute("submit-tool-policy", submission);
+      await waitFor(() => harness.sentMessages.length > messageCount);
+      const unrestrictedDetails = harness.sentMessages.at(-1)?.message.details as
+        | { contract?: { toolPolicy?: string } }
+        | undefined;
+      expect(unrestrictedDetails?.contract).toBeDefined();
+      expect(unrestrictedDetails?.contract?.toolPolicy).toBeUndefined();
+
+      const [blockedAfterSubmit] = await harness.emitAsync("tool_call", {
+        toolName: "write",
+        input: { path: "result.txt", content: "mutated after submit" },
+      });
+      expect(blockedAfterSubmit).toEqual({
+        block: true,
+        reason: "This workflow step is observation-only; tool write is not allowed.",
+      });
       await harness.emitAsync("agent_end", { messages: [] });
-      const [normal] = await harness.emitAsync("message_end", { message: assistantMessage });
-      expect(normal).toBeUndefined();
+      const [allowedWithoutPolicy] = await harness.emitAsync("tool_call", {
+        toolName: "write",
+        input: { path: "result.txt", content: "next turn" },
+      });
+      expect(allowedWithoutPolicy).toBeUndefined();
+
+      await harness.tool.execute("cancel-tool-policy", { action: "cancel" });
     } finally {
       vi.unstubAllEnvs();
     }
@@ -2340,6 +2466,11 @@ export default defineWorkflow({
 
       await harness.command.handler("mini", harness.ctx);
       await waitFor(() => harness.notifications.some((note) => note.includes("started")));
+      await waitFor(() =>
+        harness.sentMessages.some(
+          (entry) => entry.message.customType === "pi-workflows-agent-step",
+        ),
+      );
 
       const paused = await harness.tool.execute("pause-1", { action: "pause" });
       expect(paused.content[0]?.text).toContain("Pausing workflow mini");
@@ -2348,6 +2479,11 @@ export default defineWorkflow({
 
       const resumed = await harness.tool.execute("resume-1", { action: "resume" });
       expect(resumed.content[0]?.text).toContain("Workflow mini resumed");
+      expect(
+        harness.sentMessages.filter(
+          (entry) => entry.message.customType === "pi-workflows-agent-step",
+        ),
+      ).toHaveLength(1);
       const resumedAgain = await harness.tool.execute("resume-2", { action: "resume" });
       expect(resumedAgain.content[0]?.text).toContain("is not paused");
 
@@ -2419,6 +2555,126 @@ export default defineWorkflow({
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it("fails a structured provider 404 without a semantic no-submit reminder", async () => {
+    const cwd = await makeTempDir("pi-workflows-provider-404");
+    const runsDir = await makeTempDir("pi-workflows-provider-404-runs");
+    vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
+    await writeEchoWorkflow(cwd);
+    const harness = makeHarness({ cwd, respond: () => {} });
+
+    await harness.command.handler("mini", harness.ctx);
+    await waitFor(() =>
+      harness.sentMessages.some((entry) => entry.message.customType === "pi-workflows-agent-step"),
+    );
+    harness.emit("agent_start");
+    harness.setIdle(true);
+    await harness.emitAsync("agent_end", {
+      messages: [
+        {
+          role: "assistant",
+          stopReason: "error",
+          errorMessage: "Requested model was not found",
+          diagnostics: [{ details: { status: 404 } }],
+        },
+      ],
+    });
+    await harness.emitAsync("agent_settled");
+    await waitFor(() =>
+      harness.notifications.some((note) => note.includes("Requested model was not found")),
+    );
+
+    const stepMessages = harness.sentMessages.filter(
+      (entry) => entry.message.customType === "pi-workflows-agent-step",
+    );
+    expect(stepMessages).toHaveLength(1);
+    expect(stepMessages.some((entry) => entry.message.content.includes("Reminder:"))).toBe(false);
+  });
+
+  it("compacts once before retrying a context overflow without a semantic reminder", async () => {
+    const cwd = await makeTempDir("pi-workflows-context-overflow");
+    const runsDir = await makeTempDir("pi-workflows-context-overflow-runs");
+    vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
+    await writeEchoWorkflow(cwd);
+    const harness = makeHarness({ cwd, respond: () => {} });
+
+    await harness.command.handler("mini", harness.ctx);
+    await waitFor(() =>
+      harness.sentMessages.some((entry) => entry.message.customType === "pi-workflows-agent-step"),
+    );
+    harness.emit("agent_start");
+    harness.setIdle(true);
+    await harness.emitAsync("agent_end", {
+      messages: [
+        {
+          role: "assistant",
+          stopReason: "error",
+          errorMessage: "maximum context length exceeded",
+        },
+      ],
+    });
+    await harness.emitAsync("agent_settled");
+    await waitFor(() => harness.compactions === 1);
+
+    const stepMessages = harness.sentMessages.filter(
+      (entry) => entry.message.customType === "pi-workflows-agent-step",
+    );
+    expect(stepMessages).toHaveLength(2);
+    expect(stepMessages[1]?.message.details).toMatchObject({ kind: "resume" });
+    expect(stepMessages[1]?.message.content).toContain("compacted after a context overflow");
+    expect(stepMessages.some((entry) => entry.message.content.includes("Reminder:"))).toBe(false);
+
+    harness.emit("agent_start");
+    harness.setIdle(true);
+    await harness.emitAsync("agent_end", {
+      messages: [
+        {
+          role: "assistant",
+          stopReason: "error",
+          errorMessage: "maximum context length exceeded again",
+        },
+      ],
+    });
+    await harness.emitAsync("agent_settled");
+    await waitFor(() =>
+      harness.notifications.some((note) => note.includes("persisted after 1 retry")),
+    );
+    expect(harness.compactions).toBe(1);
+    expect(
+      harness.sentMessages.filter(
+        (entry) => entry.message.customType === "pi-workflows-agent-step",
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("still sends a semantic reminder after an ordinary acknowledged settle", async () => {
+    const cwd = await makeTempDir("pi-workflows-semantic-settle");
+    const runsDir = await makeTempDir("pi-workflows-semantic-settle-runs");
+    vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
+    await writeEchoWorkflow(cwd);
+    const harness = makeHarness({ cwd, respond: () => {} });
+
+    await harness.command.handler("mini", harness.ctx);
+    await waitFor(() =>
+      harness.sentMessages.some((entry) => entry.message.customType === "pi-workflows-agent-step"),
+    );
+    harness.emit("agent_start");
+    harness.setIdle(true);
+    await harness.emitAsync("agent_end", {
+      messages: [{ role: "assistant", stopReason: "stop" }],
+    });
+    await harness.emitAsync("agent_settled");
+    await waitFor(() =>
+      harness.sentMessages.some((entry) => entry.message.content.includes("Reminder:")),
+    );
+
+    const reminder = harness.sentMessages.find((entry) =>
+      entry.message.content.includes("Reminder:"),
+    );
+    expect(reminder?.message.content).toContain('"action": "submit"');
+    await harness.command.handler("cancel", harness.ctx);
+    await waitFor(() => harness.notifications.some((note) => note.includes("cancelled")));
   });
 
   it("registers scroll shortcuts that no-op without a widget", async () => {
@@ -3731,4 +3987,223 @@ export default defineController({
       vi.unstubAllEnvs();
     }
   }, 20_000);
+
+  it("reports the current leaf for a parent and the exact bundle for a child status query", async () => {
+    const cwd = await makeTempDir("pi-workflows-explicit-status-family");
+    const runsDir = await makeTempDir("pi-workflows-explicit-status-family-runs");
+    vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
+    const workflow = defineWorkflow({
+      name: "status-family",
+      startAt: "one",
+      nodes: {
+        one: compute({ run: () => "one" }),
+        two: compute({ run: () => "two" }),
+        three: compute({ run: () => "three" }),
+      },
+      edges: [
+        { from: "one", to: "two" },
+        { from: "two", to: "three" },
+      ],
+    });
+    const startedAt = "2026-08-23T00:00:00.000Z";
+    const step = (
+      nodeId: "one" | "two" | "three",
+      attemptId: string,
+      finishedAt: string,
+    ): WorkflowRunState["steps"][number] => ({
+      attemptId,
+      nodeId,
+      nodeType: "compute",
+      outcome: "ok",
+      startedAt,
+      finishedAt,
+      prompt: null,
+      output: nodeId,
+    });
+    const parentState: WorkflowRunState = {
+      schema: "pi-workflows.run-state.v1",
+      traceSeq: 0,
+      runId: "status-parent",
+      workflowName: workflow.name,
+      startedAt,
+      updatedAt: "2026-08-23T00:01:00.000Z",
+      status: "waiting",
+      input: { task: "persist status" },
+      outputs: { one: "one" },
+      results: {},
+      steps: [step("one", "attempt-one", "2026-08-23T00:01:00.000Z")],
+      waitingOn: "one",
+    };
+    const childState: WorkflowRunState = {
+      ...parentState,
+      runId: "status-child",
+      parentRunId: parentState.runId,
+      carriedStepCount: 1,
+      startedAt: "2026-08-23T00:02:00.000Z",
+      updatedAt: "2026-08-23T00:03:00.000Z",
+      finishedAt: "2026-08-23T00:03:00.000Z",
+      status: "completed",
+      outputs: { one: "one", two: "two" },
+      steps: [...parentState.steps, step("two", "attempt-two", "2026-08-23T00:03:00.000Z")],
+      finalOutput: "two",
+    };
+    delete childState.waitingOn;
+    const grandchildState: WorkflowRunState = {
+      ...childState,
+      runId: "status-grandchild",
+      parentRunId: childState.runId,
+      carriedStepCount: 2,
+      startedAt: "2026-08-23T00:04:00.000Z",
+      updatedAt: "2026-08-23T00:05:00.000Z",
+      finishedAt: "2026-08-23T00:05:00.000Z",
+      outputs: { one: "one", two: "two", three: "three" },
+      steps: [...childState.steps, step("three", "attempt-three", "2026-08-23T00:05:00.000Z")],
+      finalOutput: "three",
+    };
+
+    try {
+      const store = new WorkflowRunStore(runsDir);
+      const parentDir = await store.initializeRunBundle(workflow, parentState);
+      const childDir = await store.initializeRunBundle(workflow, childState);
+      await store.publishUpdate(
+        await store.initializeRunBundle(workflow, grandchildState),
+        grandchildState,
+        "three",
+        "attempt-three",
+        {
+          type: "progress",
+          key: "release",
+          data: { summary: "persisted update", percent: 100 },
+        },
+      );
+      const parentBefore = await fs.readFile(path.join(parentDir, "state.json"), "utf8");
+      const childBefore = await fs.readFile(path.join(childDir, "state.json"), "utf8");
+      const grandchildDir = store.runDirFor(grandchildState.runId);
+      const grandchildBefore = await fs.readFile(path.join(grandchildDir, "state.json"), "utf8");
+      const readFile = vi.spyOn(fs, "readFile");
+      const observer = makeHarness({ cwd, sessionId: "status-observer", respond: () => {} });
+
+      const parentStatus = await observer.tool.execute("status-parent", {
+        action: "status",
+        runId: parentState.runId,
+      });
+      expect(parentStatus.details).toMatchObject({
+        runId: grandchildState.runId,
+        parentRunId: parentState.runId,
+        continuationRunId: grandchildState.runId,
+        steps: 3,
+      });
+
+      const childStatus = await observer.tool.execute("status-child", {
+        action: "status",
+        runId: childState.runId,
+      });
+      expect(childStatus.details).toMatchObject({
+        runId: childState.runId,
+        parentRunId: parentState.runId,
+        continuationRunId: childState.runId,
+        workflowName: workflow.name,
+        status: "completed",
+        steps: 2,
+        updates: [],
+      });
+
+      const grandchildStatus = await observer.tool.execute("status-grandchild", {
+        action: "status",
+        runId: grandchildState.runId,
+      });
+      expect(grandchildStatus.details).toMatchObject({
+        runId: grandchildState.runId,
+        parentRunId: childState.runId,
+        continuationRunId: grandchildState.runId,
+        workflowName: workflow.name,
+        status: "completed",
+        steps: 3,
+        updates: [
+          expect.objectContaining({
+            type: "progress",
+            key: "release",
+            data: { summary: "persisted update", percent: 100 },
+          }),
+        ],
+      });
+
+      expect(await fs.readFile(path.join(parentDir, "state.json"), "utf8")).toBe(parentBefore);
+      expect(await fs.readFile(path.join(childDir, "state.json"), "utf8")).toBe(childBefore);
+      expect(await fs.readFile(path.join(grandchildDir, "state.json"), "utf8")).toBe(
+        grandchildBefore,
+      );
+      const filesRead = readFile.mock.calls.map(([file]) => String(file));
+      const replayFiles = new Set([
+        "trace.ndjson",
+        "entries.ndjson",
+        "events.ndjson",
+        "capture.json",
+      ]);
+      expect(filesRead.some((file) => replayFiles.has(path.basename(file)))).toBe(false);
+      readFile.mockRestore();
+      await observer.emitAsync("session_shutdown");
+    } finally {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("lists, reports, and rejects duplicates for queue-only runs", async () => {
+    const cwd = await makeTempDir("pi-workflows-queue-only-discovery");
+    const runsDir = await makeTempDir("pi-workflows-queue-only-discovery-runs");
+    vi.stubEnv("PI_WORKFLOWS_RUNS_DIR", runsDir);
+    try {
+      await writeEchoWorkflow(cwd);
+      const queue = new SqliteControllerStore(projectControllerStorePath(cwd));
+      queue.reserveWorkflowRun({
+        runId: "queued-only",
+        workflowName: "mini",
+        workflowSourceRef: path.join(cwd, ".pi", "workflows", "mini.workflow.ts"),
+        workflowSource: { kind: "file", path: "mini.workflow.ts", hash: "queued" },
+        definitionDigest: "sha256:queued",
+        input: { task: "observe queued run" },
+        launchOptions: { presentation: false },
+        runnerId: "queue-owner",
+        originSessionId: "queue-owner-session",
+      });
+      queue.close();
+
+      const observer = makeHarness({
+        cwd,
+        sessionId: "queue-observer",
+        respond: () => {},
+      });
+      const status = await observer.tool.execute("status-queued-only", {
+        action: "status",
+        runId: "queued-only",
+      });
+      expect(status.details).toMatchObject({
+        runId: "queued-only",
+        workflowName: "mini",
+        status: "queued",
+        effectiveStatus: "queued",
+      });
+
+      const runs = await observer.tool.execute("list-queued-only", {
+        action: "list",
+        kind: "runs",
+      });
+      expect(runs.details.runs).toEqual([
+        expect.objectContaining({ runId: "queued-only", status: "queued" }),
+      ]);
+      await expect(
+        observer.tool.execute("start-queued-duplicate", {
+          action: "start",
+          workflow: "mini",
+          input: { task: "OBSERVE queued RUN" },
+        }),
+      ).rejects.toThrow(
+        "Workflow mini is already queued (run queued-only). Call status or resume that run instead of starting another.",
+      );
+      await observer.emitAsync("session_shutdown");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });

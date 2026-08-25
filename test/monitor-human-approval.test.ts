@@ -172,9 +172,7 @@ function completedRepairExecutor(rounds = 1): ScriptedExecutor {
       output: {
         targets: [
           {
-            repository,
-            headRevision: "revision",
-            pr: "https://example.test/pr/1",
+            id: repositoryId(repository),
             route: "green",
             reason: "green",
             relatedFailures: [],

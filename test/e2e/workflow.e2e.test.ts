@@ -932,7 +932,14 @@ describe.sequential("pi-workflows end to end", () => {
       () => `${pi.stderr()}\n${pi.stdoutLines.slice(-20).join("\n")}`,
     );
     await waitForCondition(
-      () => mock.requests.length >= requestsBeforeLaunch + 3,
+      () =>
+        mock.requests
+          .slice(requestsBeforeLaunch)
+          .some((request) =>
+            request.messages.some((message) =>
+              contentText(message.content).includes("failed to start"),
+            ),
+          ),
       () => `${pi.stderr()}\n${pi.stdoutLines.slice(-20).join("\n")}`,
     );
 
@@ -1181,6 +1188,16 @@ describe.sequential("pi-workflows end to end", () => {
     expect(state.outputs.propose).toEqual({ proposal: "Ship the boring, proven design." });
     expect(state.outputs.confirm).toMatchObject({ route: "y" });
     expect(state.finalOutput).toEqual({ marker: "implemented" });
+
+    await waitForCondition(
+      async () => {
+        const manifest = JSON.parse(
+          await fs.readFile(path.join(runDir, "manifest.json"), "utf8"),
+        ) as { status: string };
+        return manifest.status === "completed";
+      },
+      () => `pi stderr:\n${pi.stderr()}\npi stdout tail:\n${pi.stdoutLines.slice(-15).join("\n")}`,
+    );
 
     const manifest = JSON.parse(await fs.readFile(path.join(runDir, "manifest.json"), "utf8")) as {
       status: string;
@@ -1576,7 +1593,7 @@ describe.sequential("pi-workflows end to end", () => {
 
     expect(state.status, state.error).toBe("completed");
     expect(state.workflowName).toBe("monitor");
-    expect(state.workflowSource).toEqual({ kind: "builtin", id: "monitor", revision: "9" });
+    expect(state.workflowSource).toEqual({ kind: "builtin", id: "monitor", revision: "11" });
     expect(state.workflowPath).toBeUndefined();
     expect(state.workflowHash).toBeUndefined();
     expect(state.finalOutput).toMatchObject({
@@ -1897,7 +1914,7 @@ export default function captureFailureExtension(pi: unknown) {
       traceSeq: 0,
       runId,
       workflowName: "sanity-check",
-      workflowSource: { kind: "builtin" as const, id: "sanity-check", revision: "2" },
+      workflowSource: { kind: "builtin" as const, id: "sanity-check", revision: "3" },
       startedAt: now,
       updatedAt: now,
       status: "running" as const,
@@ -1969,7 +1986,7 @@ export default function captureFailureExtension(pi: unknown) {
     expect(finished.workflowSource).toEqual({
       kind: "builtin",
       id: "sanity-check",
-      revision: "2",
+      revision: "3",
     });
     expect(finished.outputs.verify).toMatchObject({ verdict: "keep" });
     expect(mock.requests.length).toBe(requestsBefore + 2);
@@ -1992,7 +2009,7 @@ export default function captureFailureExtension(pi: unknown) {
       () => `${pi.stderr()}\n${pi.stdoutLines.slice(-20).join("\n")}`,
     );
     expect(state.status, state.error).toBe("completed");
-    expect(state.workflowSource).toEqual({ kind: "builtin", id: "sanity-check", revision: "2" });
+    expect(state.workflowSource).toEqual({ kind: "builtin", id: "sanity-check", revision: "3" });
     expect(state.outputs.verify).toMatchObject({ verdict: "keep" });
     expect(state.outputs.review).toHaveLength(1);
     const progress = (state.updates ?? []).filter((update) => update.type === "progress");

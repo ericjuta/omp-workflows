@@ -1,3 +1,4 @@
+import path from "node:path";
 import {
   compute,
   defineWorkflow,
@@ -130,7 +131,7 @@ function parseInput(value: unknown): NormalizedPlanChangeInput {
       : {}),
     ...(constraints !== undefined ? { constraints } : {}),
     ...(input.repository !== undefined
-      ? { repository: requireString(input.repository, "plan change repository") }
+      ? { repository: path.resolve(requireString(input.repository, "plan change repository")) }
       : {}),
     ...(documents !== undefined ? { documents } : {}),
     ...(documentation !== undefined ? { documentation } : {}),

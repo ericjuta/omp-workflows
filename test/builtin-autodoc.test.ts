@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import autodocWorkflow from "../src/builtins/autodoc.workflow.js";
 import { WorkflowEngine } from "../src/workflows/engine.js";
@@ -18,6 +19,9 @@ describe("built-in autodoc", () => {
     expect(() => parse(null)).toThrow(/object/);
     expect(() => parse({ task: "" })).toThrow(/non-empty/);
     expect(() => parse({ task: "demo", documents: "bad" })).toThrow(/array/);
+    expect(parse({ task: "demo", repository: "relative" })).toMatchObject({
+      repository: path.resolve("relative"),
+    });
     expect(() =>
       parse({
         task: "demo",
@@ -32,6 +36,9 @@ describe("built-in autodoc", () => {
         documentation: { status: "current", planDigest: digest({}), documents: "bad" },
       }),
     ).toThrow(/array/);
+    expect(parse({ task: "demo", repository: "/tmp/repository/../resolved" })).toMatchObject({
+      repository: path.resolve("/tmp/repository/../resolved"),
+    });
 
     const validate = async (nodeId: string, value: unknown) => {
       const node = autodocWorkflow.nodes[nodeId];

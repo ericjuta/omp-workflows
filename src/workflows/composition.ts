@@ -457,6 +457,7 @@ function wrapNode(
         nodeType: "agent",
         prompt: (context) => (node as AgentNodeDefinition).prompt(project(context)),
         ...(node.expectedOutput !== undefined ? { expectedOutput: node.expectedOutput } : {}),
+        ...(node.toolPolicy !== undefined ? { toolPolicy: node.toolPolicy } : {}),
         ...(node.validate !== undefined
           ? {
               validate: (output: unknown, context: WorkflowNodeContext) =>

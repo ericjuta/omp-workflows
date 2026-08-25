@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { repositoryId } from "../src/builtins/autoimplement-command-batches.js";
 import { builtinWorkflowCatalog } from "../src/builtins/catalog.js";
@@ -11,8 +13,11 @@ import { WorkflowRunStore } from "../src/workflows/store.js";
 import type { HumanDecisionRequest, HumanDecisionResponse } from "../src/workflows/types.js";
 import { makeTempDir, ScriptedExecutor } from "./helpers.js";
 
+const execFileAsync = promisify(execFile);
 let originalPath = "";
 let repository = "";
+let baseRevision = "";
+let headRevision = "";
 
 function repairCheck() {
   return {
@@ -119,8 +124,8 @@ function completedRepairExecutor(rounds = 1): ScriptedExecutor {
         commands: [
           {
             id: "verify",
-            command: process.execPath,
-            args: ["-e", "process.stdout.write('passed')"],
+            command: "npm",
+            args: ["test"],
             cwd: repository,
             timeoutMs: 60_000,
             maxOutputChars: 100_000,
@@ -142,8 +147,9 @@ function completedRepairExecutor(rounds = 1): ScriptedExecutor {
             repository,
             branch: "feat/fix",
             baseBranch: "main",
-            headRevision: "revision",
-            pr: "https://example.test/pr/1",
+            baseRevision,
+            headRevision,
+            pr: "https://github.com/example/repository/pull/1",
             pushed: true,
           },
         ],
@@ -185,7 +191,7 @@ function completedRepairExecutor(rounds = 1): ScriptedExecutor {
       output: {
         status: "completed",
         merged: true,
-        pr: "https://example.test/pr/1",
+        pr: "https://github.com/example/repository/pull/1",
         reportComment: "reported",
         reason: "merged",
       },
@@ -237,8 +243,30 @@ async function answer(
 beforeEach(async () => {
   originalPath = process.env.PATH ?? "";
   repository = await makeTempDir("monitor-approval-repository");
+  await execFileAsync("git", ["init", "-q", "-b", "main"], { cwd: repository });
+  await execFileAsync("git", ["config", "user.name", "Test User"], { cwd: repository });
+  await execFileAsync("git", ["config", "user.email", "test@example.com"], {
+    cwd: repository,
+  });
+  const trackedFile = path.join(repository, "tracked.txt");
+  await fs.writeFile(trackedFile, "base\n");
+  await execFileAsync("git", ["add", "tracked.txt"], { cwd: repository });
+  await execFileAsync("git", ["commit", "-q", "-m", "base"], { cwd: repository });
+  baseRevision = (
+    await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repository })
+  ).stdout.trim();
+  await execFileAsync("git", ["checkout", "-q", "-b", "feat/fix"], { cwd: repository });
+  await fs.writeFile(trackedFile, "published\n");
+  await execFileAsync("git", ["add", "tracked.txt"], { cwd: repository });
+  await execFileAsync("git", ["commit", "-q", "-m", "published"], { cwd: repository });
+  headRevision = (
+    await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repository })
+  ).stdout.trim();
   const commands = await fs.mkdtemp(path.join(os.tmpdir(), "monitor-approval-commands-"));
   await fs.writeFile(path.join(commands, "omp-reviewer"), "#!/bin/sh\necho clean\n", {
+    mode: 0o755,
+  });
+  await fs.writeFile(path.join(commands, "omp"), "#!/bin/sh\nexit 0\n", {
     mode: 0o755,
   });
   process.env.PATH = `${commands}:${originalPath}`;

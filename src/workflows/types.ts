@@ -140,6 +140,8 @@ export type ShellActionExecution = {
   args?: string[];
   cwd?: string;
   env?: Record<string, string | undefined>;
+  /** Set false to start from process-execution basics instead of the full host environment. */
+  inheritEnv?: boolean;
   stdin?: string;
   shell?: boolean | string;
   allowNonZeroExit?: boolean;

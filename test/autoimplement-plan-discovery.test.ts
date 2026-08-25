@@ -29,10 +29,14 @@ function blockedImplementation(executor: ScriptedExecutor): ScriptedExecutor {
 }
 
 async function run(executor: ScriptedExecutor, input: unknown) {
+  const repository = await makeTempDir("autoimplement-plan-discovery-repository");
   return await new WorkflowEngine({
     executor,
     outputRoot: await makeTempDir("autoimplement-plan-discovery"),
-  }).run(autoimplementWorkflow, input);
+  }).run(autoimplementWorkflow, {
+    repository,
+    ...(input as Record<string, unknown>),
+  });
 }
 
 describe("autoimplement existing-plan startup", () => {

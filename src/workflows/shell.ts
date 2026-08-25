@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 import { CancelledError, TimeoutError } from "./errors.js";
+import { redactSensitiveArgs, redactSensitiveText } from "./text.js";
 import type { ShellActionExecution, ShellActionResult, ShellUpdateLine } from "./types.js";
 
 /** Default cap on captured stdout/stderr, each. */
@@ -34,6 +36,45 @@ export function mergeChildEnv(
   return env;
 }
 
+const MINIMAL_CHILD_ENV_KEYS = [
+  "CI",
+  "COMSPEC",
+  "ComSpec",
+  "HOME",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "LOGNAME",
+  "PATH",
+  "PATHEXT",
+  "Path",
+  "SHELL",
+  "SYSTEMROOT",
+  "SystemRoot",
+  "TEMP",
+  "TERM",
+  "TMP",
+  "TMPDIR",
+  "USER",
+  "USERPROFILE",
+  "WINDIR",
+  "XDG_CACHE_HOME",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_RUNTIME_DIR",
+] as const;
+
+export function minimalChildEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of MINIMAL_CHILD_ENV_KEYS) {
+    const value = base[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
+}
+
 export function renderShellCommand(command: string, args: string[]): string {
   const renderedArgs = args.map((arg) => JSON.stringify(arg)).join(" ");
   return renderedArgs.length > 0 ? `${command} ${renderedArgs}` : command;
@@ -63,9 +104,10 @@ function shellFailure(
   }
   if (((result.exitCode ?? 0) !== 0 || result.signal != null) && spec.allowNonZeroExit !== true) {
     const status = result.signal ? `signal ${result.signal}` : `exit ${String(result.exitCode)}`;
-    const details = result.stderr.length > 0 ? `\n${result.stderr.trim()}` : "";
+    const details =
+      result.stderr.length > 0 ? `\n${redactSensitiveText(result.stderr.trim())}` : "";
     return new Error(
-      `Shell action failed (${renderShellCommand(spec.command, args)}): ${status}${details}`,
+      `Shell action failed (${renderShellCommand(redactSensitiveText(spec.command), redactSensitiveArgs(args))}): ${status}${details}`,
     );
   }
   return undefined;
@@ -89,7 +131,10 @@ export async function runShellAction(
   const useProcessGroup = process.platform !== "win32";
   const child = spawn(spec.command, args, {
     cwd,
-    env: mergeChildEnv(process.env, spec.env),
+    env: mergeChildEnv(
+      spec.inheritEnv === false ? minimalChildEnv(process.env) : process.env,
+      spec.env,
+    ),
     shell: spec.shell,
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
@@ -123,6 +168,19 @@ export async function runShellAction(
         return;
       } catch {
         // Group already gone; fall back to the direct child.
+      }
+    } else if (process.platform === "win32" && child.pid !== undefined) {
+      try {
+        const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
+        const taskkill = path.join(systemRoot, "System32", "taskkill.exe");
+        const killer = spawn(taskkill, ["/PID", String(child.pid), "/T", "/F"], {
+          windowsHide: true,
+          stdio: "ignore",
+        });
+        killer.once("error", () => child.kill(killSignal));
+        return;
+      } catch {
+        // Fall back to child.kill.
       }
     }
     child.kill(killSignal);

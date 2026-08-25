@@ -1,23 +1,41 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
+  attestReviewerExecutable,
+  attestReviewerRuntime,
   parseAutoimplementConcurrency,
   parseCiCommand,
   parseCiInspectionBatch,
   parsePublishedRepositories,
   parseVerificationCommandPlan,
+  requireSafeGitRef,
   repositoryId,
   reviewerCommand,
   reviewerExecutableExists,
   reviewerHostEnv,
   reviewerLookupPath,
+  reviewerRuntimeFailureReason,
+  resolveReviewerExecutable,
+  validateVerificationCommandSafety,
+  verifyReviewerExecutable,
 } from "../src/builtins/autoimplement-command-batches.js";
 import { makeTempDir } from "./helpers.js";
+const execFileAsync = promisify(execFile);
+const BASE_REVISION = "1".repeat(40);
+const HEAD_REVISION = "2".repeat(40);
 
 describe("autoimplement command batch contracts", () => {
   it("normalizes bounded concurrency", () => {
     expect(parseAutoimplementConcurrency(undefined)).toEqual({
+      reviewer: 4,
+      ciWatch: 4,
+      verification: 2,
+    });
+    expect(parseAutoimplementConcurrency({})).toEqual({
       reviewer: 4,
       ciWatch: 4,
       verification: 2,
@@ -29,18 +47,240 @@ describe("autoimplement command batch contracts", () => {
     });
     expect(() => parseAutoimplementConcurrency({ reviewer: 9 })).toThrow(/1 through 8/);
     expect(() => parseAutoimplementConcurrency({ unknown: 1 })).toThrow(/not supported/);
+    expect(() => parseAutoimplementConcurrency(null)).toThrow(/must be an object/);
+    expect(() => parseAutoimplementConcurrency([])).toThrow(/must be an object/);
+    expect(() => parseAutoimplementConcurrency("invalid")).toThrow(/must be an object/);
+  });
+  it("rejects Node inline print and combined eval forms while allowing version checks", () => {
+    for (const args of [
+      ["-p", "process.version"],
+      ["--print", "process.version"],
+      ["--print=process.version"],
+      ["--eval=process.version"],
+      ["-pe", "process.version"],
+      ["-ep", "process.version"],
+      ["-p=process.version"],
+      ["-e=process.version"],
+      ["-pe=process.version"],
+      ["-ep=process.version"],
+      ["-pprocess.version"],
+      ["-eprocess.exit(1)"],
+      ["-peprocess.version"],
+      ["-epprocess.version"],
+    ]) {
+      expect(() => validateVerificationCommandSafety("node", args, "verification")).toThrow(
+        /inline interpreter/,
+      );
+    }
+    expect(() =>
+      validateVerificationCommandSafety("node", ["--version"], "verification"),
+    ).not.toThrow();
+  });
+  it("rejects interpreter files, nested launchers, and path-bearing executables", async () => {
+    const fixture = await makeTempDir("verification-launcher-bypass");
+    const marker = path.join(fixture, "launcher-ran");
+    const markerScript = `#!/bin/sh\ntouch ${JSON.stringify(marker)}\n`;
+    const unknownLauncher = path.join(fixture, "unknown-launcher");
+    const localNpm = path.join(fixture, "npm");
+    const localNpmExe = path.join(fixture, "npm.exe");
+    await Promise.all(
+      [unknownLauncher, localNpm, localNpmExe].map((file) =>
+        fs.writeFile(file, markerScript, { mode: 0o755 }),
+      ),
+    );
+
+    for (const candidate of [
+      { command: process.execPath, args: [path.join(fixture, "payload.js")] },
+      { command: "python3", args: [path.join(fixture, "payload.py")] },
+      { command: "python", args: ["-m", "payload"] },
+      { command: "corepack", args: ["npm", "publish"] },
+      { command: "corepack", args: ["npm", "run", "check"] },
+      { command: unknownLauncher, args: [] },
+      { command: localNpm, args: ["test"] },
+      { command: localNpmExe, args: ["run", "check"] },
+      { command: path.join(fixture, "payload.js"), args: [] },
+    ]) {
+      expect(() =>
+        validateVerificationCommandSafety(candidate.command, candidate.args, "verification"),
+      ).toThrow(/not allowed|interpreter scripts or modules/);
+    }
+    await expect(fs.stat(marker)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("accepts package-manager and explicit direct verification grammars", () => {
+    for (const candidate of [
+      { command: "npm", args: ["test"] },
+      { command: "npm", args: ["run", "check"] },
+      { command: "cargo", args: ["test"] },
+      { command: "cargo", args: ["check"] },
+      { command: "go", args: ["test", "./..."] },
+      { command: "pytest", args: ["-q"] },
+      { command: "pytest", args: ["tests/test_sample.py::test_behavior", "-q"] },
+      { command: "cargo", args: ["test", "module::test_behavior"] },
+      { command: "go", args: ["test", "./pkg/..."] },
+      { command: "vitest", args: ["run"] },
+      { command: "tsc", args: ["--noEmit"] },
+      { command: "eslint", args: ["."] },
+      { command: "prettier", args: ["--check", "."] },
+      { command: "ruff", args: ["check", "."] },
+      { command: "ruff", args: ["format", "--check", "."] },
+      { command: "make", args: ["test"] },
+      { command: "make", args: ["format-check"] },
+      { command: "just", args: ["check"] },
+      { command: "just", args: ["format:check"] },
+      { command: "mvn", args: ["-q", "verify"] },
+      { command: "gradle", args: ["test", "--no-daemon"] },
+      { command: "gradle", args: [":app:test", "checkstyleMain"] },
+      { command: "dotnet", args: ["test", "--no-restore"] },
+      { command: "dotnet", args: ["format", "--verify-no-changes"] },
+      { command: "mix", args: ["test"] },
+      { command: "mix", args: ["format", "--check-formatted"] },
+      { command: "swift", args: ["test"] },
+      { command: "ctest", args: ["--output-on-failure"] },
+    ]) {
+      expect(() =>
+        validateVerificationCommandSafety(candidate.command, candidate.args, "verification"),
+      ).not.toThrow();
+    }
+    expect(() =>
+      validateVerificationCommandSafety("ruff", ["format", "."], "verification"),
+    ).toThrow(/mutation or publication/);
+    for (const command of ["make", "just", "gradle"]) {
+      for (const target of ["format", "fmt", "fix", "write", "update-snapshots", "generate"]) {
+        expect(() => validateVerificationCommandSafety(command, [target], "verification")).toThrow(
+          /target is not verification-only/,
+        );
+      }
+    }
+    for (const candidate of [
+      { command: "cargo", args: ["publish"] },
+      { command: "go", args: ["run", "."] },
+      { command: "vitest", args: ["dev"] },
+      { command: "playwright", args: ["install"] },
+      { command: "cypress", args: ["open"] },
+      { command: "tsc", args: [] },
+      { command: "prettier", args: ["."] },
+      { command: "biome", args: ["migrate"] },
+      { command: "eslint", args: ["--fix=true", "."] },
+      { command: "pytest", args: ["--pyargs", "payload"] },
+      { command: "pytest", args: ["../outside_test.py"] },
+      { command: "cargo", args: ["test", "../outside"] },
+      { command: "go", args: ["test", "C:\\outside"] },
+      { command: "make", args: ["format"] },
+      { command: "just", args: ["fix"] },
+      { command: "gradle", args: ["update-snapshots"] },
+      { command: "mvn", args: ["deploy"] },
+      { command: "dotnet", args: ["format"] },
+      { command: "mix", args: ["format"] },
+      { command: "vitest", args: ["run", "payload.test.ts"] },
+      { command: "playwright", args: ["test", "payload.spec.ts"] },
+    ]) {
+      expect(() =>
+        validateVerificationCommandSafety(candidate.command, candidate.args, "verification"),
+      ).toThrow(
+        /not allowed|not verification-only|requires --noEmit|mutation or publication|arbitrary files or modules/,
+      );
+    }
+  });
+
+  it("accepts only tracked in-repository build wrappers", async () => {
+    const repository = await makeTempDir("verification-repository-wrapper");
+    await execFileAsync("git", ["init", "-q"], { cwd: repository });
+    await fs.writeFile(path.join(repository, "gradlew"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    await execFileAsync("git", ["add", "--", "gradlew"], { cwd: repository });
+    const command = {
+      id: "gradle-test",
+      command: "./gradlew",
+      args: ["test", "--no-daemon"],
+      cwd: repository,
+      timeoutMs: 60_000,
+      maxOutputChars: 100_000,
+    };
+
+    expect(parseVerificationCommandPlan({ commands: [command] }, repository)).toMatchObject({
+      commands: [{ id: "gradle-test", command: "./gradlew" }],
+    });
+    expect(() => parseVerificationCommandPlan({ commands: [command] })).toThrow(
+      /repository wrapper is not trusted/,
+    );
+
+    await fs.writeFile(path.join(repository, "mvnw"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    expect(() =>
+      parseVerificationCommandPlan(
+        { commands: [{ ...command, id: "maven-test", command: "./mvnw", args: ["test"] }] },
+        repository,
+      ),
+    ).toThrow(/repository wrapper is not trusted/);
+    await execFileAsync("git", ["add", "--", "mvnw"], { cwd: repository });
+    expect(
+      parseVerificationCommandPlan(
+        { commands: [{ ...command, id: "maven-test", command: "./mvnw", args: ["test"] }] },
+        repository,
+      ),
+    ).toMatchObject({ commands: [{ id: "maven-test", command: "./mvnw" }] });
+
+    await fs.writeFile(path.join(repository, "gradlew.bat"), "@exit /b 0\r\n");
+    await fs.writeFile(path.join(repository, "mvnw.cmd"), "@exit /b 0\r\n");
+    await execFileAsync("git", ["add", "--", "gradlew.bat", "mvnw.cmd"], { cwd: repository });
+    for (const wrapper of [
+      ".\\gradlew",
+      ".\\mvnw",
+      "./gradlew.bat",
+      ".\\gradlew.bat",
+      "./mvnw.cmd",
+      ".\\mvnw.cmd",
+    ]) {
+      expect(() =>
+        parseVerificationCommandPlan(
+          { commands: [{ ...command, id: "windows-wrapper", command: wrapper, args: ["test"] }] },
+          repository,
+        ),
+      ).toThrow(/command is not allowed/);
+    }
+  });
+
+  it("rejects generic command wrappers that can hide unsafe executables", () => {
+    for (const command of [
+      "chroot",
+      "doas",
+      "env",
+      "flock",
+      "nice",
+      "nohup",
+      "script",
+      "setsid",
+      "stdbuf",
+      "strace",
+      "su",
+      "sudo",
+      "time",
+      "timeout",
+      "/usr/bin/timeout",
+      "timeout.exe",
+      "unshare",
+      "watch",
+    ]) {
+      expect(() =>
+        validateVerificationCommandSafety(command, ["node", "--version"], "verification"),
+      ).toThrow(/not allowed/);
+    }
   });
 
   it("derives stable repository ids and reviewer commands from publication", async () => {
     const repository = await makeTempDir("published-repository");
+    const reviewerExecutable = path.join(repository, "omp-reviewer");
+    await fs.writeFile(reviewerExecutable, "#!/bin/sh\n", { mode: 0o755 });
+    const reviewer = attestReviewerExecutable(reviewerExecutable);
+    if (reviewer === undefined) throw new Error("reviewer fixture was not executable");
     const parsed = parsePublishedRepositories({
       repositories: [
         {
           repository,
           branch: "feat/demo",
           baseBranch: "main",
-          headRevision: "abc123",
-          pr: "https://example.test/pr/1",
+          baseRevision: BASE_REVISION,
+          headRevision: HEAD_REVISION,
+          pr: "https://github.com/example/repository/pull/1",
           pushed: true,
         },
       ],
@@ -48,7 +288,9 @@ describe("autoimplement command batch contracts", () => {
     expect(parsed.repositories[0]).toMatchObject({
       id: repositoryId(repository),
       repository: path.resolve(repository),
-      headRevision: "abc123",
+      baseRevision: BASE_REVISION,
+      headRevision: HEAD_REVISION,
+      pr: "https://github.com/example/repository/pull/1",
     });
     expect(
       parsePublishedRepositories({
@@ -57,23 +299,44 @@ describe("autoimplement command batch contracts", () => {
             repository,
             branch: "feat/demo",
             baseBranch: "main",
-            headRevision: "abc123",
-            pr: "https://example.test/pr/1",
+            baseRevision: BASE_REVISION,
+            headRevision: HEAD_REVISION,
+            pr: "https://github.com/example/repository/pull/1",
             pushed: true,
             dependencyFingerprint: "sha256:dependency",
           },
         ],
       }).repositories[0],
     ).toMatchObject({ dependencyFingerprint: "sha256:dependency" });
-    expect(reviewerCommand(parsed.repositories[0]!)).toEqual({
+    expect(reviewerCommand(parsed.repositories[0]!, reviewer)).toEqual({
       id: repositoryId(repository),
-      command: "omp-reviewer",
-      args: ["--base", "main"],
+      command: reviewerExecutable,
+      args: [
+        "--base",
+        BASE_REVISION,
+        "--session-dir",
+        path.join(os.tmpdir(), "omp-workflows-reviewer", repositoryId(repository), HEAD_REVISION),
+      ],
       cwd: path.resolve(repository),
+      expectedCommit: HEAD_REVISION,
+      expectedRef: { name: "main", commit: BASE_REVISION },
       timeoutMs: 600_000,
       maxOutputChars: 1_000_000,
       ...reviewerHostEnv(),
     });
+    for (const unsafe of ["--all", "HEAD~1", "main..next", "refs/heads/.hidden", "main@{1}"]) {
+      expect(() => requireSafeGitRef(unsafe, "base branch")).toThrow(/Git ref|dash/);
+      expect(() =>
+        parsePublishedRepositories({
+          repositories: [{ ...parsed.repositories[0], baseBranch: unsafe, pushed: true }],
+        }),
+      ).toThrow(/Git ref|dash/);
+    }
+    expect(() =>
+      reviewerCommand({ ...parsed.repositories[0]!, baseRevision: "main" }, reviewer),
+    ).toThrow(/hex commit hash/);
+    expect(() => requireSafeGitRef("main\u0001next", "base branch")).toThrow(/Git ref/);
+    expect(requireSafeGitRef("origin/release-1.2", "base branch")).toBe("origin/release-1.2");
   });
 
   it("keeps reviewer lookup on PATH and drops Vertex vars from the child env", () => {
@@ -103,16 +366,63 @@ describe("autoimplement command batch contracts", () => {
     await fs.mkdir(localBin, { recursive: true });
     expect(reviewerExecutableExists({ HOME: home, PATH: "" })).toBe(false);
 
-    await fs.writeFile(path.join(localBin, "omp-reviewer"), "#!/bin/sh\n");
+    await fs.writeFile(path.join(localBin, "omp-reviewer"), "#!/bin/sh\n", { mode: 0o755 });
     expect(reviewerExecutableExists({ HOME: home, PATH: "" })).toBe(true);
 
     const pathBin = await makeTempDir("reviewer-path");
-    await fs.writeFile(path.join(pathBin, "omp-reviewer"), "#!/bin/sh\n");
+    await fs.writeFile(path.join(pathBin, "omp-reviewer"), "#!/bin/sh\n", { mode: 0o755 });
     expect(reviewerExecutableExists({ HOME: "", PATH: pathBin })).toBe(true);
+    const resolved = resolveReviewerExecutable({ HOME: "", PATH: pathBin });
+    expect(resolved).toBe(path.join(pathBin, "omp-reviewer"));
+    if (resolved === undefined) throw new Error("reviewer fixture did not resolve");
+    const attestation = attestReviewerExecutable(resolved);
+    if (attestation === undefined) throw new Error("reviewer fixture was not attested");
+    expect(verifyReviewerExecutable(attestation)).toBe(true);
+    await fs.writeFile(resolved, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    expect(verifyReviewerExecutable(attestation)).toBe(false);
 
     const windowsBin = await makeTempDir("reviewer-windows");
-    await fs.writeFile(path.join(windowsBin, "omp-reviewer.exe"), "binary");
+    await fs.writeFile(path.join(windowsBin, "omp-reviewer.exe"), "binary", { mode: 0o755 });
     expect(reviewerExecutableExists({ HOME: "", PATH: windowsBin })).toBe(true);
+  });
+  it("pins reviewer launch dependencies and detects post-attestation replacement", async () => {
+    const bin = await makeTempDir("reviewer-runtime");
+    const reviewer = path.join(bin, "omp-reviewer");
+    const git = path.join(bin, "git");
+    const omp = path.join(bin, "omp");
+    const launcher = path.join(bin, "reviewer-shell");
+    await fs.copyFile("/bin/sh", launcher);
+    await fs.chmod(launcher, 0o755);
+    await fs.writeFile(reviewer, `#!${launcher}\nprintf '%s\\n' complete\n`, { mode: 0o755 });
+    await fs.writeFile(git, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    await fs.writeFile(omp, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+    const runtime = attestReviewerRuntime({ HOME: "", PATH: bin });
+    expect(runtime.failure).toBeUndefined();
+    expect(runtime).toMatchObject({
+      reviewer: { executable: reviewer },
+      git: { executable: git },
+      omp: { executable: omp },
+      shebangLauncher: { executable: launcher },
+      interpreter: { executable: launcher },
+      reviewerEnvironment: {
+        env: { PATH: bin, OMP_REVIEWER_OMP: omp },
+        envUnset: ["GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_CLOUD_LOCATION"],
+      },
+    });
+    expect(reviewerRuntimeFailureReason(runtime)).toBeUndefined();
+
+    await fs.writeFile(omp, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    expect(reviewerRuntimeFailureReason(runtime)).toBe(
+      "The initially attested OMP executable changed.",
+    );
+
+    const launcherRuntime = attestReviewerRuntime({ HOME: "", PATH: bin });
+    expect(launcherRuntime.failure).toBeUndefined();
+    await fs.writeFile(launcher, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    expect(reviewerRuntimeFailureReason(launcherRuntime)).toBe(
+      "The initially attested omp-reviewer shebang launcher changed.",
+    );
   });
 
   it("rejects duplicate or incomplete publication records", async () => {
@@ -121,10 +431,24 @@ describe("autoimplement command batch contracts", () => {
       repository,
       branch: "feat/demo",
       baseBranch: "main",
-      headRevision: "abc123",
-      pr: "https://example.test/pr/1",
+      baseRevision: BASE_REVISION,
+      headRevision: HEAD_REVISION,
+      pr: "https://github.com/example/repository/pull/1",
       pushed: true,
     };
+    expect(
+      parsePublishedRepositories({ repositories: [{ ...record, pr: "123" }] }).repositories[0]?.pr,
+    ).toBe("123");
+    for (const unsafePr of [
+      "--help",
+      "--repo=other/repository",
+      "https://gitlab.com/example/repository/pull/1",
+      "https://github.com/example/repository/pull/1?repo=other",
+    ]) {
+      expect(() =>
+        parsePublishedRepositories({ repositories: [{ ...record, pr: unsafePr }] }),
+      ).toThrow(/canonical GitHub pull request URL or positive number/);
+    }
     expect(() => parsePublishedRepositories({ repositories: [record, record] })).toThrow(
       /duplicated/,
     );
@@ -148,15 +472,28 @@ describe("autoimplement command batch contracts", () => {
         repositories: [{ ...record, dependencyFingerprint: 1 }],
       }),
     ).toThrow(/non-empty string/);
+    for (const headRevision of ["HEAD", "refs/heads/feat/demo", "abc123"] as const) {
+      expect(() =>
+        parsePublishedRepositories({ repositories: [{ ...record, headRevision }] }),
+      ).toThrow(/hex commit hash/);
+    }
+    expect(() =>
+      parsePublishedRepositories({
+        repositories: [{ ...record, headRevision: BASE_REVISION }],
+      }),
+    ).toThrow(/self-base/);
+    expect(() =>
+      parsePublishedRepositories({ repositories: [{ ...record, baseRevision: "main" }] }),
+    ).toThrow(/hex commit hash/);
   });
 
-  it("accepts independent verification and rejects duplicate cwd or mutation commands", async () => {
+  it("accepts independent verification and rejects mutation commands", async () => {
     const first = await makeTempDir("verification-one");
     const second = await makeTempDir("verification-two");
     const command = (id: string, cwd: string) => ({
       id,
-      command: process.execPath,
-      args: ["-e", "process.stdout.write('ok')"],
+      command: "node",
+      args: ["--version"],
       cwd,
       timeoutMs: 60_000,
       maxOutputChars: 100_000,
@@ -167,10 +504,41 @@ describe("autoimplement command batch contracts", () => {
         untested: [],
       }),
     ).toMatchObject({ commands: [{ id: "one" }, { id: "two" }] });
+    expect(
+      parseVerificationCommandPlan({
+        commands: [{ ...command("default-output", first), maxOutputChars: undefined }],
+      }),
+    ).toMatchObject({ commands: [{ id: "default-output", maxOutputChars: 1_000_000 }] });
+    expect(
+      parseVerificationCommandPlan({
+        commands: [
+          { ...command("npm-test", first), command: "npm.exe", args: ["test"] },
+          {
+            ...command("npm-check", first),
+            command: "npm.cmd",
+            args: ["run", "--silent", "check"],
+          },
+        ],
+      }),
+    ).toMatchObject({ commands: [{ id: "npm-test" }, { id: "npm-check" }] });
     expect(() => parseVerificationCommandPlan({ commands: [] })).toThrow(/non-empty/);
     expect(() =>
-      parseVerificationCommandPlan({ commands: [command("one", first), command("two", first)] }),
-    ).toThrow(/distinct working directories/);
+      parseVerificationCommandPlan({
+        commands: [command("invalid-untested", first)],
+        untested: "bad",
+      }),
+    ).toThrow(/array of strings/);
+    expect(() =>
+      parseVerificationCommandPlan({
+        commands: [command("invalid-untested-item", first)],
+        untested: [1],
+      }),
+    ).toThrow(/array of strings/);
+    expect(
+      parseVerificationCommandPlan({
+        commands: [command("one", first), command("two", first)],
+      }),
+    ).toMatchObject({ commands: [{ id: "one" }, { id: "two" }] });
     expect(() =>
       parseVerificationCommandPlan({
         commands: [{ ...command("bad", first), command: "git", args: ["push"] }],
@@ -178,10 +546,166 @@ describe("autoimplement command batch contracts", () => {
     ).toThrow(/not allowed/);
     expect(() =>
       parseVerificationCommandPlan({
+        commands: [{ ...command("bad", first), command: "rm", args: ["-rf", ".cache"] }],
+      }),
+    ).toThrow(/not allowed/);
+    expect(() =>
+      parseVerificationCommandPlan({
+        commands: [{ ...command("bad", first), args: ["-e", "ok\0erase"] }],
+      }),
+    ).toThrow(/NUL/);
+    for (const args of [
+      ["test", "--token", "split-secret"],
+      ["run", "check", "--password=assigned-secret"],
+      ["run", "check", "OPENAI_API_KEY=namespaced-secret"],
+      ["test", "https://user:uri-secret@example.test/path"],
+      ["test", "Authorization: Bearer header-secret"],
+      ["test", "--header", "Cookie: session=cookie-secret"],
+      ["test", "https://example.test/check?access_token=query-secret"],
+    ]) {
+      expect(() =>
+        parseVerificationCommandPlan({
+          commands: [{ ...command("credential", first), command: "npm", args }],
+        }),
+      ).toThrow(/arguments cannot contain credentials/);
+    }
+    expect(() =>
+      parseVerificationCommandPlan({
         commands: [{ ...command("bad", first), command: "npm", args: ["publish"] }],
       }),
     ).toThrow(/mutation or publication/);
-    for (const wrapper of ["dash", "cmd.exe", "C:\\Windows\\System32\\PowerShell.exe"]) {
+    expect(
+      parseVerificationCommandPlan({
+        commands: [
+          { ...command("release-check", first), command: "npm", args: ["run", "release:check"] },
+        ],
+      }),
+    ).toMatchObject({ commands: [{ id: "release-check" }] });
+    expect(
+      parseVerificationCommandPlan({
+        commands: [
+          { ...command("format-check", first), command: "npm", args: ["run", "format:check"] },
+        ],
+      }),
+    ).toMatchObject({ commands: [{ id: "format-check" }] });
+    expect(
+      parseVerificationCommandPlan({
+        commands: [{ ...command("merge-test", first), command: "npm", args: ["test", "merge"] }],
+      }),
+    ).toMatchObject({ commands: [{ id: "merge-test" }] });
+    for (const args of [
+      ["test", "--help"],
+      ["--version", "run", "check"],
+      ["run", "check", "--version"],
+      ["run", "--help", "check"],
+      ["run", "--version", "check"],
+    ]) {
+      expect(() =>
+        parseVerificationCommandPlan({
+          commands: [{ ...command("help-short-circuit", first), command: "npm", args }],
+        }),
+      ).toThrow(/informational options cannot be combined with verification actions/);
+    }
+    for (const args of [
+      ["run", "--if-present", "check"],
+      ["run", "check", "--if-present"],
+      ["--if-present", "run", "check"],
+      ["run-script", "--if-present", "check"],
+    ]) {
+      expect(() =>
+        parseVerificationCommandPlan({
+          commands: [{ ...command("if-present-bypass", first), command: "npm", args }],
+        }),
+      ).toThrow(/missing package-manager script as successful/);
+    }
+    for (const wrapped of [
+      { command: "env", args: ["git", "push"] },
+      { command: "npx", args: ["git", "push"] },
+      { command: "npm", args: ["exec", "--", "git", "push"] },
+      { command: "npm", args: ["--prefix", first, "publish"] },
+      { command: "npm.cmd", args: ["--prefix", first, "install"] },
+      { command: "npm", args: ["plugin", "add", "unsafe"] },
+      { command: "pnpm", args: ["dlx", "release-tool"] },
+      { command: "bun", args: ["x", "release-tool"] },
+      { command: "node", args: ["-e", "process.exit(0)"] },
+      { command: "npm", args: ["test", "--pre=/other"] },
+      { command: "npm", args: ["run", "check", "--pre=/other"] },
+      { command: "pnpm", args: ["test", "-C/other"] },
+      { command: "pnpm", args: ["run", "check", "-C/other"] },
+      { command: "npm", args: ["run", "check", "--", "--write"] },
+      { command: "npm", args: ["run", "lint", "--", "--fix"] },
+      { command: "npm", args: ["test", "--", "--updateSnapshot"] },
+    ]) {
+      expect(() =>
+        parseVerificationCommandPlan({
+          commands: [{ ...command("wrapped", first), ...wrapped }],
+        }),
+      ).toThrow(
+        /not allowed|cannot launch|inline interpreter|mutation or publication|passthrough|retarget|unknown package-manager option/,
+      );
+    }
+    for (const args of [
+      ["--unknown-global", first, "test"],
+      ["--prefix"],
+      ["--prefix", "--silent", "test"],
+      ["--", "test"],
+    ]) {
+      expect(() =>
+        parseVerificationCommandPlan({
+          commands: [{ ...command("ambiguous", first), command: "npm", args }],
+        }),
+      ).toThrow(/global option|infer a package-manager action/);
+    }
+    for (const args of [
+      ["--prefix", second, "run", "check"],
+      ["--cwd", second, "test"],
+      ["--dir", second, "test"],
+      ["--config", path.join(second, "npmrc"), "test"],
+      ["--workspace", "other", "test"],
+      ["--filter", "other", "test"],
+      ["-C", second, "test"],
+      ["test", "--workspace", "other"],
+      ["run", "check", "--filter", "other"],
+    ]) {
+      expect(() =>
+        parseVerificationCommandPlan({
+          commands: [{ ...command("retarget", first), command: "npm", args }],
+        }),
+      ).toThrow(/retarget package-manager execution or configuration/);
+    }
+    for (const script of [
+      "publish",
+      "deploy:prod",
+      "release:publish",
+      "prepublish",
+      "format",
+      "fmt",
+      "fix",
+      "write",
+      "update-snapshots",
+      "generate",
+    ]) {
+      expect(() =>
+        parseVerificationCommandPlan({
+          commands: [
+            { ...command("mutating-script", first), command: "npm", args: ["run", script] },
+          ],
+        }),
+      ).toThrow(/mutation or publication/);
+    }
+    expect(() =>
+      parseVerificationCommandPlan({
+        commands: [{ ...command("release", first), command: "npm", args: ["run", "release"] }],
+      }),
+    ).toThrow(/mutation or publication/);
+    for (const wrapper of [
+      "dash",
+      "bash.exe",
+      "bash.exe.cmd",
+      "C:\\Program Files\\Git\\bin\\bash.com",
+      "cmd.exe",
+      "C:\\Windows\\System32\\PowerShell.exe",
+    ]) {
       expect(() =>
         parseVerificationCommandPlan({
           commands: [{ ...command("wrapper", first), command: wrapper, args: ["-c", "git push"] }],
@@ -208,7 +732,7 @@ describe("autoimplement command batch contracts", () => {
   it("normalizes per-PR CI state and validates pending watch commands", async () => {
     const repository = await makeTempDir("ci-target");
     const id = repositoryId(repository);
-    const pr = "https://example.test/pr/1";
+    const pr = "https://github.com/example/repository/pull/1";
     const parsed = parseCiInspectionBatch({
       targets: [
         {
@@ -247,7 +771,7 @@ describe("autoimplement command batch contracts", () => {
             {
               repository,
               headRevision: "abc123",
-              pr: "https://example.test/pr/1",
+              pr: "https://github.com/example/repository/pull/1",
               route,
               reason: route,
             },
@@ -261,7 +785,7 @@ describe("autoimplement command batch contracts", () => {
         targets: Array.from({ length: 65 }, (_, index) => ({
           repository: path.join(repository, String(index)),
           headRevision: "abc123",
-          pr: `https://example.test/pr/${index}`,
+          pr: `https://github.com/example/repository/pull/${index + 1}`,
           route: "green",
           reason: "green",
         })),
@@ -273,14 +797,14 @@ describe("autoimplement command batch contracts", () => {
           {
             repository,
             headRevision: "abc123",
-            pr: "https://example.test/pr/1",
+            pr: "https://github.com/example/repository/pull/1",
             route: "green",
             reason: "green",
           },
           {
             repository,
             headRevision: "abc123",
-            pr: "https://example.test/pr/1",
+            pr: "https://github.com/example/repository/pull/1",
             route: "green",
             reason: "green",
           },
@@ -293,7 +817,7 @@ describe("autoimplement command batch contracts", () => {
           {
             repository,
             headRevision: "abc123",
-            pr: "https://example.test/pr/1",
+            pr: "https://github.com/example/repository/pull/1",
             route: "unknown",
             reason: "unknown",
           },
@@ -326,11 +850,74 @@ describe("autoimplement command batch contracts", () => {
       { ...command, timeoutMs: 0 },
       { ...command, maxOutputChars: 0 },
       { ...command, args: ["pr", "merge"] },
-      { ...command, args: ["pr", "checks", "https://example.test/pr/2", "--watch"] },
+      {
+        ...command,
+        args: ["pr", "checks", "https://github.com/example/repository/pull/2", "--watch"],
+      },
       { ...command, args: ["pr", "checks", pr, "--watch", "--repo", "other/repo"] },
       { ...command, args: ["run", "watch", "123", "--repo", "other/repo"] },
     ]) {
       expect(() => parseCiCommand(invalid, id, repository, pr)).toThrow();
     }
+    for (const unsafePr of ["--help", "--repo=other/repository"]) {
+      expect(() => parseCiCommand(command, id, repository, unsafePr)).toThrow(
+        /canonical GitHub pull request URL or positive number/,
+      );
+      expect(() =>
+        parseCiInspectionBatch({
+          targets: [
+            {
+              repository,
+              headRevision: "abc123",
+              pr: unsafePr,
+              route: "pending",
+              reason: "running",
+              trackingCommand: command,
+            },
+          ],
+        }),
+      ).toThrow(/canonical GitHub pull request URL or positive number/);
+    }
+  });
+  it("rejects remaining package-manager and unknown verification executables", () => {
+    expect(() => validateVerificationCommandSafety("npm", ["ls"], "verification")).toThrow(
+      /package-manager action is not allowed/,
+    );
+    expect(() =>
+      validateVerificationCommandSafety("npm", ["exec", "check"], "verification"),
+    ).toThrow(/cannot launch another command/);
+    expect(() => validateVerificationCommandSafety("npm", ["run"], "verification")).toThrow(
+      /package-manager run requires an explicit script/,
+    );
+    expect(() => validateVerificationCommandSafety("unknown-verifier", [], "verification")).toThrow(
+      /\.command is not allowed/,
+    );
+    expect(() => validateVerificationCommandSafety("npm", [], "verification")).toThrow(
+      /package-manager action is required/,
+    );
+    expect(() =>
+      validateVerificationCommandSafety("npm", ["--version"], "verification"),
+    ).not.toThrow();
+    expect(() =>
+      validateVerificationCommandSafety("npm", ["test", "--json"], "verification"),
+    ).not.toThrow();
+    expect(() =>
+      validateVerificationCommandSafety("npm", ["test", "--loglevel", "info"], "verification"),
+    ).not.toThrow();
+    expect(() =>
+      validateVerificationCommandSafety("npm", ["test", "--loglevel"], "verification"),
+    ).toThrow(/ambiguous package-manager option/);
+    expect(() =>
+      validateVerificationCommandSafety("npm", ["test", "--prefix=/tmp"], "verification"),
+    ).toThrow(/cannot retarget package-manager execution or configuration/);
+    expect(() =>
+      validateVerificationCommandSafety("npm", ["test", "--prefix", "/tmp"], "verification"),
+    ).toThrow(/cannot retarget package-manager execution or configuration/);
+    expect(() =>
+      validateVerificationCommandSafety("npm", ["test", "--unknown-flag"], "verification"),
+    ).toThrow(/unknown package-manager option/);
+    expect(() =>
+      validateVerificationCommandSafety("npm", ["test", "-C/tmp"], "verification"),
+    ).toThrow(/cannot retarget package-manager execution or configuration/);
   });
 });

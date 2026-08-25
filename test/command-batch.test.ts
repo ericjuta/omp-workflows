@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
   runCommandBatch,
@@ -7,6 +9,8 @@ import {
   type CommandBatchItem,
 } from "../src/workflows/command-batch.js";
 import { makeTempDir } from "./helpers.js";
+
+const execFileAsync = promisify(execFile);
 
 function item(
   id: string,
@@ -23,6 +27,18 @@ function item(
     timeoutMs,
     maxOutputChars,
   };
+}
+
+async function initializeGitRepository(prefix: string): Promise<{ cwd: string; head: string }> {
+  const cwd = await makeTempDir(prefix);
+  await execFileAsync("git", ["init", "-q"], { cwd });
+  await execFileAsync("git", ["config", "user.name", "Test User"], { cwd });
+  await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd });
+  await fs.writeFile(path.join(cwd, "tracked.txt"), "published\n");
+  await execFileAsync("git", ["add", "tracked.txt"], { cwd });
+  await execFileAsync("git", ["commit", "-q", "-m", "published"], { cwd });
+  const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd });
+  return { cwd, head: stdout.trim() };
 }
 
 describe("command batch validation", () => {
@@ -71,6 +87,12 @@ describe("command batch validation", () => {
       { ...valid, args: [1] },
       { ...valid, cwd: "" },
       { ...valid, cwd: "relative" },
+      { ...valid, expectedCommit: "HEAD" },
+      { ...valid, expectedCommit: "abc123" },
+      { ...valid, expectedRef: "main" },
+      { ...valid, expectedRef: { name: "main", commit: "HEAD" } },
+      { ...valid, expectedRef: { name: "-main", commit: "0".repeat(40) } },
+      { ...valid, expectedRef: { name: "main", commit: "0".repeat(40), extra: true } },
       { ...valid, timeoutMs: 0 },
       { ...valid, timeoutMs: 3_600_001 },
       { ...valid, maxOutputChars: 0 },
@@ -99,6 +121,130 @@ describe("command batch validation", () => {
 });
 
 describe("runCommandBatch", () => {
+  it("runs only at the expected clean commit while preserving untracked files", async () => {
+    const { cwd, head } = await initializeGitRepository("command-batch-expected-commit");
+    const marker = path.join(cwd, "reviewer-ran");
+    await fs.writeFile(path.join(cwd, "preserved-untracked.txt"), "keep\n");
+
+    const result = await runCommandBatch({
+      items: [
+        {
+          ...item("review", cwd),
+          args: ["-e", "require('node:fs').writeFileSync(process.argv[1], 'ran')", marker],
+          expectedCommit: head,
+          expectedRef: { name: "HEAD", commit: head },
+        },
+      ],
+      maxConcurrency: 1,
+    });
+
+    expect(result.items[0]).toMatchObject({ outcome: "succeeded", exitCode: 0 });
+    await expect(fs.readFile(marker, "utf8")).resolves.toBe("ran");
+    await expect(fs.readFile(path.join(cwd, "preserved-untracked.txt"), "utf8")).resolves.toBe(
+      "keep\n",
+    );
+  });
+  it("fails the item receipt before invocation when a Git ref moved", async () => {
+    const { cwd } = await initializeGitRepository("command-batch-changed-ref");
+    const marker = path.join(cwd, "reviewer-ran");
+    const result = await runCommandBatch({
+      items: [
+        {
+          ...item("review", cwd),
+          args: ["-e", "require('node:fs').writeFileSync(process.argv[1], 'ran')", marker],
+          expectedRef: { name: "HEAD", commit: "0".repeat(40) },
+        },
+      ],
+      maxConcurrency: 1,
+    });
+
+    expect(result.items[0]).toMatchObject({ outcome: "failed", exitCode: null });
+    expect(result.items[0]?.error).toContain("expected Git ref HEAD");
+    await expect(fs.stat(marker)).rejects.toThrow();
+  });
+
+  it("fails the item receipt before invocation when tracked HEAD changed", async () => {
+    const { cwd, head } = await initializeGitRepository("command-batch-changed-head");
+    const marker = path.join(cwd, "reviewer-ran");
+    await fs.writeFile(path.join(cwd, "tracked.txt"), "new commit\n");
+    await execFileAsync("git", ["add", "tracked.txt"], { cwd });
+    await execFileAsync("git", ["commit", "-q", "-m", "changed head"], { cwd });
+
+    const result = await runCommandBatch({
+      items: [
+        {
+          ...item("review", cwd),
+          args: ["-e", "require('node:fs').writeFileSync(process.argv[1], 'ran')", marker],
+          expectedCommit: head,
+        },
+      ],
+      maxConcurrency: 1,
+    });
+
+    expect(result.items[0]).toMatchObject({
+      command: process.execPath,
+      outcome: "failed",
+      exitCode: null,
+    });
+    expect(result.items[0]?.error).toMatch(/expected Git HEAD .* found/);
+    await expect(fs.stat(marker)).rejects.toThrow();
+  });
+
+  it("fails the item receipt before invocation for a dirty tracked checkout", async () => {
+    const { cwd, head } = await initializeGitRepository("command-batch-dirty-tracked");
+    const marker = path.join(cwd, "reviewer-ran");
+    await fs.writeFile(path.join(cwd, "tracked.txt"), "dirty\n");
+    await execFileAsync("git", ["add", "tracked.txt"], { cwd });
+
+    const result = await runCommandBatch({
+      items: [
+        {
+          ...item("review", cwd),
+          args: ["-e", "require('node:fs').writeFileSync(process.argv[1], 'ran')", marker],
+          expectedCommit: head,
+        },
+      ],
+      maxConcurrency: 1,
+    });
+
+    expect(result.items[0]).toMatchObject({
+      command: process.execPath,
+      outcome: "failed",
+      exitCode: null,
+    });
+    expect(result.items[0]?.error).toContain("tracked checkout is dirty");
+    await expect(fs.stat(marker)).rejects.toThrow();
+  });
+  it("fails synchronously at the pre-spawn boundary without invoking the child", async () => {
+    const { cwd, head } = await initializeGitRepository("command-batch-pre-spawn");
+    const marker = path.join(cwd, "reviewer-ran");
+    let validationCalls = 0;
+    const result = await runCommandBatch(
+      {
+        items: [
+          {
+            ...item("review", cwd),
+            args: ["-e", "require('node:fs').writeFileSync(process.argv[1], 'ran')", marker],
+            expectedCommit: head,
+          },
+        ],
+        maxConcurrency: 1,
+      },
+      {
+        validateBeforeSpawn: () => {
+          validationCalls += 1;
+          return "Reviewer trust failed for OPENAI_API_KEY=pre-spawn-secret";
+        },
+      },
+    );
+
+    expect(validationCalls).toBe(1);
+    expect(result.items[0]).toMatchObject({ outcome: "failed", exitCode: null });
+    expect(result.items[0]?.error).toContain("Reviewer trust failed");
+    expect(result.items[0]?.error).not.toContain("pre-spawn-secret");
+    await expect(fs.stat(marker)).rejects.toThrow();
+  });
+
   it("passes item env into the child and can unset inherited keys", async () => {
     const cwd = await makeTempDir("command-batch-env");
     const result = await runCommandBatch({
@@ -116,6 +262,125 @@ describe("runCommandBatch", () => {
       maxConcurrency: 1,
     });
     expect(result.items[0]?.stdout).toBe("ok|unset");
+  });
+  it("runs printenv with platform basics but without credential-bearing host env", async () => {
+    const cwd = await makeTempDir("command-batch-minimal-env");
+    const previousApiKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "sk-host-api-key";
+    try {
+      const result = await runCommandBatch({
+        items: [
+          {
+            ...item("printenv", cwd),
+            command: "printenv",
+            args: [],
+          },
+        ],
+        maxConcurrency: 1,
+      });
+
+      expect(result.items[0]).toMatchObject({ outcome: "succeeded", exitCode: 0 });
+      expect(result.items[0]?.stdout).toMatch(/(?:^|\n)PATH=.+/);
+      expect(result.items[0]?.stdout).not.toContain("OPENAI_API_KEY");
+      expect(result.items[0]?.stdout).not.toContain("sk-host-api-key");
+    } finally {
+      if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousApiKey;
+    }
+  });
+
+  it("redacts command output and failure errors before publishing a receipt", async () => {
+    const cwd = await makeTempDir("command-batch-redacted-receipt");
+    const stdout = [
+      "OPENAI_API_KEY=sk-receipt-api-key",
+      "Bearer bearer-receipt-token",
+      "Cookie: session=receipt-cookie",
+      "https://receipt-user:receipt-password@example.test/repository.git",
+      "-----BEGIN PRIVATE KEY-----",
+      "receipt-private-key-material",
+      "-----END PRIVATE KEY-----",
+    ].join("\n");
+    const stderr = [
+      "Authorization: Basic dXNlcjpwYXNz",
+      "Set-Cookie: refresh=receipt-refresh-cookie; HttpOnly",
+    ].join("\n");
+    const result = await runCommandBatch({
+      items: [
+        {
+          ...item(
+            "redact",
+            cwd,
+            "process.stdout.write(process.env.LEAK_STDOUT); process.stderr.write(process.env.LEAK_STDERR); process.exit(2)",
+          ),
+          env: { LEAK_STDOUT: stdout, LEAK_STDERR: stderr },
+          args: [
+            "-e",
+            "process.stdout.write(process.env.LEAK_STDOUT); process.stderr.write(process.env.LEAK_STDERR); process.exit(2)",
+            "OPENAI_API_KEY=sk-argument-api-key",
+            "https://argument-user:argument-password@example.test/repository.git",
+          ],
+        },
+      ],
+      maxConcurrency: 1,
+    });
+
+    const receipt = result.items[0];
+    expect(receipt).toMatchObject({ outcome: "failed", exitCode: 2 });
+    expect(receipt?.stdout).toContain("OPENAI_API_KEY=[redacted]");
+    expect(receipt?.stdout).toContain("Bearer [redacted]");
+    expect(receipt?.stdout).toContain("Cookie: [redacted]");
+    expect(receipt?.stdout).toContain("https://[redacted]@example.test/repository.git");
+    expect(receipt?.stdout).toContain("[private key redacted]");
+    expect(receipt?.stderr).toBe(
+      ["Authorization: [redacted]", "Set-Cookie: [redacted]"].join("\n"),
+    );
+    expect(receipt?.error).toContain("Authorization: [redacted]");
+    expect(receipt?.args).toEqual([
+      "-e",
+      "process.stdout.write(process.env.LEAK_STDOUT); process.stderr.write(process.env.LEAK_STDERR); process.exit(2)",
+      "OPENAI_API_KEY=[redacted]",
+      "https://[redacted]@example.test/repository.git",
+    ]);
+    expect(JSON.stringify(receipt)).not.toMatch(
+      /sk-receipt-api-key|bearer-receipt-token|receipt-cookie|receipt-user|receipt-password|receipt-private-key-material|dXNlcjpwYXNz|receipt-refresh-cookie|sk-argument-api-key|argument-user|argument-password/,
+    );
+  });
+  it("redacts split and assigned sensitive long-option values in receipts", async () => {
+    const cwd = await makeTempDir("command-batch-redacted-argv");
+    const result = await runCommandBatch({
+      items: [
+        {
+          ...item("redact-argv", cwd),
+          args: [
+            "-e",
+            "process.stdout.write('ok')",
+            "--token",
+            "ghp_split_secret",
+            "--password",
+            "split-password-secret",
+            "--api-key=assigned-api-secret",
+            "-p",
+            "ordinary-short-option-value",
+          ],
+        },
+      ],
+      maxConcurrency: 1,
+    });
+
+    expect(result.items[0]?.args).toEqual([
+      "-e",
+      "process.stdout.write('ok')",
+      "--token",
+      "[redacted]",
+      "--password",
+      "[redacted]",
+      "--api-key=[redacted]",
+      "-p",
+      "ordinary-short-option-value",
+    ]);
+    expect(JSON.stringify(result.items[0])).not.toMatch(
+      /ghp_split_secret|split-password-secret|assigned-api-secret/,
+    );
   });
 
   it("returns results in input order while commands finish out of order", async () => {

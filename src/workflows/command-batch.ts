@@ -1,6 +1,7 @@
 import path from "node:path";
 import { CancelledError, TimeoutError, errorMessage, isAbortLikeError } from "./errors.js";
 import { runShellAction, shellOutputTruncation, shellResultFromError } from "./shell.js";
+import { redactSensitiveArgs, redactSensitiveText } from "./text.js";
 import type { MaybePromise, ShellActionResult } from "./types.js";
 
 export const COMMAND_BATCH_RESULT_SCHEMA = "pi-workflows.command-batch-result.v1";
@@ -11,12 +12,28 @@ export const MAX_COMMAND_BATCH_OUTPUT_CHARS = 1_000_000;
 
 const MAX_ERROR_CHARS = 2_000;
 const ITEM_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+const COMMAND_BATCH_ITEM_KEYS: Record<string, true> = {
+  id: true,
+  command: true,
+  args: true,
+  cwd: true,
+  expectedCommit: true,
+  expectedRef: true,
+  timeoutMs: true,
+  maxOutputChars: true,
+  env: true,
+  envUnset: true,
+};
 
 export type CommandBatchItem = {
   id: string;
   command: string;
   args: string[];
   cwd: string;
+  /** Require this Git commit and a clean tracked checkout immediately before execution. */
+  expectedCommit?: string;
+  /** Require a Git ref to resolve to this immutable commit immediately before execution. */
+  expectedRef?: { name: string; commit: string };
   timeoutMs: number;
   maxOutputChars: number;
   env?: NodeJS.ProcessEnv;
@@ -47,6 +64,9 @@ export type CommandBatchResult = {
 
 export type RunCommandBatchOptions = {
   signal?: AbortSignal;
+  gitCommand?: string;
+  validateBeforeGitSpawn?: (item: CommandBatchItem) => void | string;
+  validateBeforeSpawn?: (item: CommandBatchItem) => void | string;
   onItemSettled?: (
     result: CommandBatchItemResult,
     completed: number,
@@ -108,7 +128,13 @@ export async function runCommandBatch(
 
       const item = request.items[index];
       if (item === undefined) return;
-      const result = await runItem(item, signal);
+      const result = await runItem(
+        item,
+        signal,
+        options.gitCommand,
+        options.validateBeforeGitSpawn,
+        options.validateBeforeSpawn,
+      );
       results[index] = result;
       completed += 1;
       try {
@@ -138,18 +164,10 @@ export async function runCommandBatch(
 
 function validateItem(value: unknown, index: number): CommandBatchItem {
   const item = requireRecord(value, `command batch items[${index}]`);
-  const allowed = new Set([
-    "id",
-    "command",
-    "args",
-    "cwd",
-    "timeoutMs",
-    "maxOutputChars",
-    "env",
-    "envUnset",
-  ]);
   for (const key of Object.keys(item)) {
-    if (!allowed.has(key)) throw new Error(`command batch items[${index}].${key} is not supported`);
+    if (COMMAND_BATCH_ITEM_KEYS[key] !== true) {
+      throw new Error(`command batch items[${index}].${key} is not supported`);
+    }
   }
   const id = requireString(item.id, `command batch items[${index}].id`);
   if (!ITEM_ID_PATTERN.test(id)) {
@@ -163,6 +181,14 @@ function validateItem(value: unknown, index: number): CommandBatchItem {
   if (!path.isAbsolute(cwd)) {
     throw new Error(`command batch items[${index}].cwd must be absolute`);
   }
+  const expectedCommit = optionalCommitHash(
+    item.expectedCommit,
+    `command batch items[${index}].expectedCommit`,
+  );
+  const expectedRef = optionalExpectedRef(
+    item.expectedRef,
+    `command batch items[${index}].expectedRef`,
+  );
   const timeoutMs = positiveInteger(
     item.timeoutMs,
     `command batch items[${index}].timeoutMs`,
@@ -180,6 +206,8 @@ function validateItem(value: unknown, index: number): CommandBatchItem {
     command,
     args: [...item.args] as string[],
     cwd,
+    ...(expectedCommit === undefined ? {} : { expectedCommit }),
+    ...(expectedRef === undefined ? {} : { expectedRef }),
     timeoutMs,
     maxOutputChars,
     ...(env === undefined ? {} : { env }),
@@ -190,8 +218,46 @@ function validateItem(value: unknown, index: number): CommandBatchItem {
 async function runItem(
   item: CommandBatchItem,
   signal?: AbortSignal,
+  gitCommand = "git",
+  validateBeforeGitSpawn?: (item: CommandBatchItem) => void | string,
+  validateBeforeSpawn?: (item: CommandBatchItem) => void | string,
 ): Promise<CommandBatchItemResult> {
   try {
+    if (item.expectedCommit !== undefined || item.expectedRef !== undefined) {
+      const preconditionFailure = await checkGitPreconditions(
+        item,
+        signal,
+        gitCommand,
+        validateBeforeGitSpawn,
+      );
+      if (preconditionFailure !== undefined) {
+        return itemResult(
+          item.id,
+          "failed",
+          {
+            ...emptyShellResult(item),
+            stderr: preconditionFailure,
+            exitCode: null,
+          },
+          preconditionFailure,
+        );
+      }
+    }
+    if (validateBeforeSpawn !== undefined) {
+      const validationFailure = validateBeforeSpawn(item);
+      if (validationFailure !== undefined && validationFailure !== "") {
+        return itemResult(
+          item.id,
+          "failed",
+          {
+            ...emptyShellResult(item),
+            stderr: validationFailure,
+            exitCode: null,
+          },
+          validationFailure,
+        );
+      }
+    }
     const result = await runShellAction(
       {
         command: item.command,
@@ -216,6 +282,63 @@ async function runItem(
   }
 }
 
+async function checkGitPreconditions(
+  item: CommandBatchItem,
+  signal?: AbortSignal,
+  gitCommand = "git",
+  validateBeforeGitSpawn?: (item: CommandBatchItem) => void | string,
+): Promise<string | undefined> {
+  try {
+    if (item.expectedCommit !== undefined) {
+      const trustFailure = validateBeforeGitSpawn?.(item);
+      if (trustFailure !== undefined && trustFailure !== "") return trustFailure;
+      const status = await runShellAction(
+        {
+          command: gitCommand,
+          args: ["status", "--porcelain=v2", "--branch", "--untracked-files=no"],
+          cwd: item.cwd,
+          timeoutMs: Math.min(item.timeoutMs, 10_000),
+          maxOutputChars: 16_000,
+          ...childEnv(item),
+        },
+        signal,
+      );
+      const lines = status.stdout.trimEnd().split("\n");
+      const headLine = lines.find((line) => line.startsWith("# branch.oid "));
+      const actualCommit = headLine?.slice("# branch.oid ".length).toLowerCase() ?? "";
+      if (lines.some((line) => line.length > 0 && !line.startsWith("# "))) {
+        return `Command precondition failed: tracked checkout is dirty at ${item.cwd}`;
+      }
+      if (actualCommit !== item.expectedCommit) {
+        return `Command precondition failed: expected Git HEAD ${item.expectedCommit}, found ${actualCommit || "no commit"}`;
+      }
+    }
+    if (item.expectedRef !== undefined) {
+      const trustFailure = validateBeforeGitSpawn?.(item);
+      if (trustFailure !== undefined && trustFailure !== "") return trustFailure;
+      const resolved = await runShellAction(
+        {
+          command: gitCommand,
+          args: ["rev-parse", "--verify", "--end-of-options", `${item.expectedRef.name}^{commit}`],
+          cwd: item.cwd,
+          timeoutMs: Math.min(item.timeoutMs, 10_000),
+          maxOutputChars: 16_000,
+          ...childEnv(item),
+        },
+        signal,
+      );
+      const actualRefCommit = resolved.stdout.trim().toLowerCase();
+      if (actualRefCommit !== item.expectedRef.commit) {
+        return `Command precondition failed: expected Git ref ${item.expectedRef.name} at ${item.expectedRef.commit}, found ${actualRefCommit || "no commit"}`;
+      }
+    }
+    return undefined;
+  } catch (error) {
+    if (error instanceof CancelledError || isAbortLikeError(error)) throw error;
+    return `Command precondition failed: ${boundedError(error)}`;
+  }
+}
+
 function itemResult(
   id: string,
   outcome: CommandBatchItemOutcome,
@@ -223,13 +346,21 @@ function itemResult(
   error?: string,
 ): CommandBatchItemResult {
   const truncation = shellOutputTruncation(result);
+  const redactedResult = {
+    ...result,
+    command: redactSensitiveText(result.command),
+    args: redactSensitiveArgs(result.args),
+    cwd: redactSensitiveText(result.cwd),
+    stdout: redactSensitiveText(result.stdout),
+    stderr: redactSensitiveText(result.stderr),
+  };
   return {
     id,
     outcome,
-    ...result,
+    ...redactedResult,
     stdoutTruncated: truncation.stdout,
     stderrTruncated: truncation.stderr,
-    ...(error !== undefined ? { error } : {}),
+    ...(error !== undefined ? { error: redactSensitiveText(error) } : {}),
   };
 }
 
@@ -252,7 +383,7 @@ function emptyShellResult(item: CommandBatchItem): ShellActionResult {
 
 function boundedError(error: unknown): string {
   const message = errorMessage(error);
-  return message.length <= MAX_ERROR_CHARS ? message : `${message.slice(0, MAX_ERROR_CHARS)}…`;
+  return redactSensitiveText(message, MAX_ERROR_CHARS);
 }
 
 function positiveInteger(value: unknown, label: string, maximum: number): number {
@@ -300,11 +431,39 @@ function optionalStringArray(value: unknown, label: string): string[] | undefine
   return [...value] as string[];
 }
 
-function childEnv(item: CommandBatchItem): { env?: NodeJS.ProcessEnv } {
+function optionalCommitHash(value: unknown, label: string): string | undefined {
+  if (value === undefined) return undefined;
+  const commit = requireString(value, label);
+  if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(commit)) {
+    throw new Error(`${label} must be a 40-character or 64-character hex commit hash`);
+  }
+  return commit.toLowerCase();
+}
+function optionalExpectedRef(
+  value: unknown,
+  label: string,
+): { name: string; commit: string } | undefined {
+  if (value === undefined) return undefined;
+  const expected = requireRecord(value, label);
+  for (const key of Object.keys(expected)) {
+    if (key !== "name" && key !== "commit") {
+      throw new Error(`${label}.${key} is not supported`);
+    }
+  }
+  const name = requireString(expected.name, `${label}.name`);
+  if (name.startsWith("-") || name.includes("\0")) {
+    throw new Error(`${label}.name is not a valid Git ref`);
+  }
+  const commit = optionalCommitHash(expected.commit, `${label}.commit`);
+  if (commit === undefined) throw new Error(`${label}.commit is required`);
+  return { name, commit };
+}
+
+function childEnv(item: CommandBatchItem): { inheritEnv: false; env?: NodeJS.ProcessEnv } {
   if (item.env === undefined && (item.envUnset === undefined || item.envUnset.length === 0)) {
-    return {};
+    return { inheritEnv: false };
   }
   const env: NodeJS.ProcessEnv = item.env === undefined ? {} : { ...item.env };
   for (const key of item.envUnset ?? []) env[key] = undefined;
-  return { env };
+  return { inheritEnv: false, env };
 }

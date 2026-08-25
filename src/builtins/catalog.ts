@@ -21,8 +21,8 @@ export const builtinWorkflowCatalog = new BuiltinWorkflowCatalog([
   },
   {
     id: "autoimplement",
-    revision: "12",
-    definitionDigest: "sha256:714d016d2de1b01b3e886763321222b095e7cd0dfa19f8f523d5a49fe9a880e0",
+    revision: "15",
+    definitionDigest: "sha256:9dc2dd030c0c161688828492af2951c35ed48b45b876959cd9e6d64a668355e2",
     definition: autoimplementWorkflow,
   },
   {

@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { repositoryId } from "../src/builtins/autoimplement-command-batches.js";
 import { builtinWorkflowCatalog } from "../src/builtins/catalog.js";
@@ -10,8 +12,11 @@ import { WorkflowRunStore } from "../src/workflows/store.js";
 import type { WorkflowNotificationRequest } from "../src/workflows/types.js";
 import { makeTempDir, ScriptedExecutor } from "./helpers.js";
 
+const execFileAsync = promisify(execFile);
 let originalPath = "";
 let repository = "";
+let baseRevision = "";
+let headRevision = "";
 
 function repairCheck() {
   return {
@@ -100,8 +105,8 @@ function repairExecutor(secondCheck: unknown): ScriptedExecutor {
         commands: [
           {
             id: "verify",
-            command: process.execPath,
-            args: ["-e", "process.stdout.write('passed')"],
+            command: "npm",
+            args: ["test"],
             cwd: repository,
             timeoutMs: 60_000,
             maxOutputChars: 100_000,
@@ -128,8 +133,9 @@ function repairExecutor(secondCheck: unknown): ScriptedExecutor {
             repository,
             branch: "feat/fix",
             baseBranch: "main",
-            headRevision: "revision-two",
-            pr: "https://example.test/pr/2",
+            baseRevision,
+            headRevision,
+            pr: "https://github.com/example/repository/pull/2",
             pushed: true,
           },
         ],
@@ -171,8 +177,8 @@ function repairExecutor(secondCheck: unknown): ScriptedExecutor {
       output: {
         status: "completed",
         merged: true,
-        pr: "https://example.test/pr/2",
-        reportComment: "https://example.test/pr/2#comment",
+        pr: "https://github.com/example/repository/pull/2",
+        reportComment: "https://github.com/example/repository/pull/2#issuecomment-1",
         reason: "merged",
       },
     });
@@ -182,7 +188,29 @@ beforeEach(async () => {
   originalPath = process.env.PATH ?? "";
   const commandDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-workflows-monitor-commands-"));
   repository = await makeTempDir("pi-workflows-monitor-repo");
+  await execFileAsync("git", ["init", "-q", "-b", "main"], { cwd: repository });
+  await execFileAsync("git", ["config", "user.name", "Test User"], { cwd: repository });
+  await execFileAsync("git", ["config", "user.email", "test@example.com"], {
+    cwd: repository,
+  });
+  const trackedFile = path.join(repository, "tracked.txt");
+  await fs.writeFile(trackedFile, "base\n");
+  await execFileAsync("git", ["add", "tracked.txt"], { cwd: repository });
+  await execFileAsync("git", ["commit", "-q", "-m", "base"], { cwd: repository });
+  baseRevision = (
+    await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repository })
+  ).stdout.trim();
+  await execFileAsync("git", ["checkout", "-q", "-b", "feat/fix"], { cwd: repository });
+  await fs.writeFile(trackedFile, "published\n");
+  await execFileAsync("git", ["add", "tracked.txt"], { cwd: repository });
+  await execFileAsync("git", ["commit", "-q", "-m", "published"], { cwd: repository });
+  headRevision = (
+    await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repository })
+  ).stdout.trim();
   await fs.writeFile(path.join(commandDir, "omp-reviewer"), "#!/bin/sh\necho clean\n", {
+    mode: 0o755,
+  });
+  await fs.writeFile(path.join(commandDir, "omp"), "#!/bin/sh\nexit 0\n", {
     mode: 0o755,
   });
   process.env.PATH = `${commandDir}:${originalPath}`;
@@ -228,7 +256,7 @@ describe("monitor automatic repair", () => {
       { workflowSource: resolved.source },
     );
 
-    expect(state.status).toBe("completed");
+    expect(state.status, state.error).toBe("completed");
     expect(state.steps.map((step) => step.nodeId)).toContain("planChange/design/frame");
     expect(state.steps.map((step) => step.nodeId)).toContain("implementation/implement");
     expect(state.steps.filter((step) => step.nodeId === "check")).toHaveLength(2);
@@ -249,6 +277,40 @@ describe("monitor automatic repair", () => {
       "planChange/documentation",
     ]);
     expect(state.definitionDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+  });
+
+  it("fails implementation when the repair repository is missing", async () => {
+    const engine = new WorkflowEngine({
+      executor: repairExecutor(stopCheck()),
+      store: new WorkflowRunStore(await makeTempDir("pi-workflows-monitor-missing-repo")),
+      notificationSink: {
+        notify() {
+          return { notificationId: "n1", targetSessionId: "s1" };
+        },
+      },
+    });
+    const resolved = await resolveWorkflowRef(
+      "monitor",
+      { cwd: repository, homeDir: await makeTempDir("pi-workflows-monitor-missing-repo-home") },
+      builtinWorkflowCatalog,
+    );
+    const { state } = await engine.run(
+      resolved.definition,
+      {
+        task: "Monitor and repair test-a",
+        stopWhen: "test-a passes",
+        maxChecks: 3,
+        repair: {
+          authorized: true,
+          scope: "current repository",
+          merge: true,
+          approval: { mode: "skip" },
+        },
+      },
+      { workflowSource: resolved.source },
+    );
+    expect(state.status).toBe("failed");
+    expect(state.error).toMatch(/monitor repair repository is required/);
   });
 
   it("stops when the same target evidence returns after repair", async () => {
@@ -286,7 +348,7 @@ describe("monitor automatic repair", () => {
       { workflowSource: resolved.source },
     );
 
-    expect(state.status).toBe("completed");
+    expect(state.status, state.error).toBe("completed");
     expect(state.steps.filter((step) => step.nodeId === "implementation")).toHaveLength(1);
     expect(state.steps.map((step) => step.nodeId)).toContain("repairBlocked");
     expect(state.finalOutput).toMatchObject({

@@ -462,6 +462,9 @@ const monitorWorkflow: WorkflowDefinition = defineWorkflow({
         const repair = (outputs.check as MonitorCheck).repair;
         const documented = currentRepairPlan(outputs);
         if (repair === undefined) throw new Error("monitor repair details are missing");
+        if (config.repair?.repository === undefined) {
+          throw new Error("monitor repair repository is required");
+        }
         const request: AutoimplementInput = {
           task: repair.problem,
           plan: documented.plan,
@@ -474,9 +477,7 @@ const monitorWorkflow: WorkflowDefinition = defineWorkflow({
           ...(config.repair?.constraints !== undefined
             ? { constraints: config.repair.constraints }
             : {}),
-          ...(config.repair?.repository !== undefined
-            ? { repository: config.repair.repository }
-            : {}),
+          repository: config.repair.repository,
           ...(config.repair?.baseBranch !== undefined
             ? { baseBranch: config.repair.baseBranch }
             : {}),

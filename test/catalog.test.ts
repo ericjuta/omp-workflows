@@ -32,8 +32,8 @@ describe("BuiltinWorkflowCatalog", () => {
         digest: "sha256:6f85f8e57cd2205cb9402a4281e9b2fb9a0a9ffcad942805246bda1ea19dec93",
       },
       autoimplement: {
-        revision: "12",
-        digest: "sha256:714d016d2de1b01b3e886763321222b095e7cd0dfa19f8f523d5a49fe9a880e0",
+        revision: "15",
+        digest: "sha256:9dc2dd030c0c161688828492af2951c35ed48b45b876959cd9e6d64a668355e2",
       },
       "plan-approval": {
         revision: "4",

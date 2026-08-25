@@ -1,6 +1,6 @@
 {
   "name": "@ericjuta/omp-workflows",
-  "version": "0.14.4",
+  "version": "0.14.5",
   "description": "Workflow and controller runtime with native OMP integration and a live terminal viewer",
   "keywords": [
     "omp-plugin",

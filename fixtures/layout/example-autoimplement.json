@@ -210,61 +210,47 @@
       },
       "documentation": {
         "nodeType": "compute",
-        "mountPath": [
-          "documentation"
-        ],
+        "mountPath": ["documentation"],
         "localNodeId": "documentation",
         "includeTransition": "entry",
         "statusDetail": "entering autodoc"
       },
       "documentation/__piw_exit_ready": {
         "nodeType": "compute",
-        "mountPath": [
-          "documentation"
-        ],
+        "mountPath": ["documentation"],
         "localNodeId": "ready",
         "includeTransition": "exit",
         "statusDetail": "leaving autodoc through ready"
       },
       "documentation/__piw_exit_blocked": {
         "nodeType": "compute",
-        "mountPath": [
-          "documentation"
-        ],
+        "mountPath": ["documentation"],
         "localNodeId": "blocked",
         "includeTransition": "exit",
         "statusDetail": "leaving autodoc through blocked"
       },
       "documentation/prepare": {
         "nodeType": "compute",
-        "mountPath": [
-          "documentation"
-        ],
+        "mountPath": ["documentation"],
         "localNodeId": "prepare"
       },
       "documentation/locatePlan": {
         "nodeType": "agent",
-        "mountPath": [
-          "documentation"
-        ],
+        "mountPath": ["documentation"],
         "localNodeId": "locatePlan",
         "statusDetail": "locating selected plan",
         "expectedOutput": "{ \"route\": \"found\" | \"blocked\", \"plan\": {} (required when found), \"sources\": [\"source\"], \"reason\": \"reason\", \"evidence\": \"evidence\" }"
       },
       "documentation/inspectDocumentation": {
         "nodeType": "agent",
-        "mountPath": [
-          "documentation"
-        ],
+        "mountPath": ["documentation"],
         "localNodeId": "inspectDocumentation",
         "statusDetail": "checking canonical documentation",
         "expectedOutput": "{ \"route\": \"current\" | \"update\" | \"blocked\", \"files\": [\"canonical file\"], \"digests\": { \"file\": \"sha256:digest\" }, \"reason\": \"reason\", \"evidence\": \"evidence\" }"
       },
       "documentation/updateDocumentation": {
         "nodeType": "agent",
-        "mountPath": [
-          "documentation"
-        ],
+        "mountPath": ["documentation"],
         "localNodeId": "updateDocumentation",
         "timeoutMs": 1800000,
         "statusDetail": "updating canonical documentation",
@@ -272,9 +258,7 @@
       },
       "documentation/verifyDocumentation": {
         "nodeType": "agent",
-        "mountPath": [
-          "documentation"
-        ],
+        "mountPath": ["documentation"],
         "localNodeId": "verifyDocumentation",
         "timeoutMs": 1200000,
         "statusDetail": "verifying documentation",
@@ -282,156 +266,112 @@
       },
       "documentation/finalize": {
         "nodeType": "compute",
-        "mountPath": [
-          "documentation"
-        ],
+        "mountPath": ["documentation"],
         "localNodeId": "finalize"
       },
       "documentation/blocked": {
         "nodeType": "compute",
-        "mountPath": [
-          "documentation"
-        ],
+        "mountPath": ["documentation"],
         "localNodeId": "blocked"
       },
       "redesign": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign"
-        ],
+        "mountPath": ["redesign"],
         "localNodeId": "redesign",
         "includeTransition": "entry",
         "statusDetail": "entering plan-change"
       },
       "redesign/__piw_exit_ready": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign"
-        ],
+        "mountPath": ["redesign"],
         "localNodeId": "ready",
         "includeTransition": "exit",
         "statusDetail": "leaving plan-change through ready"
       },
       "redesign/__piw_exit_blocked": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign"
-        ],
+        "mountPath": ["redesign"],
         "localNodeId": "blocked",
         "includeTransition": "exit",
         "statusDetail": "leaving plan-change through blocked"
       },
       "redesign/start": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign"
-        ],
+        "mountPath": ["redesign"],
         "localNodeId": "start"
       },
       "redesign/assessPlan": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign"
-        ],
+        "mountPath": ["redesign"],
         "localNodeId": "assessPlan"
       },
       "redesign/replanGuard": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign"
-        ],
+        "mountPath": ["redesign"],
         "localNodeId": "replanGuard"
       },
       "redesign/finalize": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign"
-        ],
+        "mountPath": ["redesign"],
         "localNodeId": "finalize"
       },
       "redesign/blocked": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign"
-        ],
+        "mountPath": ["redesign"],
         "localNodeId": "blocked"
       },
       "redesign/design": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign",
-          "design"
-        ],
+        "mountPath": ["redesign", "design"],
         "localNodeId": "design",
         "includeTransition": "entry",
         "statusDetail": "entering autoplan"
       },
       "redesign/design/__piw_exit_ready": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign",
-          "design"
-        ],
+        "mountPath": ["redesign", "design"],
         "localNodeId": "ready",
         "includeTransition": "exit",
         "statusDetail": "leaving autoplan through ready"
       },
       "redesign/design/__piw_exit_blocked": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign",
-          "design"
-        ],
+        "mountPath": ["redesign", "design"],
         "localNodeId": "blocked",
         "includeTransition": "exit",
         "statusDetail": "leaving autoplan through blocked"
       },
       "redesign/design/frame": {
         "nodeType": "agent",
-        "mountPath": [
-          "redesign",
-          "design"
-        ],
+        "mountPath": ["redesign", "design"],
         "localNodeId": "frame",
         "statusDetail": "framing the problem",
         "expectedOutput": "{ \"problem\": \"concise statement\", \"success\": [\"criterion\"], \"inScope\": [\"change\"], \"outOfScope\": [\"change\"], \"constraints\": [\"constraint\"], \"controlBoundary\": \"what can change\" }"
       },
       "redesign/design/propose": {
         "nodeType": "agent",
-        "mountPath": [
-          "redesign",
-          "design"
-        ],
+        "mountPath": ["redesign", "design"],
         "localNodeId": "propose",
         "statusDetail": "devising a solution",
         "expectedOutput": "{ \"solution\": \"proposal\", \"rationale\": \"why\", \"parts\": [\"part\"], \"tradeoffs\": [\"trade-off\"] }"
       },
       "redesign/design/ideal": {
         "nodeType": "agent",
-        "mountPath": [
-          "redesign",
-          "design"
-        ],
+        "mountPath": ["redesign", "design"],
         "localNodeId": "ideal",
         "statusDetail": "describing the ideal end state",
         "expectedOutput": "{ \"ideal\": \"ideal end state\", \"outsideDependencies\": [\"dependency\"], \"additionalValue\": [\"benefit\"] }"
       },
       "redesign/design/choose": {
         "nodeType": "agent",
-        "mountPath": [
-          "redesign",
-          "design"
-        ],
+        "mountPath": ["redesign", "design"],
         "localNodeId": "choose",
         "statusDetail": "choosing the practical solution",
         "expectedOutput": "{ \"status\": \"ready\" | \"blocked\", \"selected\": \"solution\", \"why\": \"reason\", \"relationshipToIdeal\": \"relationship\", \"excluded\": [\"excluded work\"], \"compromises\": [\"compromise\"], \"blocker\": \"required only when blocked\" }"
       },
       "redesign/design/plan": {
         "nodeType": "agent",
-        "mountPath": [
-          "redesign",
-          "design"
-        ],
+        "mountPath": ["redesign", "design"],
         "localNodeId": "plan",
         "timeoutMs": 1800000,
         "statusDetail": "writing the implementation plan",
@@ -439,84 +379,57 @@
       },
       "redesign/design/blocked": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign",
-          "design"
-        ],
+        "mountPath": ["redesign", "design"],
         "localNodeId": "blocked"
       },
       "redesign/design/finalize": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign",
-          "design"
-        ],
+        "mountPath": ["redesign", "design"],
         "localNodeId": "finalize"
       },
       "redesign/documentation": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign",
-          "documentation"
-        ],
+        "mountPath": ["redesign", "documentation"],
         "localNodeId": "documentation",
         "includeTransition": "entry",
         "statusDetail": "entering autodoc"
       },
       "redesign/documentation/__piw_exit_ready": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign",
-          "documentation"
-        ],
+        "mountPath": ["redesign", "documentation"],
         "localNodeId": "ready",
         "includeTransition": "exit",
         "statusDetail": "leaving autodoc through ready"
       },
       "redesign/documentation/__piw_exit_blocked": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign",
-          "documentation"
-        ],
+        "mountPath": ["redesign", "documentation"],
         "localNodeId": "blocked",
         "includeTransition": "exit",
         "statusDetail": "leaving autodoc through blocked"
       },
       "redesign/documentation/prepare": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign",
-          "documentation"
-        ],
+        "mountPath": ["redesign", "documentation"],
         "localNodeId": "prepare"
       },
       "redesign/documentation/locatePlan": {
         "nodeType": "agent",
-        "mountPath": [
-          "redesign",
-          "documentation"
-        ],
+        "mountPath": ["redesign", "documentation"],
         "localNodeId": "locatePlan",
         "statusDetail": "locating selected plan",
         "expectedOutput": "{ \"route\": \"found\" | \"blocked\", \"plan\": {} (required when found), \"sources\": [\"source\"], \"reason\": \"reason\", \"evidence\": \"evidence\" }"
       },
       "redesign/documentation/inspectDocumentation": {
         "nodeType": "agent",
-        "mountPath": [
-          "redesign",
-          "documentation"
-        ],
+        "mountPath": ["redesign", "documentation"],
         "localNodeId": "inspectDocumentation",
         "statusDetail": "checking canonical documentation",
         "expectedOutput": "{ \"route\": \"current\" | \"update\" | \"blocked\", \"files\": [\"canonical file\"], \"digests\": { \"file\": \"sha256:digest\" }, \"reason\": \"reason\", \"evidence\": \"evidence\" }"
       },
       "redesign/documentation/updateDocumentation": {
         "nodeType": "agent",
-        "mountPath": [
-          "redesign",
-          "documentation"
-        ],
+        "mountPath": ["redesign", "documentation"],
         "localNodeId": "updateDocumentation",
         "timeoutMs": 1800000,
         "statusDetail": "updating canonical documentation",
@@ -524,10 +437,7 @@
       },
       "redesign/documentation/verifyDocumentation": {
         "nodeType": "agent",
-        "mountPath": [
-          "redesign",
-          "documentation"
-        ],
+        "mountPath": ["redesign", "documentation"],
         "localNodeId": "verifyDocumentation",
         "timeoutMs": 1200000,
         "statusDetail": "verifying documentation",
@@ -535,74 +445,50 @@
       },
       "redesign/documentation/finalize": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign",
-          "documentation"
-        ],
+        "mountPath": ["redesign", "documentation"],
         "localNodeId": "finalize"
       },
       "redesign/documentation/blocked": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign",
-          "documentation"
-        ],
+        "mountPath": ["redesign", "documentation"],
         "localNodeId": "blocked"
       },
       "redesign/approval": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign",
-          "approval"
-        ],
+        "mountPath": ["redesign", "approval"],
         "localNodeId": "approval",
         "includeTransition": "entry",
         "statusDetail": "entering plan-approval"
       },
       "redesign/approval/__piw_exit_continue": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign",
-          "approval"
-        ],
+        "mountPath": ["redesign", "approval"],
         "localNodeId": "continue",
         "includeTransition": "exit",
         "statusDetail": "leaving plan-approval through continue"
       },
       "redesign/approval/__piw_exit_stop": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign",
-          "approval"
-        ],
+        "mountPath": ["redesign", "approval"],
         "localNodeId": "stop",
         "includeTransition": "exit",
         "statusDetail": "leaving plan-approval through stop"
       },
       "redesign/approval/__piw_exit_replan": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign",
-          "approval"
-        ],
+        "mountPath": ["redesign", "approval"],
         "localNodeId": "replan",
         "includeTransition": "exit",
         "statusDetail": "leaving plan-approval through replan"
       },
       "redesign/approval/routePolicy": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign",
-          "approval"
-        ],
+        "mountPath": ["redesign", "approval"],
         "localNodeId": "routePolicy"
       },
       "redesign/approval/approve": {
         "nodeType": "checkpoint",
-        "mountPath": [
-          "redesign",
-          "approval"
-        ],
+        "mountPath": ["redesign", "approval"],
         "localNodeId": "approve",
         "summary": "human decision",
         "humanDecision": {
@@ -631,26 +517,17 @@
       },
       "redesign/approval/continued": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign",
-          "approval"
-        ],
+        "mountPath": ["redesign", "approval"],
         "localNodeId": "continued"
       },
       "redesign/approval/stopped": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign",
-          "approval"
-        ],
+        "mountPath": ["redesign", "approval"],
         "localNodeId": "stopped"
       },
       "redesign/approval/replan": {
         "nodeType": "compute",
-        "mountPath": [
-          "redesign",
-          "approval"
-        ],
+        "mountPath": ["redesign", "approval"],
         "localNodeId": "replan"
       }
     },
@@ -1360,9 +1237,7 @@
     "composition": {
       "mounts": [
         {
-          "mountPath": [
-            "documentation"
-          ],
+          "mountPath": ["documentation"],
           "workflowName": "autodoc",
           "entryNode": "documentation",
           "exits": {
@@ -1372,9 +1247,7 @@
           "maxSteps": 24
         },
         {
-          "mountPath": [
-            "redesign"
-          ],
+          "mountPath": ["redesign"],
           "workflowName": "plan-change",
           "entryNode": "redesign",
           "exits": {
@@ -1384,10 +1257,7 @@
           "maxSteps": 400
         },
         {
-          "mountPath": [
-            "redesign",
-            "approval"
-          ],
+          "mountPath": ["redesign", "approval"],
           "workflowName": "plan-approval",
           "entryNode": "redesign/approval",
           "exits": {
@@ -1397,10 +1267,7 @@
           }
         },
         {
-          "mountPath": [
-            "redesign",
-            "design"
-          ],
+          "mountPath": ["redesign", "design"],
           "workflowName": "autoplan",
           "entryNode": "redesign/design",
           "exits": {
@@ -1410,10 +1277,7 @@
           "maxSteps": 10
         },
         {
-          "mountPath": [
-            "redesign",
-            "documentation"
-          ],
+          "mountPath": ["redesign", "documentation"],
           "workflowName": "autodoc",
           "entryNode": "redesign/documentation",
           "exits": {

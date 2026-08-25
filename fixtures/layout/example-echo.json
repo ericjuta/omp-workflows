@@ -47,9 +47,7 @@
     {
       "stepIndex": -1,
       "nodeStyle": "line",
-      "lines": [
-        "▶ · reply [agent] not visited ■"
-      ]
+      "lines": ["▶ · reply [agent] not visited ■"]
     },
     {
       "stepIndex": -1,

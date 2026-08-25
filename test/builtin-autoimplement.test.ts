@@ -21,12 +21,13 @@ const HEAD_TWO_REVISION = "4".repeat(40);
 let originalPath = "";
 let originalHome: string | undefined;
 let commandDir = "";
+let fallbackCommandDir = "";
 let repository = "";
 let publishedBaseRevision = "";
 let publishedHeadRevision = "";
 
-async function installCommand(name: string, body: string): Promise<void> {
-  const target = path.join(commandDir, name);
+async function installCommand(name: string, body: string, directory = commandDir): Promise<void> {
+  const target = path.join(directory, name);
   await fs.writeFile(target, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
 }
 
@@ -299,6 +300,7 @@ beforeEach(async () => {
   originalPath = process.env.PATH ?? "";
   originalHome = process.env.HOME;
   commandDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-workflows-commands-"));
+  fallbackCommandDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-workflows-fallback-commands-"));
   repository = await makeTempDir("pi-workflows-autoimplement-repo");
   await execFileAsync("git", ["init", "-q", "-b", "main"], { cwd: repository });
   await execFileAsync("git", ["config", "user.name", "Test User"], { cwd: repository });
@@ -319,9 +321,10 @@ beforeEach(async () => {
   publishedHeadRevision = (
     await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repository })
   ).stdout.trim();
+  await installCommand("omp", "exit 0", fallbackCommandDir);
   await installCommand("omp-reviewer", "printf '%s\\n' \"review complete\"");
   await installCommand("gh", "printf '%s\\n' \"checks complete\"");
-  process.env.PATH = `${commandDir}:${originalPath}`;
+  process.env.PATH = `${commandDir}:${originalPath}:${fallbackCommandDir}`;
 });
 
 afterEach(() => {

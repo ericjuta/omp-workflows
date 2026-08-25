@@ -1,8 +1,24 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import autoimplementWorkflow from "../src/builtins/autoimplement.workflow.js";
 import { WorkflowEngine } from "../src/workflows/engine.js";
 import { digest } from "../src/workflows/human-decision.js";
 import { makeTempDir, ScriptedExecutor } from "./helpers.js";
+let originalPath = "";
+
+beforeEach(async () => {
+  originalPath = process.env.PATH ?? "";
+  const commandDir = await makeTempDir("autoimplement-plan-discovery-commands");
+  for (const name of ["omp", "omp-reviewer"]) {
+    await fs.writeFile(path.join(commandDir, name), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  }
+  process.env.PATH = `${originalPath}:${commandDir}`;
+});
+
+afterEach(() => {
+  process.env.PATH = originalPath;
+});
 
 function documentedPlan(plan: unknown) {
   return {

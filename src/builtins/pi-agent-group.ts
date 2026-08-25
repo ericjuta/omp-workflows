@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 import * as codingAgentModule from "@earendil-works/pi-coding-agent";
 import {
   createAgentSession,
-  createAgentSessionFromServices,
   createAgentSessionRuntime,
   createAgentSessionServices,
   DefaultPackageManager,
@@ -1294,8 +1293,12 @@ async function createProviderSdkSession(
             `${dispatch.provider}/${dispatch.id}`,
           );
         }
-        const sessionResult = await createAgentSessionFromServices({
-          services,
+        const sessionResult = await createAgentSession({
+          cwd: services.cwd,
+          agentDir: services.agentDir,
+          modelRuntime: services.modelRuntime,
+          settingsManager: services.settingsManager,
+          resourceLoader: services.resourceLoader,
           sessionManager,
           ...(sessionStartEvent === undefined ? {} : { sessionStartEvent }),
           tools: request.tools,

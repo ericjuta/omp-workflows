@@ -5,11 +5,7 @@ import { fileURLToPath } from "node:url";
 import * as codingAgentModule from "@earendil-works/pi-coding-agent";
 import {
   createAgentSession,
-  createAgentSessionRuntime,
-  createAgentSessionServices,
-  DefaultPackageManager,
   DefaultResourceLoader,
-  ExtensionRunner,
   getAgentDir,
   ModelRegistry,
   SessionManager,
@@ -17,7 +13,13 @@ import {
   type LoadExtensionsResult,
   type ResolvedResource,
 } from "@earendil-works/pi-coding-agent";
-import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type {
+  createAgentSessionRuntime as CreateAgentSessionRuntime,
+  createAgentSessionServices as CreateAgentSessionServices,
+  DefaultPackageManager as DefaultPackageManagerConstructor,
+  ExtensionRunner as ExtensionRunnerConstructor,
+  ModelRuntime,
+} from "@earendil-works/pi-coding-agent";
 import { redactSensitiveText } from "../workflows/text.js";
 
 const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
@@ -49,8 +51,20 @@ const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 
 type ModelRuntimeConstructor = typeof ModelRuntime;
 
-const PiModelRuntime = (codingAgentModule as unknown as { ModelRuntime?: ModelRuntimeConstructor })
-  .ModelRuntime;
+type CodingAgentCompatibilityModule = {
+  ModelRuntime?: ModelRuntimeConstructor;
+  createAgentSessionRuntime?: typeof CreateAgentSessionRuntime;
+  createAgentSessionServices?: typeof CreateAgentSessionServices;
+  DefaultPackageManager?: typeof DefaultPackageManagerConstructor;
+  ExtensionRunner?: typeof ExtensionRunnerConstructor;
+};
+const {
+  ModelRuntime: PiModelRuntime,
+  createAgentSessionRuntime,
+  createAgentSessionServices,
+  DefaultPackageManager,
+  ExtensionRunner,
+} = codingAgentModule as unknown as CodingAgentCompatibilityModule;
 
 export type PiAgentTool = "read" | "grep" | "find" | "ls";
 export type PiAgentThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -702,6 +716,9 @@ async function resolveChildExtensionPaths(
   signal: AbortSignal,
 ): Promise<ChildExtensionAdmission | undefined> {
   signal.throwIfAborted();
+  if (DefaultPackageManager === undefined) {
+    throw new Error("Pi child extension package manager is unavailable");
+  }
   const packageManager = new DefaultPackageManager({ cwd, agentDir, settingsManager });
   const resolved = await packageManager.resolve(async () => "skip");
   const candidates = new Map<string, ExtensionCandidate>();
@@ -906,6 +923,7 @@ async function settleExtensionPreflight(result: LoadExtensionsResult, cwd: strin
 
 async function shutdownLoadedExtensions(result: LoadExtensionsResult, cwd: string): Promise<void> {
   if (PiModelRuntime === undefined) throw new Error("Pi model runtime is unavailable");
+  if (ExtensionRunner === undefined) throw new Error("Pi extension runner is unavailable");
   const signal = AbortSignal.timeout(MAX_CLEANUP_TIMEOUT_MS);
   const modelRuntime = await PiModelRuntime.create({
     allowModelNetwork: false,
@@ -1233,6 +1251,13 @@ async function createProviderSdkSession(
   signal: AbortSignal,
 ): Promise<PiAgentSession> {
   if (PiModelRuntime === undefined) throw new Error("Pi model runtime is unavailable");
+  if (createAgentSessionRuntime === undefined || createAgentSessionServices === undefined) {
+    throw new PiAgentGroupError(
+      request.id,
+      "cannot load provider extensions",
+      "Pi child session runtime is unavailable",
+    );
+  }
   const agentDir = getAgentDir();
   let latestExtensions: LoadExtensionsResult | undefined;
   let providerRegistrationAttempted = false;

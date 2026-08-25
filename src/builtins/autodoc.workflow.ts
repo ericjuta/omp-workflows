@@ -52,7 +52,6 @@ type DocumentationAssessment = {
   reason: string;
   evidence: unknown;
 };
-
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${label} must be an object`);
@@ -67,8 +66,9 @@ function requireString(value: unknown, label: string): string {
   return value.trim();
 }
 
-function resolveRepositoryPath(value: unknown, label: string): string {
+function requireAbsolutePath(value: unknown, label: string): string {
   const result = requireString(value, label);
+  if (!path.isAbsolute(result)) throw new Error(`${label} must be absolute`);
   return path.resolve(result);
 }
 
@@ -109,7 +109,7 @@ function parseInput(value: unknown): AutodocInput {
     task: requireString(input.task, "autodoc task"),
     ...(input.plan !== undefined ? { plan: input.plan } : {}),
     ...(input.repository !== undefined
-      ? { repository: resolveRepositoryPath(input.repository, "autodoc repository") }
+      ? { repository: requireAbsolutePath(input.repository, "autodoc repository") }
       : {}),
     ...(documents !== undefined ? { documents: stringArray(documents, "autodoc documents") } : {}),
     ...(documentation !== undefined ? { documentation } : {}),
@@ -157,13 +157,27 @@ function currentPlan(context: WorkflowNodeContext): unknown {
   if (located?.route === "found" && located.plan !== undefined) return located.plan;
   throw new Error("autodoc does not have a selected plan");
 }
+function mutationRepository(context: WorkflowNodeContext): string {
+  return requireAbsolutePath(
+    (context.input as AutodocInput).repository,
+    "autodoc mutation repository",
+  );
+}
+
+function repositoryRules(context: WorkflowNodeContext): string[] {
+  const repository = mutationRepository(context);
+  return [
+    `Prepared repository: ${repository}`,
+    `Run every documentation command from exactly ${repository}; do not access or modify another repository.`,
+    "Preserve every pre-existing untracked and ignored file, and every tracked file outside the current authorized documentation changes. Never run git clean or any equivalent cleanup. Never overwrite or delete a pre-existing untracked or ignored file.",
+  ];
+}
 
 function blockedReason(context: WorkflowNodeContext): AutodocBlocked {
   const request = context.input as AutodocInput;
   const verify = context.outputs.verifyDocumentation as Record<string, unknown> | undefined;
   const assessment = context.outputs.inspectDocumentation as DocumentationAssessment | undefined;
   const located = context.outputs.locatePlan as LocatedPlan | undefined;
-
   if (verify !== undefined && verify.passed === false) {
     let reason = "Documentation verification failed.";
     if (Array.isArray(verify.failures) && verify.failures.length > 0) {
@@ -279,6 +293,7 @@ export const autodocWorkflow = defineWorkflow({
         const assessment = context.outputs.inspectDocumentation as DocumentationAssessment;
         return [
           "Update the canonical specification and implementation plan to preserve the selected plan exactly.",
+          ...repositoryRules(context),
           "Use the repository documentation rules and keep the text plain and complete.",
           "Do not redesign the solution and do not implement code.",
           `Task: ${request.task}`,
@@ -302,11 +317,13 @@ export const autodocWorkflow = defineWorkflow({
     verifyDocumentation: agent({
       timeoutMs: 20 * 60_000,
       statusDetail: "verifying documentation",
-      prompt: ({ outputs }) => {
+      prompt: (context) => {
+        const { outputs } = context;
         const update = outputs.updateDocumentation as { files?: string[] } | undefined;
         const files = Array.isArray(update?.files) ? update.files : [];
         return [
           "Verify the changed canonical documentation.",
+          ...repositoryRules(context),
           "Run formatting, link, and documentation checks only against the named changed files, not repo-wide SimpleDoc.",
           "Do not implement code.",
           `Target documentation files: ${JSON.stringify(files)}`,

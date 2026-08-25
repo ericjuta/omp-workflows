@@ -279,7 +279,7 @@ describe("monitor automatic repair", () => {
     expect(state.definitionDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
   });
 
-  it("fails implementation when the repair repository is missing", async () => {
+  it("rejects repair authorization when the repository is missing", async () => {
     const engine = new WorkflowEngine({
       executor: repairExecutor(stopCheck()),
       store: new WorkflowRunStore(await makeTempDir("pi-workflows-monitor-missing-repo")),
@@ -294,23 +294,23 @@ describe("monitor automatic repair", () => {
       { cwd: repository, homeDir: await makeTempDir("pi-workflows-monitor-missing-repo-home") },
       builtinWorkflowCatalog,
     );
-    const { state } = await engine.run(
-      resolved.definition,
-      {
-        task: "Monitor and repair test-a",
-        stopWhen: "test-a passes",
-        maxChecks: 3,
-        repair: {
-          authorized: true,
-          scope: "current repository",
-          merge: true,
-          approval: { mode: "skip" },
+    await expect(
+      engine.run(
+        resolved.definition,
+        {
+          task: "Monitor and repair test-a",
+          stopWhen: "test-a passes",
+          maxChecks: 3,
+          repair: {
+            authorized: true,
+            scope: "current repository",
+            merge: true,
+            approval: { mode: "skip" },
+          },
         },
-      },
-      { workflowSource: resolved.source },
-    );
-    expect(state.status).toBe("failed");
-    expect(state.error).toMatch(/monitor repair repository is required/);
+        { workflowSource: resolved.source },
+      ),
+    ).rejects.toThrow("repair repository must be a string");
   });
 
   it("stops when the same target evidence returns after repair", async () => {

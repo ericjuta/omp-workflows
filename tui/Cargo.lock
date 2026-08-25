@@ -1090,7 +1090,7 @@ dependencies = [
 
 [[package]]
 name = "omp-workflows"
-version = "0.14.2"
+version = "0.14.4"
 dependencies = [
  "anyhow",
  "chrono",

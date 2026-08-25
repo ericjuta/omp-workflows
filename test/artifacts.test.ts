@@ -45,10 +45,10 @@ describe("encodeValue", () => {
     expect(isArtifactValue(encoded.text)).toBe(true);
   });
 
-  it("deduplicates identical content", async () => {
+  it("deduplicates identical content while preserving distinct leaves", async () => {
     const { runDir, writer } = await makeWriter();
-    await encodeValue({ a: BIG, b: BIG, deep: [{ c: BIG }] }, writer);
-    expect(await fs.readdir(path.join(runDir, "artifacts"))).toHaveLength(1);
+    await encodeValue({ a: BIG, b: BIG, deep: [{ c: BIG }], distinct: `${BIG}z` }, writer);
+    expect(await fs.readdir(path.join(runDir, "artifacts"))).toHaveLength(2);
   });
 
   it("escapes user objects that collide with the sentinel shape", async () => {

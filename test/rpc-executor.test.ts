@@ -149,6 +149,26 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     let toolCall: ((event: { toolName: string; input: unknown }) => unknown) | undefined;
     const api = {
       registerTool: () => undefined,
+      getAllTools: () => [
+        {
+          name: "read",
+          sourceInfo: {
+            path: "<builtin:read>",
+            source: "builtin",
+            scope: "temporary",
+            origin: "top-level",
+          },
+        },
+        {
+          name: "write",
+          sourceInfo: {
+            path: "<builtin:write>",
+            source: "builtin",
+            scope: "temporary",
+            origin: "top-level",
+          },
+        },
+      ],
       on: (event: string, handler: (event: { toolName: string; input: unknown }) => unknown) => {
         if (event === "tool_call") toolCall = handler;
       },

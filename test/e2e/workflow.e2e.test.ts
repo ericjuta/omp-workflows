@@ -472,7 +472,7 @@ describe.sequential("pi-workflows end to end", () => {
     // workflow tool and ends its turn after each tool result.
     mock = await startMockOpenAiServer(
       ({ lastUserText, lastRole }) => {
-        if (lastUserText.includes("Verify and combine the Sanity Check reviews.")) {
+        if (lastUserText.includes("Check the review claims against the collected evidence")) {
           return {
             kind: "text",
             text: JSON.stringify({
@@ -496,7 +496,7 @@ describe.sequential("pi-workflows end to end", () => {
             }),
           };
         }
-        if (lastUserText.includes("Review the contribution in the current repository.")) {
+        if (lastUserText.includes("Review the change in the current repository.")) {
           const requested = ["necessity", "duplication", "contracts", "scope_tests"].filter(
             (area) => lastUserText.includes(area),
           );

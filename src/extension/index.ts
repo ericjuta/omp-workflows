@@ -47,7 +47,10 @@ import {
 } from "../workflows/human-decision.js";
 import { discoverWorkflows, resolveWorkflowRef } from "../workflows/loader.js";
 import { migrateLegacyWorkflowSources } from "../workflows/migrate-sources.js";
-import { observationOnlyToolBlockReason } from "../workflows/observation-tool-policy.js";
+import {
+  observationOnlyToolBlockReason,
+  type ToolInfo,
+} from "../workflows/observation-tool-policy.js";
 import { appendProgressHistory, progressRecordsFromTrace } from "../workflows/progress.js";
 import {
   findMatchingLiveRuns,
@@ -3550,7 +3553,13 @@ export default function piWorkflows(pi: ExtensionAPI) {
     // assistant turn ends. Keep the observation policy latched for every
     // later tool call in that same turn.
     observationOnlyTurnActive = true;
-    const reason = observationOnlyToolBlockReason(event.toolName, event.input);
+    let currentTools: ToolInfo[];
+    try {
+      currentTools = pi.getAllTools();
+    } catch {
+      currentTools = [];
+    }
+    const reason = observationOnlyToolBlockReason(event.toolName, event.input, currentTools);
     return reason === null ? undefined : { block: true, reason };
   });
 

@@ -1,8 +1,6 @@
-import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
   attestReviewerExecutable,
@@ -24,7 +22,6 @@ import {
   verifyReviewerExecutable,
 } from "../src/builtins/autoimplement-command-batches.js";
 import { makeTempDir } from "./helpers.js";
-const execFileAsync = promisify(execFile);
 const BASE_REVISION = "1".repeat(40);
 const HEAD_REVISION = "2".repeat(40);
 
@@ -126,12 +123,15 @@ describe("autoimplement command batch contracts", () => {
       { command: "ruff", args: ["format", "--check", "."] },
       { command: "make", args: ["test"] },
       { command: "make", args: ["format-check"] },
+      { command: "make", args: ["test:ci"] },
       { command: "just", args: ["check"] },
       { command: "just", args: ["format:check"] },
+      { command: "just", args: ["lint:ci"] },
       { command: "mvn", args: ["-q", "verify"] },
       { command: "gradle", args: ["test", "--no-daemon"] },
       { command: "gradle", args: [":app:test", "checkstyleMain"] },
       { command: "dotnet", args: ["test", "--no-restore"] },
+      { command: "dotnet", args: ["test", "--no-build"] },
       { command: "dotnet", args: ["format", "--verify-no-changes"] },
       { command: "mix", args: ["test"] },
       { command: "mix", args: ["format", "--check-formatted"] },
@@ -146,7 +146,26 @@ describe("autoimplement command batch contracts", () => {
       validateVerificationCommandSafety("ruff", ["format", "."], "verification"),
     ).toThrow(/mutation or publication/);
     for (const command of ["make", "just", "gradle"]) {
-      for (const target of ["format", "fmt", "fix", "write", "update-snapshots", "generate"]) {
+      for (const target of [
+        "format",
+        "fmt",
+        "fix",
+        "write",
+        "update-snapshots",
+        "generate",
+        "lint:fix",
+        "test:update",
+        "build:deploy",
+        "lint-fix",
+        "test-write",
+        "deploy:ci",
+        "publish:ci",
+        "deploy:dry-run",
+        "install:check",
+        "postinstall:check",
+        "push:check",
+        "merge:unit",
+      ]) {
         expect(() => validateVerificationCommandSafety(command, [target], "verification")).toThrow(
           /target is not verification-only/,
         );
@@ -154,15 +173,30 @@ describe("autoimplement command batch contracts", () => {
     }
     for (const candidate of [
       { command: "cargo", args: ["publish"] },
+      { command: "cargo", args: ["test", "--no-run"] },
       { command: "go", args: ["run", "."] },
       { command: "vitest", args: ["dev"] },
       { command: "playwright", args: ["install"] },
       { command: "cypress", args: ["open"] },
+      { command: "cypress", args: ["verify"] },
+      { command: "go", args: ["version"] },
+      { command: "ctest", args: ["-n"] },
+      { command: "ctest", args: ["--show-only"] },
+      { command: "eslint", args: [".", "--no-error-on-unmatched-pattern"] },
+      { command: "biome", args: ["check", "--no-errors-on-unmatched", "."] },
+      { command: "mvn", args: ["-v", "test"] },
+      { command: "pytest", args: ["--collect-only"] },
+      { command: "mocha", args: ["--dry-run"] },
+      { command: "just", args: ["--dry-run", "check"] },
+      { command: "jest", args: ["--listtests"] },
+      { command: "playwright", args: ["test", "--list"] },
       { command: "tsc", args: [] },
       { command: "prettier", args: ["."] },
       { command: "biome", args: ["migrate"] },
       { command: "eslint", args: ["--fix=true", "."] },
       { command: "pytest", args: ["--pyargs", "payload"] },
+      { command: "pytest", args: ["@/tmp/pytest-args.rsp"] },
+      { command: "dotnet", args: ["test", "@/tmp/dotnet-args.rsp"] },
       { command: "pytest", args: ["../outside_test.py"] },
       { command: "cargo", args: ["test", "../outside"] },
       { command: "go", args: ["test", "C:\\outside"] },
@@ -183,46 +217,19 @@ describe("autoimplement command batch contracts", () => {
     }
   });
 
-  it("accepts only tracked in-repository build wrappers", async () => {
+  it("rejects repository build wrapper paths and selector symlink escapes", async () => {
     const repository = await makeTempDir("verification-repository-wrapper");
-    await execFileAsync("git", ["init", "-q"], { cwd: repository });
-    await fs.writeFile(path.join(repository, "gradlew"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-    await execFileAsync("git", ["add", "--", "gradlew"], { cwd: repository });
     const command = {
-      id: "gradle-test",
-      command: "./gradlew",
-      args: ["test", "--no-daemon"],
+      id: "verification",
+      command: "pytest",
+      args: ["-q"],
       cwd: repository,
       timeoutMs: 60_000,
       maxOutputChars: 100_000,
     };
-
-    expect(parseVerificationCommandPlan({ commands: [command] }, repository)).toMatchObject({
-      commands: [{ id: "gradle-test", command: "./gradlew" }],
-    });
-    expect(() => parseVerificationCommandPlan({ commands: [command] })).toThrow(
-      /repository wrapper is not trusted/,
-    );
-
-    await fs.writeFile(path.join(repository, "mvnw"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-    expect(() =>
-      parseVerificationCommandPlan(
-        { commands: [{ ...command, id: "maven-test", command: "./mvnw", args: ["test"] }] },
-        repository,
-      ),
-    ).toThrow(/repository wrapper is not trusted/);
-    await execFileAsync("git", ["add", "--", "mvnw"], { cwd: repository });
-    expect(
-      parseVerificationCommandPlan(
-        { commands: [{ ...command, id: "maven-test", command: "./mvnw", args: ["test"] }] },
-        repository,
-      ),
-    ).toMatchObject({ commands: [{ id: "maven-test", command: "./mvnw" }] });
-
-    await fs.writeFile(path.join(repository, "gradlew.bat"), "@exit /b 0\r\n");
-    await fs.writeFile(path.join(repository, "mvnw.cmd"), "@exit /b 0\r\n");
-    await execFileAsync("git", ["add", "--", "gradlew.bat", "mvnw.cmd"], { cwd: repository });
     for (const wrapper of [
+      "./gradlew",
+      "./mvnw",
       ".\\gradlew",
       ".\\mvnw",
       "./gradlew.bat",
@@ -232,10 +239,33 @@ describe("autoimplement command batch contracts", () => {
     ]) {
       expect(() =>
         parseVerificationCommandPlan(
-          { commands: [{ ...command, id: "windows-wrapper", command: wrapper, args: ["test"] }] },
+          {
+            commands: [{ ...command, id: "repository-wrapper", command: wrapper, args: ["test"] }],
+          },
           repository,
         ),
       ).toThrow(/command is not allowed/);
+    }
+
+    const outsideDir = await makeTempDir("verification-symlink-outside");
+    const symlinkTarget = path.join(repository, "tests-symlink");
+    await fs.symlink(outsideDir, symlinkTarget);
+    for (const escaping of [
+      { command: "pytest", args: ["tests-symlink/payload.py::test_fn"] },
+      { command: "bun", args: ["test", "tests-symlink/payload.test.ts"] },
+      { command: "npm", args: ["test", "tests-symlink/payload.js"] },
+      { command: "mix", args: ["test", "tests-symlink/payload_test.exs"] },
+    ]) {
+      expect(() =>
+        parseVerificationCommandPlan(
+          {
+            commands: [
+              { ...command, id: "symlink-escape", command: escaping.command, args: escaping.args },
+            ],
+          },
+          repository,
+        ),
+      ).toThrow(/cannot execute arbitrary files or modules/);
     }
   });
 
@@ -590,9 +620,19 @@ describe("autoimplement command batch contracts", () => {
     ).toMatchObject({ commands: [{ id: "format-check" }] });
     expect(
       parseVerificationCommandPlan({
-        commands: [{ ...command("merge-test", first), command: "npm", args: ["test", "merge"] }],
+        commands: [
+          { ...command("test-ci", first), command: "npm", args: ["run", "test:ci"] },
+          { ...command("lint-ci", first), command: "npm", args: ["run", "lint:ci"] },
+        ],
       }),
-    ).toMatchObject({ commands: [{ id: "merge-test" }] });
+    ).toMatchObject({ commands: [{ id: "test-ci" }, { id: "lint-ci" }] });
+    expect(
+      parseVerificationCommandPlan({
+        commands: [
+          { ...command("test-silent", first), command: "npm", args: ["test", "--silent"] },
+        ],
+      }),
+    ).toMatchObject({ commands: [{ id: "test-silent" }] });
     for (const args of [
       ["test", "--help"],
       ["--version", "run", "check"],
@@ -628,6 +668,16 @@ describe("autoimplement command batch contracts", () => {
       { command: "pnpm", args: ["dlx", "release-tool"] },
       { command: "bun", args: ["x", "release-tool"] },
       { command: "node", args: ["-e", "process.exit(0)"] },
+      { command: "npm", args: ["test", "attacker-marker"] },
+      { command: "npm", args: ["run", "check", "attacker-marker"] },
+      { command: "bun", args: ["test", "/tmp/attacker.test.ts"] },
+      { command: "bun", args: ["test", "@/tmp/bun-test-args.rsp"] },
+      { command: "npm", args: ["test", "/tmp/outside.js"] },
+      { command: "npm", args: ["test", "@/tmp/npm-test-args.rsp"] },
+      { command: "pnpm", args: ["test", "../outside.js"] },
+      { command: "yarn", args: ["test", "C:\\outside.js"] },
+      { command: "bun", args: ["run", "check", "/tmp/attacker.ts"] },
+      { command: "npm", args: ["run", "check", "https://attacker.test/payload.js"] },
       { command: "npm", args: ["test", "--pre=/other"] },
       { command: "npm", args: ["run", "check", "--pre=/other"] },
       { command: "pnpm", args: ["test", "-C/other"] },
@@ -641,7 +691,7 @@ describe("autoimplement command batch contracts", () => {
           commands: [{ ...command("wrapped", first), ...wrapped }],
         }),
       ).toThrow(
-        /not allowed|cannot launch|inline interpreter|mutation or publication|passthrough|retarget|unknown package-manager option/,
+        /not allowed|cannot launch|inline interpreter|mutation or publication|passthrough|retarget|unknown package-manager option|arbitrary files or modules/,
       );
     }
     for (const args of [
@@ -684,6 +734,18 @@ describe("autoimplement command batch contracts", () => {
       "write",
       "update-snapshots",
       "generate",
+      "lint:fix",
+      "test:update",
+      "build:deploy",
+      "lint-fix",
+      "test-write",
+      "deploy:ci",
+      "publish:ci",
+      "deploy:dry-run",
+      "install:check",
+      "postinstall:check",
+      "push:check",
+      "merge:unit",
     ]) {
       expect(() =>
         parseVerificationCommandPlan({

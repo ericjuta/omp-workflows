@@ -69,7 +69,10 @@ describe("ConversationStepExecutor", () => {
     expect(executor.pendingStepId).toBe("step1");
 
     const result = await executor.submit("step1", "a1", { x: 1 });
-    expect(result.accepted).toBe(true);
+    expect(result).toEqual({
+      accepted: true,
+      message: 'Output accepted for step "step1".',
+    });
     await expect(stepPromise).resolves.toEqual({ output: { x: 1 } });
     expect(executor.pendingStepId).toBeNull();
   });

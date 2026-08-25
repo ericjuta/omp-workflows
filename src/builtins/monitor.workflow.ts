@@ -1,3 +1,4 @@
+import path from "node:path";
 import {
   action,
   agent,
@@ -41,7 +42,7 @@ export type MonitorRepairPolicy = {
   authorized: true;
   scope?: string;
   constraints?: string[];
-  repository?: string;
+  repository: string;
   baseBranch?: string;
   merge?: boolean;
   approval?: PlanApprovalPolicy;
@@ -217,6 +218,10 @@ export function prepareMonitorInput(input: unknown): MonitorConfig {
     if (raw.merge !== undefined && typeof raw.merge !== "boolean") {
       throw new Error("repair merge must be a boolean");
     }
+    const repository = requireBoundedString(raw.repository, "repair repository", 4_000);
+    if (!path.isAbsolute(repository)) {
+      throw new Error("repair repository must be an absolute path");
+    }
     const approval = parsePlanApprovalPolicy(raw.approval);
     repair = {
       authorized: true,
@@ -224,9 +229,7 @@ export function prepareMonitorInput(input: unknown): MonitorConfig {
         ? { scope: requireBoundedString(raw.scope, "repair scope", 4_000) }
         : {}),
       ...(raw.constraints !== undefined ? { constraints: [...raw.constraints] as string[] } : {}),
-      ...(raw.repository !== undefined
-        ? { repository: requireBoundedString(raw.repository, "repair repository", 4_000) }
-        : {}),
+      repository: path.resolve(repository),
       ...(raw.baseBranch !== undefined
         ? { baseBranch: requireBoundedString(raw.baseBranch, "repair base branch", 256) }
         : {}),
@@ -462,7 +465,8 @@ const monitorWorkflow: WorkflowDefinition = defineWorkflow({
         const repair = (outputs.check as MonitorCheck).repair;
         const documented = currentRepairPlan(outputs);
         if (repair === undefined) throw new Error("monitor repair details are missing");
-        if (config.repair?.repository === undefined) {
+        if (config.repair === undefined) throw new Error("monitor repair policy is missing");
+        if (config.repair.repository === undefined) {
           throw new Error("monitor repair repository is required");
         }
         const request: AutoimplementInput = {

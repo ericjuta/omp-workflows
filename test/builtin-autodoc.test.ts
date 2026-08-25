@@ -19,9 +19,7 @@ describe("built-in autodoc", () => {
     expect(() => parse(null)).toThrow(/object/);
     expect(() => parse({ task: "" })).toThrow(/non-empty/);
     expect(() => parse({ task: "demo", documents: "bad" })).toThrow(/array/);
-    expect(parse({ task: "demo", repository: "relative" })).toMatchObject({
-      repository: path.resolve("relative"),
-    });
+    expect(() => parse({ task: "demo", repository: "relative" })).toThrow(/absolute/);
     expect(() =>
       parse({
         task: "demo",
@@ -177,6 +175,7 @@ describe("built-in autodoc", () => {
   });
 
   it("updates and verifies stale documentation", async () => {
+    const repository = await makeTempDir("builtin-autodoc-repository");
     const executor = new ScriptedExecutor()
       .respond("inspectDocumentation", {
         output: {
@@ -203,6 +202,7 @@ describe("built-in autodoc", () => {
     const { state } = await run(executor, {
       task: "implement feature",
       plan: { steps: ["one"] },
+      repository,
     });
     expect(state.status).toBe("completed");
     expect(state.finalOutput).toMatchObject({
@@ -210,9 +210,18 @@ describe("built-in autodoc", () => {
       documentation: { state: "updated" },
       verification: { passed: true },
     });
+    for (const nodeId of ["updateDocumentation", "verifyDocumentation"]) {
+      const prompt = executor.requests.find(
+        (request) => request.contract.nodeId === nodeId,
+      )?.prompt;
+      expect(prompt).toContain(`Prepared repository: ${repository}`);
+      expect(prompt).toContain("Preserve every pre-existing untracked and ignored file");
+      expect(prompt).toContain("Never run git clean");
+    }
   });
 
   it("limits verification to named files and reports verification failures", async () => {
+    const repository = await makeTempDir("builtin-autodoc-verification-repository");
     const files = ["docs/spec.md", "docs/plans/plan.md"];
     const executor = new ScriptedExecutor()
       .respond("inspectDocumentation", {
@@ -241,6 +250,7 @@ describe("built-in autodoc", () => {
     const { state } = await run(executor, {
       task: "implement feature",
       plan: { steps: ["one"] },
+      repository,
     });
     const verifyRequest = executor.requests.find(
       (request) => request.contract.nodeId === "verifyDocumentation",
@@ -253,6 +263,25 @@ describe("built-in autodoc", () => {
       reason: "docs/spec.md has a broken link",
       evidence: ["docs/spec.md has a broken link"],
     });
+  });
+  it("refuses a documentation mutation without a prepared repository", async () => {
+    const executor = new ScriptedExecutor().respond("inspectDocumentation", {
+      output: {
+        route: "update",
+        files: ["docs/spec.md"],
+        reason: "The selected plan is stale.",
+        evidence: "stale digest",
+      },
+    });
+    const { state } = await run(executor, {
+      task: "implement feature",
+      plan: { steps: ["one"] },
+    });
+    expect(state.status).toBe("failed");
+    expect(state.error).toContain("autodoc mutation repository");
+    expect(executor.requests.map((request) => request.contract.nodeId)).toEqual([
+      "inspectDocumentation",
+    ]);
   });
 
   it("finds an existing plan from context without devising one", async () => {

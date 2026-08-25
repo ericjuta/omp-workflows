@@ -71,6 +71,14 @@ describe("built-in autoplan", () => {
       planDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       previousPlanDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
     });
+    const prompts = Object.fromEntries(
+      executor.requests.map((request) => [request.contract.nodeId, request.prompt]),
+    );
+    expect(prompts.frame).toContain("State the goal and describe what success looks like");
+    expect(prompts.propose).toContain("Design the best practical solution");
+    expect(prompts.ideal).toContain("Describe the best possible end state");
+    expect(prompts.choose).toContain("Select the right solution yourself");
+    expect(prompts.plan).toContain("name the change, its location, and the evidence");
   });
 
   it("blocks only when no in-scope solution exists", async () => {
@@ -96,5 +104,26 @@ describe("built-in autoplan", () => {
       reason: "No public interface can meet the success criteria.",
     });
     expect(state.steps.some((step) => step.nodeId === "plan")).toBe(false);
+  });
+
+  it("projects the complete selected plan into the final presentation", async () => {
+    const finalDetail = `final detail ${"x".repeat(60_000)}`;
+    const finalOutput = {
+      status: "ready",
+      plan: { summary: "complete plan", finalDetail },
+    };
+    const presentation = autoplanWorkflow.presentationPrompt;
+    expect(typeof presentation).toBe("function");
+    if (typeof presentation !== "function") throw new Error("expected presentation function");
+
+    const prompt = await presentation({
+      state: { finalOutput } as never,
+      finalOutput,
+      signal: new AbortController().signal,
+    });
+
+    expect(prompt).toContain(finalDetail);
+    expect(prompt).toContain("Do not impose a character or sentence limit");
+    expect(prompt?.length).toBeGreaterThan(50_000);
   });
 });

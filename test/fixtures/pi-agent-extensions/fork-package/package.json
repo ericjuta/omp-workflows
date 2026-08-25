@@ -1,0 +1,17 @@
+{
+  "name": "@ericjuta/omp-workflows",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@ericjuta/omp-workflows": "0.0.0"
+  },
+  "peerDependencies": {
+    "@osolmaz/pi-workflows": "0.0.0"
+  },
+  "optionalDependencies": {},
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

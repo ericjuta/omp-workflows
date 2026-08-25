@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   WORKFLOW_OBSERVATION_ONLY_ENV,
   observationOnlyToolBlockReason,
+  type ToolInfo,
 } from "../workflows/observation-tool-policy.js";
 import {
   parseWorkflowSubmissionInput,
@@ -19,7 +20,13 @@ export const RPC_SUBMISSION_PREFIX = "PI_WORKFLOWS_STEP_SUBMISSION ";
 export default function piWorkflowsRpcBridge(pi: ExtensionAPI) {
   if (process.env[WORKFLOW_OBSERVATION_ONLY_ENV] === "1") {
     pi.on("tool_call", (event) => {
-      const reason = observationOnlyToolBlockReason(event.toolName, event.input);
+      let currentTools: ToolInfo[];
+      try {
+        currentTools = pi.getAllTools();
+      } catch {
+        currentTools = [];
+      }
+      const reason = observationOnlyToolBlockReason(event.toolName, event.input, currentTools);
       return reason === null ? undefined : { block: true, reason };
     });
   }

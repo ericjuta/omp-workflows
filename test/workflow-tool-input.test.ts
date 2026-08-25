@@ -70,6 +70,7 @@ describe("workflow tool input", () => {
   });
 
   it.each([
+    null,
     { action: "unknown" },
     { action: "start" },
     { action: "answer" },
@@ -163,6 +164,21 @@ describe("workflow tool input", () => {
     });
     expect(() => parseToolInput(schema as never, "bad", "workflow")).toThrow(
       "Invalid workflow tool input: invalid value",
+    );
+    const unexpectedSchema = {
+      "~refine": [
+        {
+          check() {
+            throw new Error("schema exploded");
+          },
+          error() {
+            return "unused";
+          },
+        },
+      ],
+    };
+    expect(() => parseToolInput(unexpectedSchema as never, "bad", "workflow")).toThrow(
+      "schema exploded",
     );
   });
 });

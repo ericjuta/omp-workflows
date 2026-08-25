@@ -36,7 +36,7 @@ The monitor checks a target, sends one status notification after every accepted 
 
 `checkTimeoutMinutes` is from 5 through 1,440. When omitted, the workflow uses the larger of 60 minutes and `everyMinutes`. The node timeout includes the existing two-minute runtime margin.
 
-`repair` must set `authorized: true`. It can constrain scope, repository, base branch, merge behavior, and other implementation constraints. Omitted `merge` means the repair can prepare but cannot merge a pull request; merging requires explicit `merge: true`. Without this object the monitor is observation-only. Repair authority does not permit a protected model, benchmark, credential, hardware, spending, or scope change.
+`repair` must set `authorized: true` and name the target with an absolute `repository` path. It can constrain scope, base branch, merge behavior, and other implementation constraints. Omitted `merge` means the repair can prepare but cannot merge a pull request; merging requires explicit `merge: true`. Without this object the monitor is observation-only. Repair authority does not permit a protected model, benchmark, credential, hardware, spending, or scope change.
 
 `repair.approval` uses `auto`, `required`, or `skip` mode. When omitted, Monitor uses `auto` with audience `operator`, a 10-minute timeout, and three allowed replans. Auto mode asks and then continues with the exact plan if no answer is accepted by the deadline. Required mode waits for an explicit human answer. Skip mode asks nothing. Continue starts implementation, stop ends the repair truthfully, and replan preserves exact operator text before the shared plan-change workflow runs again. The model-facing workflow tool cannot approve the gate.
 
@@ -220,7 +220,7 @@ Each accepted check reaches `report`, including a check that selects `stop`. The
 
 The extension delivers the custom Pi message with `triggerTurn: false`. The notification stays in session history and later model context. Its arrival does not start an assistant response.
 
-The monitor does not use `sendUserMessage`. It does not ask an agent to repeat or acknowledge the notification. After the workflow tool accepts the check, the extension removes any extra assistant tail text from that agent run, so only the notification reports the check.
+The monitor does not use `sendUserMessage`. It does not ask an agent to repeat or acknowledge the notification. Assistant text written in the same turn after the workflow tool call remains visible, but the durable notification is the authoritative check report.
 
 A check that times out or fails before producing accepted output is not an accepted check. The run enters its normal terminal error state and the extension shows the workflow lifecycle notification. It does not invent a successful check report.
 

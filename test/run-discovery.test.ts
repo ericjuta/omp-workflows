@@ -7,7 +7,7 @@ import {
   summarizeRunBundle,
   workflowTaskFingerprint,
 } from "../src/workflows/run-discovery.js";
-import type { LoadedRunBundle } from "../src/workflows/store.js";
+import type { LoadedRunBundle, WorkflowRunProjection } from "../src/workflows/store.js";
 
 function runBundle(options: {
   runId: string;
@@ -280,6 +280,112 @@ describe("workflow run discovery", () => {
       }),
     ).toEqual([]);
     expect(JSON.stringify(parent)).toBe(parentBefore);
+  });
+  it("preserves root identity and reports continuation fan-out", () => {
+    const root = runBundle({
+      runId: "root",
+      workflowName: "unknown",
+      status: "waiting",
+      project: "/repo",
+      input: { task: "ship feature" },
+    });
+    root.state.workflowSource = {
+      kind: "builtin",
+      id: "autoimplement",
+      revision: "15",
+    };
+    root.state.runTitle = "Ship feature";
+
+    expect(
+      overlayContinuationFamilies(
+        [root],
+        [
+          {
+            runId: "older-child",
+            parentRunId: "root",
+            startedAt: "2026-08-22T01:00:00.000Z",
+            workflowName: "autoimplement",
+          },
+          {
+            runId: "newer-child",
+            parentRunId: "root",
+            status: "starting",
+            startedAt: "2026-08-22T02:00:00.000Z",
+            workflowName: "autoimplement",
+          },
+        ],
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          runId: "newer-child",
+          workflowName: "autoimplement",
+          workflowId: "autoimplement",
+          revision: "15",
+          status: "queued",
+          effectiveStatus: "queued",
+          runTitle: "Ship feature",
+          project: "/repo",
+          parentRunId: "root",
+          continuationRunId: "newer-child",
+          input: { task: "ship feature" },
+          sessionBinding: expect.objectContaining({ cwd: "/repo" }),
+          warnings: [
+            "multiple_continuation_children: parent=root, selected=newer-child, children=newer-child,older-child",
+          ],
+        }),
+      ]),
+    );
+
+    const failed = runBundle({ runId: "failed", status: "failed" });
+    failed.state.workflowSource = { kind: "builtin", id: "monitor", revision: "11" };
+    failed.state.currentNode = "check";
+    failed.state.error = "x".repeat(600);
+    expect(summarizeRunBundle(failed)).toMatchObject({
+      workflowId: "monitor",
+      revision: "11",
+      failingNode: "check",
+      errorSummary: "x".repeat(500),
+    });
+  });
+  it("handles sparse continuation projections deterministically", () => {
+    const root: WorkflowRunProjection = {
+      runDir: "/runs/root",
+      runId: "root",
+      workflowName: "monitor",
+      status: "waiting",
+      startedAt: "",
+      project: "/repo",
+      warnings: [],
+    };
+    const childA: WorkflowRunProjection = {
+      runDir: "/runs/child-a",
+      runId: "child-a",
+      workflowName: "monitor",
+      status: "running",
+      startedAt: "",
+      parentRunId: "root",
+      warnings: [],
+    };
+    const childB: WorkflowRunProjection = {
+      runDir: "/runs/child-b",
+      runId: "child-b",
+      workflowName: "monitor",
+      status: "running",
+      startedAt: "",
+      parentRunId: "root",
+      pausedAgeMs: 123,
+      warnings: [],
+    };
+
+    expect(selectRecentRuns([root, childA, childB], { project: "/repo" })).toEqual([
+      expect.objectContaining({
+        runId: "child-b",
+        parentRunId: "root",
+        continuationRunId: "child-b",
+        pausedAgeMs: 123,
+      }),
+    ]);
   });
 
   it("uses queued continuation facts to suppress duplicate waiting-parent matches", () => {

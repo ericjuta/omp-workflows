@@ -43,6 +43,26 @@ describe("runShellAction", () => {
     });
     expect(result.stdout).toBe("unset");
   });
+  it("can opt into a minimal host environment before applying explicit env", async () => {
+    const hostSecretName = "OMP_SHELL_HOST_SECRET";
+    const previousHostSecret = process.env[hostSecretName];
+    process.env[hostSecretName] = "host-secret-value";
+    try {
+      const result = await runShellAction({
+        command: process.execPath,
+        args: [
+          "-e",
+          `process.stdout.write([process.env.${hostSecretName} ?? "unset", Boolean(process.env.PATH), process.env.EXPLICIT_MARK].join("|"))`,
+        ],
+        env: { EXPLICIT_MARK: "allowed" },
+        inheritEnv: false,
+      });
+      expect(result.stdout).toBe("unset|true|allowed");
+    } finally {
+      if (previousHostSecret === undefined) delete process.env[hostSecretName];
+      else process.env[hostSecretName] = previousHostSecret;
+    }
+  });
 
   it("passes stdin, env, and cwd", async () => {
     const result = await runShellAction({

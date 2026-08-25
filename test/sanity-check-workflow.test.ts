@@ -108,14 +108,14 @@ describe("sanity-check workflow", () => {
     const serial = buildReviewRequests("serial", evidence());
     expect(serial).toHaveLength(1);
     for (const area of areas) expect(serial[0]?.prompt).toContain(area);
-    expect(serial[0]?.prompt).toContain("strongest evidence-based case for accepting");
-    expect(serial[0]?.prompt).toContain("exact file and symbol evidence");
+    expect(serial[0]?.prompt).toContain("best evidence-based case for accepting");
+    expect(serial[0]?.prompt).toContain("exact file and symbol");
 
     const parallel = buildReviewRequests("parallel", evidence());
     expect(parallel.map((request) => request.id)).toEqual(areas);
     for (const request of parallel) {
       expect(request.prompt).toContain(`Review areas: ${request.id}.`);
-      expect(request.prompt).toContain("strongest evidence-based case for accepting");
+      expect(request.prompt).toContain("best evidence-based case for accepting");
     }
   });
 
@@ -137,9 +137,9 @@ describe("sanity-check workflow", () => {
   it("builds one verification session that removes unsupported claims", () => {
     const request = buildVerificationRequest(evidence(), [review()]);
     expect(request.id).toBe("verification");
-    expect(request.prompt).toContain("Remove unsupported claims");
+    expect(request.prompt).toContain("Delete any claim that lacks support");
     expect(request.prompt).toContain("exact file and symbol");
-    expect(request.prompt).toContain("Resolve conflicts");
+    expect(request.prompt).toContain("When reviews disagree");
     for (const verdict of ["keep", "simplify", "refactor", "drop", "needs_evidence"]) {
       expect(request.prompt).toContain(verdict);
     }
@@ -232,6 +232,7 @@ describe("sanity-check workflow", () => {
     const complete = formatSanityCheckReport({ ...result, summary: longSummary });
     expect(complete).toContain(longSummary);
     expect(complete).not.toContain("[report truncated]");
+    expect(complete.length).toBeGreaterThan(20_000);
     expect(sanityCheckWorkflow.presentationPrompt).toBeUndefined();
     expect(sanityCheckWorkflow.nodes.report).toMatchObject({ nodeType: "notify", kind: "final" });
     expect(sanityCheckWorkflow.edges).toEqual([

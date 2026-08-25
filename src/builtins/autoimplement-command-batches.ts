@@ -1,10 +1,8 @@
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   accessSync,
   closeSync,
   constants,
-  lstatSync,
   openSync,
   readSync,
   realpathSync,
@@ -17,8 +15,6 @@ import {
   validateCommandBatchRequest,
   type CommandBatchItem,
 } from "../workflows/command-batch.js";
-import { minimalChildEnv } from "../workflows/shell.js";
-
 export const REVIEW_TIMEOUT_MS = 10 * 60_000;
 export const CI_WATCH_TIMEOUT_MS = 5 * 60_000;
 export const VERIFICATION_TIMEOUT_MS = 45 * 60_000;
@@ -874,57 +870,6 @@ const SAFE_INFORMATIONAL_FLAGS: Record<string, true> = {
   "-v": true,
   "-V": true,
 };
-type RepositoryWrapper = {
-  executable: "gradle" | "mvn";
-  relativePath: string;
-  requiresExecutableBit: boolean;
-};
-
-const REPOSITORY_WRAPPERS: Record<string, RepositoryWrapper> = {
-  "./gradlew": { executable: "gradle", relativePath: "gradlew", requiresExecutableBit: true },
-  "./mvnw": { executable: "mvn", relativePath: "mvnw", requiresExecutableBit: true },
-};
-
-function trackedRepositoryWrapper(
-  command: string,
-  repository: string | undefined,
-  label: string,
-): RepositoryWrapper["executable"] | undefined {
-  const wrapper = REPOSITORY_WRAPPERS[command];
-  if (wrapper === undefined) return undefined;
-  if (repository === undefined || command.trim() !== command) {
-    throw new Error(`${label}.command repository wrapper is not trusted`);
-  }
-  try {
-    const root = realpathSync(repository);
-    const requested = path.join(root, wrapper.relativePath);
-    if (!lstatSync(requested).isFile()) throw new Error("wrapper is not a regular file");
-    const candidate = realpathSync(requested);
-    const relative = path.relative(root, candidate);
-    if (
-      relative === ".." ||
-      relative.startsWith(`..${path.sep}`) ||
-      path.isAbsolute(relative) ||
-      !statSync(candidate).isFile()
-    ) {
-      throw new Error("wrapper escapes repository");
-    }
-    if (wrapper.requiresExecutableBit) accessSync(candidate, constants.X_OK);
-    const tracked = spawnSync("git", ["ls-files", "--error-unmatch", "--", wrapper.relativePath], {
-      cwd: root,
-      env: minimalChildEnv(process.env),
-      stdio: "ignore",
-      timeout: 10_000,
-      windowsHide: true,
-    });
-    if (tracked.status !== 0 || tracked.error !== undefined) {
-      throw new Error("wrapper is not tracked");
-    }
-  } catch {
-    throw new Error(`${label}.command repository wrapper is not trusted`);
-  }
-  return wrapper.executable;
-}
 
 function normalizeVerificationExecutable(command: string): string {
   const trimmed = command.trim();
@@ -973,9 +918,9 @@ function validateInterpreterCommand(
 const DIRECT_TOOL_ACTIONS: Record<string, Record<string, true>> = {
   biome: { check: true, ci: true, format: true, lint: true },
   cargo: { check: true, clippy: true, fmt: true, test: true },
-  cypress: { run: true, verify: true },
+  cypress: { run: true },
   dotnet: { build: true, format: true, test: true },
-  go: { test: true, version: true, vet: true },
+  go: { test: true, vet: true },
   mix: { compile: true, format: true, test: true },
   playwright: { test: true },
   ruff: { check: true, format: true },
@@ -986,8 +931,6 @@ const DIRECT_TOOL_ACTIONS: Record<string, Record<string, true>> = {
 const DIRECT_TOOL_OPTIONS: Record<string, Record<string, true>> = {
   biome: {
     "--error-on-warnings": true,
-    "--no-errors-on-unmatched": true,
-    "--no-errors-on-unmatched-pattern": true,
     "--verbose": true,
   },
   cargo: {
@@ -1001,7 +944,6 @@ const DIRECT_TOOL_OPTIONS: Record<string, Record<string, true>> = {
     "--lib": true,
     "--locked": true,
     "--no-default-features": true,
-    "--no-run": true,
     "--offline": true,
     "--quiet": true,
     "--release": true,
@@ -1012,9 +954,7 @@ const DIRECT_TOOL_OPTIONS: Record<string, Record<string, true>> = {
   cypress: { "--component": true, "--e2e": true, "--headless": true, "--quiet": true },
   ctest: {
     "--output-on-failure": true,
-    "--show-only": true,
     "--verbose": true,
-    "-n": true,
     "-v": true,
   },
   dotnet: {
@@ -1024,7 +964,6 @@ const DIRECT_TOOL_OPTIONS: Record<string, Record<string, true>> = {
     "--verify-no-changes": true,
   },
   eslint: {
-    "--no-error-on-unmatched-pattern": true,
     "--no-warn-ignored": true,
     "--quiet": true,
   },
@@ -1044,9 +983,7 @@ const DIRECT_TOOL_OPTIONS: Record<string, Record<string, true>> = {
   jest: {
     "--ci": true,
     "--detectopenhandles": true,
-    "--listtests": true,
     "--nostacktrace": true,
-    "--passwithnotests": true,
     "--runinband": true,
     "--silent": true,
     "--verbose": true,
@@ -1054,7 +991,6 @@ const DIRECT_TOOL_OPTIONS: Record<string, Record<string, true>> = {
   mocha: {
     "--bail": true,
     "--check-leaks": true,
-    "--dry-run": true,
     "--forbid-only": true,
     "--forbid-pending": true,
     "--parallel": true,
@@ -1081,7 +1017,6 @@ const DIRECT_TOOL_OPTIONS: Record<string, Record<string, true>> = {
     "--quiet": true,
     "--show-version": true,
     "-b": true,
-    "-v": true,
     "-e": true,
     "-ntp": true,
     "-q": true,
@@ -1094,10 +1029,9 @@ const DIRECT_TOOL_OPTIONS: Record<string, Record<string, true>> = {
     "--warn-unused-ignores": true,
   },
   oxlint: { "--deny-warnings": true, "--quiet": true },
-  playwright: { "--list": true, "--pass-with-no-tests": true, "--quiet": true },
+  playwright: { "--quiet": true },
   prettier: { "--check": true, "--list-different": true, "-c": true, "-l": true },
   pytest: {
-    "--collect-only": true,
     "--disable-warnings": true,
     "--exitfirst": true,
     "--no-header": true,
@@ -1124,8 +1058,8 @@ const DIRECT_TOOL_OPTIONS: Record<string, Record<string, true>> = {
     "--verbose": true,
     "-v": true,
   },
-  vitest: { "--no-color": true, "--passwithnotests": true, "--silent": true },
-  just: { "--dry-run": true, "--quiet": true, "-q": true },
+  vitest: { "--no-color": true, "--silent": true },
+  just: { "--quiet": true, "-q": true },
 };
 
 const DIRECT_TOOL_POSITIONALS: Record<string, Record<string, true>> = {
@@ -1196,42 +1130,91 @@ const PLAIN_VERIFICATION_TARGETS: Record<string, true> = {
 };
 const QUALIFIED_VERIFICATION_TARGETS: Record<string, true> = {
   check: true,
+  ci: true,
+  e2e: true,
+  integration: true,
   lint: true,
+  smoke: true,
   test: true,
   typecheck: true,
   "type-check": true,
+  unit: true,
   verify: true,
   "dry-run": true,
   dryrun: true,
+};
+const FORBIDDEN_VERIFICATION_TARGET_SEGMENTS: Record<string, true> = {
+  add: true,
+  bump: true,
+  create: true,
+  deploy: true,
+  dlx: true,
+  exec: true,
+  install: true,
+  link: true,
+  merge: true,
+  pack: true,
+  plugin: true,
+  postinstall: true,
+  postpack: true,
+  postpublish: true,
+  postversion: true,
+  prepack: true,
+  prepare: true,
+  prepublish: true,
+  prepublishonly: true,
+  preversion: true,
+  publish: true,
+  push: true,
+  remove: true,
+  restart: true,
+  serve: true,
+  shell: true,
+  start: true,
+  stop: true,
+  uninstall: true,
+  unlink: true,
+  version: true,
+  x: true,
 };
 
 function isVerificationTargetName(target: string): boolean {
   const unscoped = target.startsWith(":") ? target.slice(1) : target;
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(unscoped)) return false;
   const normalized = unscoped.toLowerCase();
+  if (
+    normalized
+      .split(/[:._-]/u)
+      .some((segment) => FORBIDDEN_VERIFICATION_TARGET_SEGMENTS[segment] === true) ||
+    /^(?:add|bump|create|deploy|dlx|exec|install|link|merge|pack|plugin|postinstall|postpack|postpublish|postversion|prepack|prepare|prepublish|prepublishonly|preversion|publish|push|remove|restart|serve|shell|start|stop|uninstall|unlink|version|x)[A-Z0-9]/u.test(
+      unscoped,
+    )
+  ) {
+    return false;
+  }
   if (PLAIN_VERIFICATION_TARGETS[normalized] === true) return true;
   const segments = normalized.split(":");
-  if (
-    PLAIN_VERIFICATION_TARGETS[segments[0] ?? ""] === true ||
-    QUALIFIED_VERIFICATION_TARGETS[segments[segments.length - 1] ?? ""] === true
-  ) {
+  if (QUALIFIED_VERIFICATION_TARGETS[segments[segments.length - 1] ?? ""] === true) {
     return true;
   }
   if (
-    /^(?:build|check|lint|test|typecheck|type-check|verify)[-_.]/u.test(normalized) ||
-    /[-_.](?:check|lint|test|typecheck|type-check|verify|dry-run|dryrun)$/u.test(normalized)
+    /[-_.](?:check|ci|e2e|integration|lint|smoke|test|typecheck|type-check|unit|verify|dry-run|dryrun)$/u.test(
+      normalized,
+    )
   ) {
     return true;
   }
   return (
     /(?:Test|Tests|Check|Checks|Verify|Verification|Lint|Typecheck|Build)$/u.test(unscoped) ||
-    /^(?:checkstyle|detekt|lint|spotbugs)[A-Z0-9]/u.test(unscoped)
+    /^(?:checkstyle|detekt|spotbugs)(?:Main|Test|Debug|Release|All)?$/u.test(unscoped) ||
+    /^lint(?:Debug|Release|VitalRelease)?$/u.test(unscoped)
   );
 }
 
 function isSafeRelativeSelector(selector: string): boolean {
   if (
     selector.length === 0 ||
+    selector.startsWith("@") ||
     selector.startsWith("~") ||
     selector.includes("://") ||
     /^[A-Za-z]:/u.test(selector) ||
@@ -1241,6 +1224,40 @@ function isSafeRelativeSelector(selector: string): boolean {
     return false;
   }
   return !selector.replaceAll("\\", "/").split("/").includes("..");
+}
+function findNearestExistingAncestorRealpath(targetPath: string): string {
+  let current = path.resolve(targetPath);
+  while (true) {
+    try {
+      return realpathSync(current);
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return current;
+      current = parent;
+    }
+  }
+}
+
+function assertSafeRelativeSelector(
+  selector: string,
+  repository: string | undefined,
+  label: string,
+): void {
+  if (!isSafeRelativeSelector(selector)) {
+    throw new Error(`${label} cannot execute arbitrary files or modules`);
+  }
+  if (repository !== undefined) {
+    const splitIndex = selector.indexOf("::");
+    const filePath = splitIndex === -1 ? selector : selector.slice(0, splitIndex);
+    if (filePath.length > 0) {
+      const root = realpathSync(repository);
+      const targetPath = path.resolve(root, filePath);
+      const canonicalTarget = findNearestExistingAncestorRealpath(targetPath);
+      if (canonicalTarget !== root && !canonicalTarget.startsWith(`${root}${path.sep}`)) {
+        throw new Error(`${label} cannot execute arbitrary files or modules`);
+      }
+    }
+  }
 }
 
 function validateRepositoryTargetCommand(
@@ -1313,6 +1330,7 @@ function validateDirectVerificationTool(
   executable: string,
   args: readonly string[],
   label: string,
+  repository?: string,
 ): void {
   if (executable === "tsc") {
     validateTypeScriptCommand(args, label);
@@ -1352,6 +1370,9 @@ function validateDirectVerificationTool(
       !(DIRECT_TOOL_RELATIVE_SELECTORS[executable] === true && isSafeRelativeSelector(argument))
     ) {
       throw new Error(`${label} cannot execute arbitrary files or modules`);
+    }
+    if (DIRECT_TOOL_RELATIVE_SELECTORS[executable] === true) {
+      assertSafeRelativeSelector(argument, repository, label);
     }
   }
   if (
@@ -1477,9 +1498,15 @@ function validatePackageTailOptions(
 ): void {
   for (let index = startIndex; index < args.length; index += 1) {
     const argument = args[index];
-    if (argument === "--")
+    if (argument === undefined) continue;
+    if (argument === "--") {
       throw new Error(`${label} package-manager passthrough arguments are not allowed`);
-    if (argument === undefined || !argument.startsWith("-")) continue;
+    }
+    if (!argument.startsWith("-")) {
+      throw new Error(
+        `${label} cannot execute arbitrary files or modules through package-manager positionals`,
+      );
+    }
     const equalsIndex = argument.indexOf("=");
     const option = equalsIndex === -1 ? argument : argument.slice(0, equalsIndex);
     const arity = PACKAGE_GLOBAL_OPTION_ARITY[option];
@@ -1582,12 +1609,8 @@ export function validateVerificationCommandSafety(
   if (containsCredentialArgument(args)) {
     throw new Error(`${label} arguments cannot contain credentials`);
   }
-  const normalizedExecutable = normalizeVerificationExecutable(command);
-  const executableName =
-    normalizedExecutable.length > 0
-      ? normalizedExecutable
-      : trackedRepositoryWrapper(command, repository, label);
-  if (executableName === undefined) {
+  const executableName = normalizeVerificationExecutable(command);
+  if (executableName.length === 0) {
     throw new Error(`${label}.command is not allowed`);
   }
   if (FORBIDDEN_VERIFICATION_EXECUTABLES[executableName] === true) {
@@ -1605,7 +1628,7 @@ export function validateVerificationCommandSafety(
     return;
   }
   if (DIRECT_VERIFICATION_TOOLS[executableName] === true) {
-    validateDirectVerificationTool(executableName, args, label);
+    validateDirectVerificationTool(executableName, args, label, repository);
     return;
   }
   throw new Error(`${label}.command is not allowed`);

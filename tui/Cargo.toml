@@ -1,6 +1,6 @@
 [package]
 name = "omp-workflows"
-version = "0.14.2"
+version = "0.14.4"
 edition = "2021"
 description = "Terminal viewer and live replay server for omp-workflows run bundles"
 license = "MIT"

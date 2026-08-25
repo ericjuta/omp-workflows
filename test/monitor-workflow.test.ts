@@ -432,11 +432,26 @@ describe("built-in monitor workflow", () => {
     ).toThrow("boolean");
     expect(() =>
       prepareMonitorInput(
-        input({ repair: { authorized: true, approval: { mode: "auto", maxReplans: 0 } } }),
+        input({
+          repair: {
+            authorized: true,
+            repository: "/repo",
+            approval: { mode: "auto", maxReplans: 0 },
+          },
+        }),
       ),
     ).toThrow("maxReplans");
-    expect(prepareMonitorInput(input({ repair: { authorized: true } }))).toMatchObject({
+    expect(() => prepareMonitorInput(input({ repair: { authorized: true } }))).toThrow(
+      "repair repository",
+    );
+    expect(() =>
+      prepareMonitorInput(input({ repair: { authorized: true, repository: "relative/repo" } })),
+    ).toThrow("absolute path");
+    expect(
+      prepareMonitorInput(input({ repair: { authorized: true, repository: "/repo" } })),
+    ).toMatchObject({
       repair: {
+        repository: "/repo",
         approval: {
           mode: "auto",
           audience: "operator",

@@ -17,6 +17,7 @@ import {
   reviewerHostEnv,
   reviewerLookupPath,
   reviewerRuntimeFailureReason,
+  resolveExecutable,
   resolveReviewerExecutable,
   validateVerificationCommandSafety,
   verifyReviewerExecutable,
@@ -109,14 +110,18 @@ describe("autoimplement command batch contracts", () => {
       { command: "npm", args: ["test"] },
       { command: "npm", args: ["run", "check"] },
       { command: "cargo", args: ["test"] },
-      { command: "cargo", args: ["check"] },
+      { command: "cargo", args: ["fmt", "--check"] },
       { command: "go", args: ["test", "./..."] },
       { command: "pytest", args: ["-q"] },
+      { command: "pytest", args: ["--version"] },
       { command: "pytest", args: ["tests/test_sample.py::test_behavior", "-q"] },
       { command: "cargo", args: ["test", "module::test_behavior"] },
       { command: "go", args: ["test", "./pkg/..."] },
       { command: "vitest", args: ["run"] },
       { command: "tsc", args: ["--noEmit"] },
+      { command: "tsc", args: ["--version"] },
+      { command: "tsc", args: ["--noEmit", "--pretty", "true", "--skipLibCheck", "false"] },
+      { command: "tsc", args: ["--pretty=false", "--skipLibCheck=true", "--noEmit"] },
       { command: "eslint", args: ["."] },
       { command: "prettier", args: ["--check", "."] },
       { command: "ruff", args: ["check", "."] },
@@ -191,6 +196,11 @@ describe("autoimplement command batch contracts", () => {
       { command: "jest", args: ["--listtests"] },
       { command: "playwright", args: ["test", "--list"] },
       { command: "tsc", args: [] },
+      { command: "make", args: ["bad/target"] },
+      { command: "make", args: ["--silent"] },
+      { command: "mvn", args: ["-q"] },
+      { command: "tsc", args: ["--pretty", "maybe", "--noEmit"] },
+      { command: "cargo", args: ["fmt"] },
       { command: "prettier", args: ["."] },
       { command: "biome", args: ["migrate"] },
       { command: "eslint", args: ["--fix=true", "."] },
@@ -212,7 +222,7 @@ describe("autoimplement command batch contracts", () => {
       expect(() =>
         validateVerificationCommandSafety(candidate.command, candidate.args, "verification"),
       ).toThrow(
-        /not allowed|not verification-only|requires --noEmit|mutation or publication|arbitrary files or modules/,
+        /not allowed|not verification-only|requires --noEmit|mutation or publication|arbitrary files or modules|explicit verification target|test or verify phase/,
       );
     }
   });
@@ -365,6 +375,9 @@ describe("autoimplement command batch contracts", () => {
     expect(() =>
       reviewerCommand({ ...parsed.repositories[0]!, baseRevision: "main" }, reviewer),
     ).toThrow(/hex commit hash/);
+    expect(() =>
+      reviewerCommand(parsed.repositories[0]!, { ...reviewer, executable: "relative" }),
+    ).toThrow(/absolute regular file/);
     expect(() => requireSafeGitRef("main\u0001next", "base branch")).toThrow(/Git ref/);
     expect(requireSafeGitRef("origin/release-1.2", "base branch")).toBe("origin/release-1.2");
   });
@@ -412,6 +425,15 @@ describe("autoimplement command batch contracts", () => {
     expect(verifyReviewerExecutable(attestation)).toBe(false);
 
     const windowsBin = await makeTempDir("reviewer-windows");
+    const nonFileBin = await makeTempDir("reviewer-non-file");
+    await fs.mkdir(path.join(nonFileBin, "omp-reviewer"));
+    await fs.mkdir(path.join(nonFileBin, "tool"));
+    expect(resolveReviewerExecutable({ HOME: "", PATH: nonFileBin })).toBeUndefined();
+    expect(resolveExecutable("tool", nonFileBin)).toBeUndefined();
+    expect(resolveExecutable("missing", undefined)).toBeUndefined();
+    expect(resolveExecutable("/bin/sh", undefined)).toBe(await fs.realpath("/bin/sh"));
+    expect(attestReviewerExecutable(nonFileBin)).toBeUndefined();
+
     await fs.writeFile(path.join(windowsBin, "omp-reviewer.exe"), "binary", { mode: 0o755 });
     expect(reviewerExecutableExists({ HOME: "", PATH: windowsBin })).toBe(true);
   });
@@ -453,6 +475,179 @@ describe("autoimplement command batch contracts", () => {
     expect(reviewerRuntimeFailureReason(launcherRuntime)).toBe(
       "The initially attested omp-reviewer shebang launcher changed.",
     );
+  });
+
+  it("fails closed for unsupported reviewer dependencies and shebangs", async () => {
+    const bin = await makeTempDir("reviewer-runtime-failures");
+    const reviewer = path.join(bin, "omp-reviewer");
+    const git = path.join(bin, "git");
+    const omp = path.join(bin, "omp");
+    const shell = path.join(bin, "reviewer-shell");
+    const env = path.join(bin, "env");
+    const interpreter = path.join(bin, "sh");
+    await fs.writeFile(git, "git", { mode: 0o755 });
+    await fs.writeFile(omp, "omp", { mode: 0o755 });
+    await fs.copyFile("/bin/sh", shell);
+    await fs.chmod(shell, 0o755);
+    await fs.copyFile("/usr/bin/env", env);
+    await fs.chmod(env, 0o755);
+    await fs.copyFile("/bin/sh", interpreter);
+    await fs.chmod(interpreter, 0o755);
+
+    await fs.writeFile(reviewer, "review complete\n", { mode: 0o755 });
+    const simpleRuntime = attestReviewerRuntime({ HOME: "", PATH: bin });
+    expect(simpleRuntime.failure).toBeUndefined();
+    expect(reviewerRuntimeFailureReason(simpleRuntime)).toBeUndefined();
+    if (
+      simpleRuntime.reviewer === undefined ||
+      simpleRuntime.git === undefined ||
+      simpleRuntime.omp === undefined
+    ) {
+      throw new Error("simple reviewer runtime fixture was not attested");
+    }
+    expect(reviewerRuntimeFailureReason({ git: simpleRuntime.git, omp: simpleRuntime.omp })).toBe(
+      "The initially attested omp-reviewer executable changed.",
+    );
+    expect(
+      reviewerRuntimeFailureReason({ reviewer: simpleRuntime.reviewer, omp: simpleRuntime.omp }),
+    ).toBe("The initially attested Git executable changed.");
+    expect(
+      reviewerRuntimeFailureReason({ reviewer: simpleRuntime.reviewer, git: simpleRuntime.git }),
+    ).toBe("The initially attested OMP executable changed.");
+    expect(
+      reviewerRuntimeFailureReason({
+        reviewer: simpleRuntime.reviewer,
+        git: simpleRuntime.git,
+        omp: simpleRuntime.omp,
+      }),
+    ).toBe("The bound reviewer execution environment changed.");
+
+    const expectFailure = async (contents: string, failure: string) => {
+      await fs.writeFile(reviewer, contents, { mode: 0o755 });
+      expect(attestReviewerRuntime({ HOME: "", PATH: bin }).failure).toBe(failure);
+    };
+    await expectFailure("#!\n", "omp-reviewer has an unsupported shebang.");
+    await expectFailure("#!/bin/'sh\n", "omp-reviewer has an unsupported shebang.");
+    await expectFailure("#!sh\n", "omp-reviewer shebang must use an absolute launcher.");
+    await expectFailure(
+      `#!${path.join(bin, "missing-launcher")}\n`,
+      "omp-reviewer shebang launcher could not be attested.",
+    );
+    await expectFailure(
+      `#!${shell} -e\n`,
+      "omp-reviewer direct shebang arguments are not trusted.",
+    );
+    await expectFailure(`#!${env} -S\n`, "omp-reviewer has an unsupported env shebang.");
+    await expectFailure(`#!${env} -x\n`, "omp-reviewer has an unsupported env shebang.");
+    await expectFailure(`#!${env} FOO=bar\n`, "omp-reviewer has an unsupported env shebang.");
+    await expectFailure(`#!${env} bad/name\n`, "omp-reviewer has an unsupported env shebang.");
+    await expectFailure(
+      `#!${env} missing-interpreter\n`,
+      "omp-reviewer shebang interpreter was not available.",
+    );
+
+    await fs.writeFile(reviewer, `#!${env} -S sh\n`, { mode: 0o755 });
+    expect(attestReviewerRuntime({ HOME: "", PATH: bin })).toMatchObject({
+      interpreter: { executable: interpreter },
+      interpreterCommand: "sh",
+    });
+
+    const missingGitBin = await makeTempDir("reviewer-runtime-missing-git");
+    await fs.writeFile(path.join(missingGitBin, "omp-reviewer"), "review\n", { mode: 0o755 });
+    await fs.writeFile(path.join(missingGitBin, "omp"), "omp", { mode: 0o755 });
+    expect(attestReviewerRuntime({ HOME: "", PATH: missingGitBin }).failure).toBe(
+      "Git was not available as an initial trusted executable.",
+    );
+
+    const missingOmpBin = await makeTempDir("reviewer-runtime-missing-omp");
+    await fs.writeFile(path.join(missingOmpBin, "omp-reviewer"), "review\n", { mode: 0o755 });
+    await fs.writeFile(path.join(missingOmpBin, "git"), "git", { mode: 0o755 });
+    expect(attestReviewerRuntime({ HOME: "", PATH: missingOmpBin }).failure).toBe(
+      "OMP was not available as an initial trusted executable.",
+    );
+  });
+
+  it("rejects every observable reviewer attestation drift", async () => {
+    const bin = await makeTempDir("reviewer-runtime-drift");
+    const reviewer = path.join(bin, "omp-reviewer");
+    const git = path.join(bin, "git");
+    const omp = path.join(bin, "omp");
+    const env = path.join(bin, "env");
+    const interpreter = path.join(bin, "sh");
+    await fs.copyFile("/usr/bin/env", env);
+    await fs.chmod(env, 0o755);
+    await fs.copyFile("/bin/sh", interpreter);
+    await fs.chmod(interpreter, 0o755);
+    await fs.writeFile(reviewer, `#!${env} sh\n`, { mode: 0o755 });
+    await fs.writeFile(git, "git", { mode: 0o755 });
+    await fs.writeFile(omp, "omp", { mode: 0o755 });
+
+    const runtime = attestReviewerRuntime({ HOME: "", PATH: bin });
+    if (
+      runtime.reviewer === undefined ||
+      runtime.git === undefined ||
+      runtime.omp === undefined ||
+      runtime.shebangLauncher === undefined ||
+      runtime.interpreter === undefined ||
+      runtime.reviewerEnvironment === undefined
+    ) {
+      throw new Error(`reviewer runtime fixture was not attested: ${runtime.failure}`);
+    }
+    const attestation = runtime.reviewer;
+    const alias = path.join(bin, "reviewer-alias");
+    await fs.symlink(reviewer, alias);
+    for (const changed of [
+      { ...attestation, executable: alias },
+      { ...attestation, device: attestation.device + 1 },
+      { ...attestation, inode: attestation.inode + 1 },
+      { ...attestation, size: attestation.size + 1 },
+      { ...attestation, sha256: "0".repeat(64) },
+    ]) {
+      expect(verifyReviewerExecutable(changed)).toBe(false);
+    }
+
+    expect(reviewerRuntimeFailureReason({ failure: "initial failure" })).toBe("initial failure");
+    expect(
+      reviewerRuntimeFailureReason({
+        ...runtime,
+        reviewer: { ...runtime.reviewer, sha256: "0".repeat(64) },
+      }),
+    ).toBe("The initially attested omp-reviewer executable changed.");
+    expect(
+      reviewerRuntimeFailureReason({
+        ...runtime,
+        git: { ...runtime.git, sha256: "0".repeat(64) },
+      }),
+    ).toBe("The initially attested Git executable changed.");
+    expect(
+      reviewerRuntimeFailureReason({
+        ...runtime,
+        reviewerEnvironment: {
+          ...runtime.reviewerEnvironment,
+          env: { ...runtime.reviewerEnvironment.env, PATH: "" },
+        },
+      }),
+    ).toBe("The bound reviewer execution environment changed.");
+    expect(
+      reviewerRuntimeFailureReason({
+        ...runtime,
+        reviewerEnvironment: {
+          ...runtime.reviewerEnvironment,
+          env: { ...runtime.reviewerEnvironment.env, OMP_REVIEWER_OMP: "changed" },
+        },
+      }),
+    ).toBe("The bound reviewer execution environment changed.");
+    expect(
+      reviewerRuntimeFailureReason({
+        ...runtime,
+        interpreter: { ...runtime.interpreter, sha256: "0".repeat(64) },
+      }),
+    ).toBe("The initially attested omp-reviewer interpreter changed.");
+    expect(reviewerRuntimeFailureReason({ ...runtime, interpreterCommand: "missing" })).toBe(
+      "The omp-reviewer shebang interpreter lookup changed.",
+    );
+    const { interpreterCommand: _interpreterCommand, ...runtimeWithoutCommand } = runtime;
+    expect(reviewerRuntimeFailureReason(runtimeWithoutCommand)).toBeUndefined();
   });
 
   it("rejects duplicate or incomplete publication records", async () => {
@@ -968,6 +1163,39 @@ describe("autoimplement command batch contracts", () => {
     ).not.toThrow();
     expect(() =>
       validateVerificationCommandSafety("npm", ["test", "--loglevel"], "verification"),
+    ).toThrow(/ambiguous package-manager option/);
+    expect(() =>
+      validateVerificationCommandSafety("npm", ["--loglevel=info", "test"], "verification"),
+    ).not.toThrow();
+    expect(() =>
+      validateVerificationCommandSafety("npm", ["--silent", "test"], "verification"),
+    ).not.toThrow();
+    expect(() =>
+      validateVerificationCommandSafety("npm", ["--loglevel=", "test"], "verification"),
+    ).toThrow(/ambiguous package-manager global option/);
+    expect(() =>
+      validateVerificationCommandSafety("npm", ["--silent=true", "test"], "verification"),
+    ).toThrow(/ambiguous package-manager global option/);
+    expect(() =>
+      validateVerificationCommandSafety("npm", ["--prefix=/tmp", "test"], "verification"),
+    ).toThrow(/cannot retarget package-manager execution or configuration/);
+    expect(() =>
+      validateVerificationCommandSafety("npm", ["-C/tmp", "test"], "verification"),
+    ).toThrow(/cannot retarget package-manager execution or configuration/);
+    expect(() =>
+      validateVerificationCommandSafety("npm", ["--loglevel", "info", "test"], "verification"),
+    ).not.toThrow();
+    expect(() =>
+      validateVerificationCommandSafety("npm", ["--all", "test"], "verification"),
+    ).toThrow(/cannot retarget package-manager execution or configuration/);
+    expect(() =>
+      validateVerificationCommandSafety("npm", ["test", "--loglevel=info"], "verification"),
+    ).not.toThrow();
+    expect(() =>
+      validateVerificationCommandSafety("npm", ["test", "--loglevel="], "verification"),
+    ).toThrow(/ambiguous package-manager option/);
+    expect(() =>
+      validateVerificationCommandSafety("npm", ["test", "--silent=true"], "verification"),
     ).toThrow(/ambiguous package-manager option/);
     expect(() =>
       validateVerificationCommandSafety("npm", ["test", "--prefix=/tmp"], "verification"),

@@ -9,6 +9,7 @@ import {
   repositoryId,
 } from "../src/builtins/autoimplement-command-batches.js";
 import autoimplementWorkflow from "../src/builtins/autoimplement.workflow.js";
+import { PREPARED_WORKSPACE_SCHEMA } from "../src/builtins/workspace-preparation.workflow.js";
 import { compileWorkflowDefinition } from "../src/workflows/composition.js";
 import { WorkflowEngine } from "../src/workflows/engine.js";
 import { digest } from "../src/workflows/human-decision.js";
@@ -41,11 +42,27 @@ function reviewerCommand(cwd = repository) {
   };
 }
 
+function preparedWorkspace() {
+  return {
+    schema: PREPARED_WORKSPACE_SCHEMA,
+    mode: "branch" as const,
+    repository,
+    baseBranch: "main",
+    baseRevision: publishedBaseRevision,
+    workBranch: "feat/demo",
+    directDefaultBranchAuthorized: false,
+    preExistingChangedPaths: [] as string[],
+    evidence: ["existing non-default task branch"],
+    scope: `Only ${repository}`,
+  };
+}
+
 function documentedPlan(plan: unknown) {
   return {
     plan,
     documentation: { status: "current" as const, planDigest: digest(plan), documents: [] },
     approval: { mode: "skip" as const },
+    preparedWorkspace: preparedWorkspace(),
   };
 }
 
@@ -178,17 +195,6 @@ function commonExecutor(publication: unknown = published()): ScriptedExecutor {
         untested: [],
       },
     })
-    .respond("verify", {
-      output: {
-        passed: true,
-        commands: [{ command: "node verification", outcome: "passed" }],
-        failures: [],
-        untested: [],
-      },
-    })
-    .respond("classifyVerification", {
-      output: { route: "publish", summary: "checks passed", evidence: "npm test" },
-    })
     .respond("publish", { output: publication });
 }
 
@@ -201,7 +207,8 @@ function continueChallenge(
     | "reviewer"
     | "comments"
     | "ci"
-    | "delivery" = "implementation",
+    | "delivery"
+    | "defaultBranch" = "implementation",
   recovery:
     | "redesign"
     | "fix"
@@ -210,7 +217,8 @@ function continueChallenge(
     | "selectReviewCommands"
     | "inspectComments"
     | "inspectCi"
-    | "opportunisticTest" = "redesign",
+    | "opportunisticTest"
+    | "finalizeDefaultBranch" = "redesign",
 ) {
   return {
     route: "continue",
@@ -234,7 +242,8 @@ function confirmedChallenge(
     | "reviewer"
     | "comments"
     | "ci"
-    | "delivery" = "implementation",
+    | "delivery"
+    | "defaultBranch" = "implementation",
   recovery = "redesign",
 ) {
   return {
@@ -253,6 +262,9 @@ function confirmedChallenge(
 
 function addRedesignResponses(executor: ScriptedExecutor, plans: unknown[]): ScriptedExecutor {
   return executor
+    .respond("redesign/design/captureIntent", {
+      output: { originalUserInstructions: "finish the task with the authorized supported path" },
+    })
     .respond("redesign/design/frame", {
       output: {
         problem: "finish the task",
@@ -263,7 +275,7 @@ function addRedesignResponses(executor: ScriptedExecutor, plans: unknown[]): Scr
         controlBoundary: "authorized repository and rollout",
       },
     })
-    .respond("redesign/design/propose", {
+    .respond("redesign/design/solutions", {
       output: {
         solution: "use the supported path",
         rationale: "it is authorized",
@@ -271,10 +283,10 @@ function addRedesignResponses(executor: ScriptedExecutor, plans: unknown[]): Scr
         tradeoffs: [],
       },
     })
-    .respond("redesign/design/ideal", {
+    .respond("redesign/design/holyGrail", {
       output: { ideal: "completed work", outsideDependencies: [], additionalValue: [] },
     })
-    .respond("redesign/design/choose", {
+    .respond("redesign/design/select", {
       output: {
         status: "ready",
         selected: "use the supported path",
@@ -299,9 +311,13 @@ function addRedesignResponses(executor: ScriptedExecutor, plans: unknown[]): Scr
 beforeEach(async () => {
   originalPath = process.env.PATH ?? "";
   originalHome = process.env.HOME;
-  commandDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-workflows-commands-"));
-  fallbackCommandDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-workflows-fallback-commands-"));
-  repository = await makeTempDir("pi-workflows-autoimplement-repo");
+  commandDir = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), "pi-workflows-commands-")),
+  );
+  fallbackCommandDir = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), "pi-workflows-fallback-commands-")),
+  );
+  repository = await fs.realpath(await makeTempDir("pi-workflows-autoimplement-repo"));
   await execFileAsync("git", ["init", "-q", "-b", "main"], { cwd: repository });
   await execFileAsync("git", ["config", "user.name", "Test User"], { cwd: repository });
   await execFileAsync("git", ["config", "user.email", "test@example.com"], {
@@ -309,7 +325,19 @@ beforeEach(async () => {
   });
   const trackedFile = path.join(repository, "tracked.txt");
   await fs.writeFile(trackedFile, "base\n");
-  await execFileAsync("git", ["add", "tracked.txt"], { cwd: repository });
+  await fs.writeFile(
+    path.join(repository, "package.json"),
+    `${JSON.stringify(
+      {
+        name: "autoimplement-fixture",
+        private: true,
+        scripts: { test: "true", check: "true" },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await execFileAsync("git", ["add", "tracked.txt", "package.json"], { cwd: repository });
   await execFileAsync("git", ["commit", "-q", "-m", "base"], { cwd: repository });
   publishedBaseRevision = (
     await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repository })
@@ -384,6 +412,65 @@ describe("built-in autoimplement", () => {
         documentation: { status: "current", planDigest: "sha256:wrong", documents: [] },
       }),
     ).toThrow("does not match");
+    expect(
+      await parseInput({
+        task: "demo",
+        repository,
+        workspaceMode: "branch",
+        directDefaultBranchAuthorized: false,
+        preparedWorkspace: preparedWorkspace(),
+      }),
+    ).toMatchObject({
+      workspaceMode: "branch",
+      preparedWorkspace: { mode: "branch", workBranch: "feat/demo" },
+    });
+    const worktreePath = path.join(path.dirname(repository), "demo-worktrees", "feat-docs");
+    const worktreeReceipt = {
+      ...preparedWorkspace(),
+      mode: "worktree" as const,
+      workBranch: "feat/docs",
+      worktreePath,
+    };
+    expect(
+      await parseInput({
+        task: "demo",
+        repository,
+        workspaceMode: "worktree",
+        preparedWorkspace: worktreeReceipt,
+      }),
+    ).toMatchObject({
+      workspaceMode: "worktree",
+      preparedWorkspace: { mode: "worktree", worktreePath, workBranch: "feat/docs" },
+    });
+    const documentationInclude = autoimplementWorkflow.includes?.documentation;
+    if (documentationInclude?.input === undefined) {
+      throw new Error("autoimplement documentation include input is missing");
+    }
+    const documentationInput = await documentationInclude.input({
+      input: {
+        task: "demo",
+        plan: { steps: ["document worktree"] },
+        repository,
+        workspaceMode: "worktree",
+        preparedWorkspace: worktreeReceipt,
+      },
+      outputs: {},
+      results: {},
+      state: { steps: [] },
+      signal: new AbortController().signal,
+    } as never);
+    expect(documentationInput).toMatchObject({
+      repository,
+      workspaceMode: "worktree",
+      preparedWorkspace: { mode: "worktree", repository, worktreePath },
+    });
+    expect(documentationInput.repository).not.toBe(worktreePath);
+    expect(() => parseInput({ task: "demo", repository, workspaceMode: "legacy" })).toThrow(
+      /workspaceMode/,
+    );
+    expect(() => parseInput({ task: "demo", repository, verificationChecks: [] })).toThrow(
+      /non-empty/,
+    );
 
     const validate = async (
       nodeId: string,
@@ -395,7 +482,7 @@ describe("built-in autoimplement", () => {
         throw new Error(`${nodeId} must be a validated agent node`);
       }
       return await node.validate(output, {
-        input: { task: "demo", plan: {}, repository },
+        input: { task: "demo", plan: {}, repository, preparedWorkspace: preparedWorkspace() },
         outputs: {},
         results: {},
         state: { steps: [] },
@@ -900,7 +987,7 @@ describe("built-in autoimplement", () => {
           untested: [],
         },
         {
-          input: { task: "demo", plan: {}, repository },
+          input: { task: "demo", plan: {}, repository, preparedWorkspace: preparedWorkspace() },
           outputs: { implement: { repositories: [repository] } },
         },
       ),
@@ -920,13 +1007,13 @@ describe("built-in autoimplement", () => {
     };
     await expect(
       validate("planVerification", safeVerification, {
-        input: { task: "demo", plan: {}, repository },
+        input: { task: "demo", plan: {}, repository, preparedWorkspace: preparedWorkspace() },
         outputs: { implement: { repositories: [repository] } },
       }),
     ).resolves.toMatchObject({ commands: [{ id: "verify" }] });
     await expect(
       validate("planVerification", safeVerification, {
-        input: { task: "demo", plan: {}, repository },
+        input: { task: "demo", plan: {}, repository, preparedWorkspace: preparedWorkspace() },
         outputs: { implement: { repositories: [] } },
       }),
     ).rejects.toThrow(/provenance/);
@@ -941,7 +1028,7 @@ describe("built-in autoimplement", () => {
           ],
         },
         {
-          input: { task: "demo", plan: {}, repository },
+          input: { task: "demo", plan: {}, repository, preparedWorkspace: preparedWorkspace() },
           outputs: { implement: { repositories: [repository] } },
         },
       ),
@@ -954,14 +1041,14 @@ describe("built-in autoimplement", () => {
           commands: [{ ...safeVerification.commands[0]!, cwd: path.join(repository, "other") }],
         },
         {
-          input: { task: "demo", plan: {}, repository },
+          input: { task: "demo", plan: {}, repository, preparedWorkspace: preparedWorkspace() },
           outputs: { implement: { repositories: [repository] } },
         },
       ),
     ).rejects.toThrow("must match the target repository");
     await expect(
       validate("planVerification", safeVerification, {
-        input: { task: "demo", plan: {}, repository },
+        input: { task: "demo", plan: {}, repository, preparedWorkspace: preparedWorkspace() },
         outputs: {
           implement: { repositories: [repository, path.join(repository, "second")] },
         },
@@ -977,7 +1064,7 @@ describe("built-in autoimplement", () => {
     };
     await expect(
       validate("implement", implementation, {
-        input: { task: "demo", plan: {}, repository },
+        input: { task: "demo", plan: {}, repository, preparedWorkspace: preparedWorkspace() },
       }),
     ).resolves.toMatchObject({ repository, repositories: [repository] });
     await expect(
@@ -985,7 +1072,7 @@ describe("built-in autoimplement", () => {
         "implement",
         { ...implementation, repositories: [path.join(repository, "other")] },
         {
-          input: { task: "demo", plan: {}, repository },
+          input: { task: "demo", plan: {}, repository, preparedWorkspace: preparedWorkspace() },
         },
       ),
     ).rejects.toThrow(/contain only/);
@@ -994,13 +1081,13 @@ describe("built-in autoimplement", () => {
         "implement",
         { ...implementation, files: ["../escape.ts"] },
         {
-          input: { task: "demo", plan: {}, repository },
+          input: { task: "demo", plan: {}, repository, preparedWorkspace: preparedWorkspace() },
         },
       ),
     ).rejects.toThrow(/stay inside/);
     await expect(
       validate("publish", published(), {
-        input: { task: "demo", plan: {}, repository },
+        input: { task: "demo", plan: {}, repository, preparedWorkspace: preparedWorkspace() },
       }),
     ).resolves.toMatchObject({ repositories: [{ repository }] });
     await expect(
@@ -1013,7 +1100,7 @@ describe("built-in autoimplement", () => {
           ],
         },
         {
-          input: { task: "demo", plan: {}, repository },
+          input: { task: "demo", plan: {}, repository, preparedWorkspace: preparedWorkspace() },
         },
       ),
     ).rejects.toThrow(/contain only/);
@@ -1100,7 +1187,12 @@ describe("built-in autoimplement", () => {
   });
 
   it("pins mutating stages to the prepared repository and preserves ignored files", async () => {
-    const input = { task: "demo", plan: { step: "change" }, repository };
+    const input = {
+      task: "demo",
+      plan: { step: "change" },
+      repository,
+      preparedWorkspace: preparedWorkspace(),
+    };
     const context = {
       input,
       outputs: {
@@ -1158,6 +1250,7 @@ describe("built-in autoimplement", () => {
           constraints: ["safe"],
           plan: { old: true },
           repository,
+          preparedWorkspace: preparedWorkspace(),
           ...(overrides.input as Record<string, unknown> | undefined),
         },
       }) as never;
@@ -1171,7 +1264,7 @@ describe("built-in autoimplement", () => {
           state: {
             steps: [
               {
-                nodeId: "classifyVerification",
+                nodeId: "localVerification",
                 output: { route: "redesign", evidence: "new failure" },
               },
             ],
@@ -1701,17 +1794,6 @@ describe("built-in autoimplement", () => {
           untested: [],
         },
       })
-      .respond("verify", {
-        output: {
-          passed: true,
-          commands: [{ command: "npm test", outcome: "passed" }],
-          failures: [],
-          untested: [],
-        },
-      })
-      .respond("classifyVerification", {
-        output: { route: "publish", summary: "verified", evidence: "npm test" },
-      })
       .respond("publish", {
         output: published(
           publishedHeadRevision,
@@ -1884,9 +1966,9 @@ describe("built-in autoimplement", () => {
     expect(edge("classifyImplementation")).toMatchObject({
       switch: { cases: { blocked: "challengeBlockerGuard" } },
     });
-    expect(edge("classifyVerification")).toMatchObject({
-      switch: { cases: { blocked: "challengeBlockerGuard" } },
-    });
+    expect(edge("localVerification.blocked")).toMatchObject({ to: "challengeBlockerGuard" });
+    expect(edge("workspace.blocked")).toMatchObject({ to: "blocked" });
+    expect(edge("workspace.ready")).toMatchObject({ to: "routeWorkspace" });
     expect(edge("repairReviewCommand")).toMatchObject({
       switch: { cases: { blocked: "blocked" } },
     });
@@ -1929,6 +2011,9 @@ describe("built-in autoimplement", () => {
     expect(edge("routeFinalizeDeliveryResult")).toMatchObject({
       switch: { cases: { blocked: "challengeBlockerGuard" } },
     });
+    expect(edge("routeFinalizeDefaultBranchResult")).toMatchObject({
+      switch: { cases: { blocked: "challengeBlockerGuard" } },
+    });
 
     expect(Object.hasOwn(autoimplementWorkflow.includes ?? {}, "approval")).toBe(false);
     expect(edge("redesign.blocked")).toMatchObject({ to: "blocked" });
@@ -1950,6 +2035,7 @@ describe("built-in autoimplement", () => {
       inspectComments: "inspectComments",
       inspectCi: "inspectCi",
       opportunisticTest: "opportunisticTest",
+      finalizeDefaultBranch: "finalizeDefaultBranch",
     });
     expect(Object.values(recoveryCases ?? {})).not.toContain("finalizeDelivery");
     expect(Object.values(recoveryCases ?? {})).not.toContain("finalize");
@@ -1962,7 +2048,8 @@ describe("built-in autoimplement", () => {
     }
     const origins = {
       classifyImplementation: { origin: "implementation", recoveries: ["redesign", "fix"] },
-      classifyVerification: { origin: "verification", recoveries: ["planVerification", "fix"] },
+      localVerification: { origin: "verification", recoveries: ["planVerification", "fix"] },
+      selectVerificationPath: { origin: "verification", recoveries: ["planVerification", "fix"] },
       runReview: {
         origin: "reviewer",
         recoveries: ["repairReviewCommand", "selectReviewCommands"],
@@ -1979,6 +2066,10 @@ describe("built-in autoimplement", () => {
       routeFinalizeDeliveryResult: {
         origin: "delivery",
         recoveries: ["inspectComments", "inspectCi"],
+      },
+      routeFinalizeDefaultBranchResult: {
+        origin: "defaultBranch",
+        recoveries: ["finalizeDefaultBranch"],
       },
     } as const;
     for (const [nodeId, expected] of Object.entries(origins)) {
@@ -2003,6 +2094,284 @@ describe("built-in autoimplement", () => {
       signal: new AbortController().signal,
     } as never);
     expect(unsupported).toMatchObject({ route: "blocked" });
+  });
+
+  it("challenges a blocked default-branch finalize instead of hard-stopping", async () => {
+    await execFileAsync("git", ["checkout", "-q", "main"], { cwd: repository });
+    const defaultWorkspace = {
+      schema: PREPARED_WORKSPACE_SCHEMA,
+      mode: "defaultBranch" as const,
+      repository,
+      baseBranch: "main",
+      baseRevision: publishedBaseRevision,
+      workBranch: "main",
+      directDefaultBranchAuthorized: true,
+      preExistingChangedPaths: [] as string[],
+      evidence: ["authorized default-branch work"],
+      scope: `Only ${repository}`,
+    };
+    const executor = new ScriptedExecutor()
+      .respond("implement", {
+        output: {
+          status: "implemented",
+          summary: "Changed files on the default branch.",
+          files: ["tracked.txt"],
+          issueKind: null,
+          evidence: "local default-branch change",
+        },
+      })
+      .respond("classifyImplementation", {
+        output: { route: "verify", summary: "ready", evidence: "implemented" },
+      })
+      .respond("planVerification", {
+        output: {
+          commands: [
+            {
+              id: "verify",
+              command: "npm",
+              args: ["test"],
+              cwd: repository,
+              timeoutMs: 60_000,
+              maxOutputChars: 100_000,
+            },
+          ],
+          untested: [],
+        },
+      })
+      .respond(
+        "finalizeDefaultBranch",
+        {
+          output: {
+            status: "blocked",
+            committed: false,
+            pushed: false,
+            merged: false,
+            pr: "none",
+            reportComment: "push is outside authority",
+            reason: "Default-branch push requires missing remote authorization.",
+          },
+        },
+        {
+          output: {
+            status: "completed",
+            committed: true,
+            pushed: true,
+            merged: false,
+            pr: "none",
+            reportComment: "committed and pushed default-branch work",
+            reason: "Default-branch work is committed and pushed.",
+          },
+        },
+      )
+      .respond("challengeBlocker", {
+        output: continueChallenge(
+          "The default-branch workspace can finish without a pull request.",
+          "Retry finalizeDefaultBranch with the authorized default-branch scope.",
+          "defaultBranch",
+          "finalizeDefaultBranch",
+        ),
+      });
+    const { state } = await new WorkflowEngine({
+      executor,
+      outputRoot: await makeTempDir("pi-workflows-autoimplement-default-branch-block"),
+    }).run(autoimplementWorkflow, {
+      task: "Finish authorized default-branch work",
+      ...documentedPlan({ steps: ["change default branch"] }),
+      preparedWorkspace: defaultWorkspace,
+      workspaceMode: "defaultBranch",
+      directDefaultBranchAuthorized: true,
+      repository,
+      merge: false,
+    });
+
+    expect(state.status, state.error).toBe("completed");
+    expect(state.finalOutput).toMatchObject({
+      status: "completed",
+      delivery: {
+        status: "completed",
+        committed: true,
+        pushed: true,
+        merged: false,
+        pr: "none",
+      },
+    });
+    const nodeIds = state.steps.map((step) => step.nodeId);
+    expect(nodeIds.filter((nodeId) => nodeId === "finalizeDefaultBranch")).toHaveLength(2);
+    expect(nodeIds).toContain("routeFinalizeDefaultBranchResult");
+    expect(nodeIds).toContain("routeBlockerRecovery");
+    expect(nodeIds).toContain("finalize");
+    expect(nodeIds).not.toContain("inspectComments");
+    expect(nodeIds).not.toContain("inspectCi");
+    expect(state.steps.filter((step) => step.nodeId === "challengeBlocker")).toHaveLength(1);
+    expect(JSON.stringify(state.finalOutput)).not.toContain("No safe blocker recovery");
+    expect(
+      state.steps.find((step) => step.nodeId === "challengeBlockerGuard")?.output,
+    ).toMatchObject({
+      route: "challenge",
+      origin: "defaultBranch",
+      recoveries: ["finalizeDefaultBranch"],
+    });
+    expect(state.steps.find((step) => step.nodeId === "challengeBlocker")?.output).toMatchObject({
+      route: "continue",
+      origin: "defaultBranch",
+      recovery: "finalizeDefaultBranch",
+    });
+
+    const challengeRequest = executor.requests.find(
+      (request) => request.contract.nodeId === "challengeBlocker",
+    );
+    expect(challengeRequest?.prompt).toContain("Are you really blocked?");
+    expect(challengeRequest?.prompt).toContain("routeFinalizeDefaultBranchResult");
+    expect(challengeRequest?.prompt).toContain("defaultBranch");
+    expect(challengeRequest?.prompt).toContain('["finalizeDefaultBranch"]');
+    expect(challengeRequest?.prompt).not.toContain("inspectComments");
+    expect(challengeRequest?.prompt).not.toContain("inspectCi");
+    expect(challengeRequest?.prompt).toContain(
+      "Default-branch push requires missing remote authorization.",
+    );
+  });
+
+  it("documents through a worktree receipt without rewriting repository to the worktree path", async () => {
+    const worktreePath = await fs.realpath(
+      await makeTempDir("pi-workflows-autoimplement-docs-worktree"),
+    );
+    await execFileAsync(
+      "git",
+      ["worktree", "add", "-q", "-B", "feat/docs", worktreePath, "feat/demo"],
+      {
+        cwd: repository,
+      },
+    );
+    const worktreeReceipt = {
+      schema: PREPARED_WORKSPACE_SCHEMA,
+      mode: "worktree" as const,
+      repository,
+      worktreePath,
+      baseBranch: "main",
+      baseRevision: publishedBaseRevision,
+      workBranch: "feat/docs",
+      directDefaultBranchAuthorized: false,
+      preExistingChangedPaths: [] as string[],
+      evidence: ["prepared documentation worktree"],
+      scope: `Only ${repository}`,
+    };
+    const executor = new ScriptedExecutor()
+      .respond("documentation/inspectDocumentation", {
+        output: {
+          route: "update",
+          files: ["docs/plans/plan.md"],
+          digests: {},
+          reason: "The selected plan is not recorded yet.",
+          evidence: "missing plan document",
+        },
+      })
+      .respond("documentation/updateDocumentation", {
+        output: {
+          updated: true,
+          files: ["docs/plans/plan.md"],
+          digests: { "docs/plans/plan.md": digest({ steps: ["document worktree"] }) },
+          summary: "Recorded the selected plan.",
+        },
+      })
+      .respond("implement", {
+        output: {
+          status: "implemented",
+          summary: "implemented",
+          files: ["src/change.ts"],
+          issueKind: null,
+          evidence: "complete",
+        },
+      })
+      .respond("classifyImplementation", {
+        output: {
+          route: "blocked",
+          summary: "stop after documentation",
+          evidence: "worktree docs ready",
+        },
+      })
+      .respond("challengeBlocker", {
+        output: confirmedChallenge(
+          "Worktree documentation completed; remaining implementation is out of this case.",
+          "implementation",
+          "redesign",
+        ),
+      });
+    const { state } = await new WorkflowEngine({
+      executor,
+      outputRoot: await makeTempDir("pi-workflows-autoimplement-worktree-docs"),
+    }).run(autoimplementWorkflow, {
+      task: "Document and implement worktree work",
+      plan: { steps: ["document worktree"] },
+      approval: { mode: "skip" },
+      repository,
+      workspaceMode: "worktree",
+      preparedWorkspace: worktreeReceipt,
+      verificationChecks: [
+        {
+          id: "docs",
+          command: "npm",
+          args: ["test"],
+          cwd: worktreePath,
+          timeoutMs: 60_000,
+          maxOutputChars: 100_000,
+          readOnly: true,
+          baseEligible: false,
+          changedFileScope: false,
+          findingFormat: "text" as const,
+        },
+      ],
+      merge: false,
+    });
+
+    expect(state.status, state.error).toBe("completed");
+    expect(state.finalOutput).toMatchObject({ status: "blocked" });
+    expect(JSON.stringify(state.finalOutput)).not.toContain(
+      "does not own the requested repository path",
+    );
+    const nodeIds = state.steps.map((step) => step.nodeId);
+    expect(nodeIds).toEqual(
+      expect.arrayContaining([
+        "prepare",
+        "workspace/inspect",
+        "routeWorkspace",
+        "documentation/prepare",
+        "documentation/inspectDocumentation",
+        "documentation/workspace/inspect",
+        "documentation/updateDocumentation",
+        "implement",
+      ]),
+    );
+    expect(nodeIds.indexOf("prepare")).toBeLessThan(nodeIds.indexOf("workspace/inspect"));
+    expect(nodeIds.indexOf("workspace/inspect")).toBeLessThan(nodeIds.indexOf("routeWorkspace"));
+    expect(nodeIds.indexOf("routeWorkspace")).toBeLessThan(
+      nodeIds.indexOf("documentation/prepare"),
+    );
+    expect(nodeIds.indexOf("documentation/prepare")).toBeLessThan(nodeIds.indexOf("implement"));
+
+    const documentationInclude = autoimplementWorkflow.includes?.documentation;
+    if (documentationInclude?.input === undefined) {
+      throw new Error("autoimplement documentation include input is missing");
+    }
+    const documentationInput = await documentationInclude.input({
+      input: {
+        task: "Document and implement worktree work",
+        plan: { steps: ["document worktree"] },
+        repository,
+        workspaceMode: "worktree",
+        preparedWorkspace: worktreeReceipt,
+      },
+      outputs: {},
+      results: {},
+      state: { steps: [] },
+      signal: new AbortController().signal,
+    } as never);
+    expect(documentationInput.repository).toBe(repository);
+    expect(documentationInput.preparedWorkspace).toMatchObject({
+      mode: "worktree",
+      repository,
+      worktreePath,
+    });
+    expect(documentationInput.repository).not.toBe(worktreePath);
   });
 
   it("addresses P2 findings without running a second review round", async () => {
@@ -2151,30 +2520,6 @@ describe("built-in autoimplement", () => {
 
   it("runs another review after a P1 implementation fix", async () => {
     const executor = commonExecutor()
-      .respond(
-        "verify",
-        {
-          output: {
-            passed: true,
-            commands: [{ command: "npm test", outcome: "passed" }],
-            failures: [],
-            untested: [],
-          },
-        },
-        {
-          output: {
-            passed: true,
-            commands: [{ command: "npm test", outcome: "passed again" }],
-            failures: [],
-            untested: [],
-          },
-        },
-      )
-      .respond(
-        "classifyVerification",
-        { output: { route: "publish", summary: "passed", evidence: "first" } },
-        { output: { route: "publish", summary: "passed", evidence: "second" } },
-      )
       .respond("publish", async (request) => {
         const head = (
           await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repository })
@@ -2862,17 +3207,6 @@ describe("built-in autoimplement", () => {
           untested: [],
         },
       })
-      .respond("verify", {
-        output: {
-          passed: true,
-          commands: [{ command: "node verification", outcome: "passed" }],
-          failures: [],
-          untested: [],
-        },
-      })
-      .respond("classifyVerification", {
-        output: { route: "publish", summary: "checks passed", evidence: "verification" },
-      })
       .respond("publish", { output: published() })
       .respond("assessReview", { output: cleanReview() })
       .respond("inspectComments", {
@@ -3176,7 +3510,6 @@ describe("built-in autoimplement", () => {
     for (const nodeId of [
       "findPlan",
       "classifyImplementation",
-      "classifyVerification",
       "assessReview",
       "recoverReviewAssessment",
       "inspectCi",
@@ -3196,7 +3529,6 @@ describe("built-in autoimplement", () => {
     for (const nodeId of [
       "implement",
       "planVerification",
-      "verify",
       "fix",
       "publish",
       "addressP2",

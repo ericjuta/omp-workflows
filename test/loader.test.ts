@@ -130,19 +130,27 @@ describe("resolveWorkflowRef", () => {
     const resolved = await resolveWorkflowRef("monitor", { cwd, homeDir }, builtinWorkflowCatalog);
 
     expect(resolved.sourceKind).toBe("builtin");
-    expect(resolved.source).toEqual({ kind: "builtin", id: "monitor", revision: "11" });
+    expect(resolved.source).toEqual({ kind: "builtin", id: "monitor", revision: "12" });
     expect(resolved.definition.name).toBe("monitor");
     expect(resolved.sources.map((item) => item.mountPath.join("/"))).toEqual([
       "implementation",
       "implementation/documentation",
+      "implementation/documentation/verification",
+      "implementation/documentation/workspace",
+      "implementation/localVerification",
       "implementation/redesign",
       "implementation/redesign/approval",
       "implementation/redesign/design",
       "implementation/redesign/documentation",
+      "implementation/redesign/documentation/verification",
+      "implementation/redesign/documentation/workspace",
+      "implementation/workspace",
       "planChange",
       "planChange/approval",
       "planChange/design",
       "planChange/documentation",
+      "planChange/documentation/verification",
+      "planChange/documentation/workspace",
     ]);
   });
 

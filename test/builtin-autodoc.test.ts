@@ -1,9 +1,90 @@
+import { execFile } from "node:child_process";
+import fs from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import autodocWorkflow from "../src/builtins/autodoc.workflow.js";
+import type { VerificationCheck } from "../src/builtins/change-verification.workflow.js";
+import {
+  PREPARED_WORKSPACE_SCHEMA,
+  type PreparedWorkspace,
+} from "../src/builtins/workspace-preparation.workflow.js";
 import { WorkflowEngine } from "../src/workflows/engine.js";
 import { digest } from "../src/workflows/human-decision.js";
 import { makeTempDir, ScriptedExecutor } from "./helpers.js";
+
+const execFileAsync = promisify(execFile);
+
+async function git(cwd: string, args: string[]): Promise<string> {
+  const result = await execFileAsync("git", args, { cwd, encoding: "utf8" });
+  return result.stdout.trim();
+}
+
+async function repository(name: string, checkSource = "process.exit(0)"): Promise<string> {
+  const root = await makeTempDir(name);
+  const created = path.join(root, "demo");
+  await fs.mkdir(created);
+  const repo = await fs.realpath(created);
+  await git(repo, ["init", "-b", "main"]);
+  await git(repo, ["config", "user.name", "Test"]);
+  await git(repo, ["config", "user.email", "test@example.com"]);
+  await fs.writeFile(path.join(repo, "README.md"), "demo\n");
+  await fs.writeFile(
+    path.join(repo, "package.json"),
+    `${JSON.stringify(
+      {
+        name: "autodoc-fixture",
+        private: true,
+        scripts: { check: `${process.execPath} -e ${JSON.stringify(checkSource)}` },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await git(repo, ["add", "README.md", "package.json"]);
+  await git(repo, ["commit", "-m", "init"]);
+  return repo;
+}
+
+async function preparedWorkspace(
+  name: string,
+  checkSource = "process.exit(0)",
+): Promise<PreparedWorkspace> {
+  const repo = await repository(name, checkSource);
+  const baseRevision = await git(repo, ["rev-parse", "HEAD"]);
+  await git(repo, ["switch", "-c", "feat/docs"]);
+  return {
+    schema: PREPARED_WORKSPACE_SCHEMA,
+    mode: "branch",
+    repository: repo,
+    baseBranch: "main",
+    baseRevision,
+    workBranch: "feat/docs",
+    directDefaultBranchAuthorized: false,
+    preExistingChangedPaths: [],
+    evidence: ["prepared by test"],
+    scope: `Only ${repo}`,
+  };
+}
+
+function verificationCheck(workspace: PreparedWorkspace): VerificationCheck {
+  return {
+    id: "docs",
+    command: "npm",
+    args: ["run", "check"],
+    cwd: workspace.worktreePath ?? workspace.repository,
+    timeoutMs: 10_000,
+    maxOutputChars: 100_000,
+    readOnly: true,
+    baseEligible: false,
+    changedFileScope: false,
+    findingFormat: "text",
+  };
+}
+
+function ranInclude(state: { steps: { nodeId: string }[] }, mount: string): boolean {
+  return state.steps.some((step) => step.nodeId === mount || step.nodeId.startsWith(`${mount}/`));
+}
 
 async function run(executor: ScriptedExecutor, input: unknown) {
   return await new WorkflowEngine({
@@ -20,6 +101,7 @@ describe("built-in autodoc", () => {
     expect(() => parse({ task: "" })).toThrow(/non-empty/);
     expect(() => parse({ task: "demo", documents: "bad" })).toThrow(/array/);
     expect(() => parse({ task: "demo", repository: "relative" })).toThrow(/absolute/);
+    expect(() => parse({ task: "demo", workspaceMode: "legacy" })).toThrow(/workspaceMode/);
     expect(() =>
       parse({
         task: "demo",
@@ -81,7 +163,6 @@ describe("built-in autodoc", () => {
       }),
     ).rejects.toThrow(/values/);
     await expect(validate("updateDocumentation", { updated: false })).rejects.toThrow(/updated/);
-    await expect(validate("verifyDocumentation", { passed: "yes" })).rejects.toThrow(/boolean/);
   });
 
   it("reuses current documentation when its plan digest matches", async () => {
@@ -100,13 +181,15 @@ describe("built-in autodoc", () => {
 
     expect(state.status).toBe("completed");
     expect(state.steps.map((step) => step.nodeId)).toEqual(["prepare", "finalize"]);
+    expect(ranInclude(state, "workspace")).toBe(false);
+    expect(ranInclude(state, "verification")).toBe(false);
     expect(executor.requests).toEqual([]);
     expect(state.finalOutput).toMatchObject({
       status: "ready",
       plan,
       planDigest: digest(plan),
       documentation: { state: "current", files: documents },
-      verification: { passed: true },
+      verification: { route: "ready", reason: "Canonical documentation was already current." },
     });
   });
 
@@ -134,6 +217,8 @@ describe("built-in autodoc", () => {
     expect(executor.requests.map((request) => request.contract.nodeId)).toEqual([
       "inspectDocumentation",
     ]);
+    expect(ranInclude(state, "workspace")).toBe(false);
+    expect(ranInclude(state, "verification")).toBe(false);
   });
 
   it("adopts current canonical documentation without a write step", async () => {
@@ -151,9 +236,12 @@ describe("built-in autodoc", () => {
     });
     expect(state.status).toBe("completed");
     expect(state.steps.map((step) => step.nodeId)).not.toContain("updateDocumentation");
+    expect(ranInclude(state, "workspace")).toBe(false);
+    expect(ranInclude(state, "verification")).toBe(false);
     expect(state.finalOutput).toMatchObject({
       status: "ready",
       documentation: { state: "current" },
+      verification: { route: "ready" },
     });
   });
 
@@ -175,7 +263,7 @@ describe("built-in autodoc", () => {
   });
 
   it("updates and verifies stale documentation", async () => {
-    const repository = await makeTempDir("builtin-autodoc-repository");
+    const workspace = await preparedWorkspace("builtin-autodoc-repository");
     const executor = new ScriptedExecutor()
       .respond("inspectDocumentation", {
         output: {
@@ -191,37 +279,40 @@ describe("built-in autodoc", () => {
           files: ["docs/spec.md", "docs/plans/plan.md"],
           summary: "Recorded the selected plan.",
         },
-      })
-      .respond("verifyDocumentation", {
-        output: {
-          passed: true,
-          commands: [{ command: "docs-check", outcome: "passed" }],
-          failures: [],
-        },
       });
     const { state } = await run(executor, {
       task: "implement feature",
       plan: { steps: ["one"] },
-      repository,
+      repository: workspace.repository,
+      preparedWorkspace: workspace,
+      verificationChecks: [verificationCheck(workspace)],
     });
     expect(state.status).toBe("completed");
+    expect(ranInclude(state, "workspace")).toBe(true);
+    expect(ranInclude(state, "verification")).toBe(true);
+    expect(state.steps.map((step) => step.nodeId)).not.toContain("verifyDocumentation");
     expect(state.finalOutput).toMatchObject({
       status: "ready",
       documentation: { state: "updated" },
-      verification: { passed: true },
+      verification: { route: "ready" },
+      workspace,
     });
-    for (const nodeId of ["updateDocumentation", "verifyDocumentation"]) {
-      const prompt = executor.requests.find(
-        (request) => request.contract.nodeId === nodeId,
-      )?.prompt;
-      expect(prompt).toContain(`Prepared repository: ${repository}`);
-      expect(prompt).toContain("Preserve every pre-existing untracked and ignored file");
-      expect(prompt).toContain("Never run git clean");
-    }
+    const updatePrompt = executor.requests.find(
+      (request) => request.contract.nodeId === "updateDocumentation",
+    )?.prompt;
+    expect(updatePrompt).toContain("Prepared workspace:");
+    expect(updatePrompt).toContain(workspace.repository);
+    expect(executor.requests.map((request) => request.contract.nodeId)).toEqual([
+      "inspectDocumentation",
+      "updateDocumentation",
+    ]);
   });
 
   it("limits verification to named files and reports verification failures", async () => {
-    const repository = await makeTempDir("builtin-autodoc-verification-repository");
+    const workspace = await preparedWorkspace(
+      "builtin-autodoc-verification-repository",
+      "process.exit(1)",
+    );
     const files = ["docs/spec.md", "docs/plans/plan.md"];
     const executor = new ScriptedExecutor()
       .respond("inspectDocumentation", {
@@ -239,31 +330,35 @@ describe("built-in autodoc", () => {
           summary: "Recorded the selected plan.",
         },
       })
-      .respond("verifyDocumentation", {
-        output: {
-          passed: false,
-          commands: [{ command: "simpledoc check docs/spec.md", outcome: "failed" }],
-          failures: ["docs/spec.md has a broken link"],
-        },
+      .respond("verification/semanticRepair", {
+        output: { changedFiles: [], result: "No in-scope repair was available." },
       });
 
     const { state } = await run(executor, {
       task: "implement feature",
       plan: { steps: ["one"] },
-      repository,
+      repository: workspace.repository,
+      preparedWorkspace: workspace,
+      verificationChecks: [verificationCheck(workspace)],
     });
-    const verifyRequest = executor.requests.find(
-      (request) => request.contract.nodeId === "verifyDocumentation",
-    );
 
-    expect(verifyRequest?.prompt).toContain(`Target documentation files: ${JSON.stringify(files)}`);
-    expect(verifyRequest?.prompt).toContain("not repo-wide SimpleDoc");
+    expect(ranInclude(state, "workspace")).toBe(true);
+    expect(ranInclude(state, "verification")).toBe(true);
+    expect(state.steps.map((step) => step.nodeId)).not.toContain("verifyDocumentation");
     expect(state.finalOutput).toMatchObject({
       status: "blocked",
-      reason: "docs/spec.md has a broken link",
-      evidence: ["docs/spec.md has a broken link"],
+      sourceNode: "autodoc/verification",
+      evidence: {
+        qualifiedNode: "autodoc/verification",
+        changedFiles: files,
+        relatedFailures: [{ checkId: "docs" }],
+      },
     });
+    expect(String((state.finalOutput as { reason?: string }).reason)).toMatch(
+      /fingerprint repeated|repair attempt limit|Current-change failures/i,
+    );
   });
+
   it("refuses a documentation mutation without a prepared repository", async () => {
     const executor = new ScriptedExecutor().respond("inspectDocumentation", {
       output: {
@@ -277,8 +372,15 @@ describe("built-in autodoc", () => {
       task: "implement feature",
       plan: { steps: ["one"] },
     });
-    expect(state.status).toBe("failed");
-    expect(state.error).toContain("autodoc mutation repository");
+    expect(state.status).toBe("completed");
+    expect(state.finalOutput).toMatchObject({
+      status: "blocked",
+      sourceNode: "autodoc/workspaceGuard",
+      reason: "Updating canonical documentation requires an explicit repository path.",
+      evidence: ["repository was not supplied", "preparedWorkspace was not supplied"],
+    });
+    expect(state.steps.map((step) => step.nodeId)).not.toContain("updateDocumentation");
+    expect(ranInclude(state, "workspace")).toBe(false);
     expect(executor.requests.map((request) => request.contract.nodeId)).toEqual([
       "inspectDocumentation",
     ]);
@@ -311,6 +413,7 @@ describe("built-in autodoc", () => {
       "locatePlan",
       "inspectDocumentation",
     ]);
+    expect(ranInclude(state, "workspace")).toBe(false);
   });
 
   it("blocks when no selected plan exists", async () => {

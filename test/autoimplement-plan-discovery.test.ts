@@ -1,11 +1,21 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import autoimplementWorkflow from "../src/builtins/autoimplement.workflow.js";
+import {
+  PREPARED_WORKSPACE_SCHEMA,
+  type PreparedWorkspace,
+} from "../src/builtins/workspace-preparation.workflow.js";
 import { WorkflowEngine } from "../src/workflows/engine.js";
 import { digest } from "../src/workflows/human-decision.js";
 import { makeTempDir, ScriptedExecutor } from "./helpers.js";
+
+const execFileAsync = promisify(execFile);
 let originalPath = "";
+let repository = "";
+let prepared: PreparedWorkspace;
 
 beforeEach(async () => {
   originalPath = process.env.PATH ?? "";
@@ -13,7 +23,42 @@ beforeEach(async () => {
   for (const name of ["omp", "omp-reviewer"]) {
     await fs.writeFile(path.join(commandDir, name), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   }
-  process.env.PATH = `${originalPath}:${commandDir}`;
+  process.env.PATH = `${commandDir}:${originalPath}`;
+  repository = await fs.realpath(await makeTempDir("autoimplement-plan-discovery-repository"));
+  await execFileAsync("git", ["init", "-q", "-b", "main"], { cwd: repository });
+  await execFileAsync("git", ["config", "user.name", "Test"], { cwd: repository });
+  await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: repository });
+  await fs.writeFile(path.join(repository, "README.md"), "demo\n");
+  await fs.writeFile(
+    path.join(repository, "package.json"),
+    `${JSON.stringify(
+      {
+        name: "plan-discovery-fixture",
+        private: true,
+        scripts: { test: "true", check: "true" },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await execFileAsync("git", ["add", "README.md", "package.json"], { cwd: repository });
+  await execFileAsync("git", ["commit", "-q", "-m", "init"], { cwd: repository });
+  const baseRevision = (
+    await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repository })
+  ).stdout.trim();
+  await execFileAsync("git", ["switch", "-q", "-c", "feat/demo"], { cwd: repository });
+  prepared = {
+    schema: PREPARED_WORKSPACE_SCHEMA,
+    mode: "branch",
+    repository,
+    baseBranch: "main",
+    baseRevision,
+    workBranch: "feat/demo",
+    directDefaultBranchAuthorized: false,
+    preExistingChangedPaths: [],
+    evidence: ["prepared by test"],
+    scope: `Only ${repository}`,
+  };
 });
 
 afterEach(() => {
@@ -25,6 +70,7 @@ function documentedPlan(plan: unknown) {
     plan,
     documentation: { status: "current" as const, planDigest: digest(plan), documents: [] },
     approval: { mode: "skip" as const },
+    preparedWorkspace: prepared,
   };
 }
 
@@ -45,12 +91,12 @@ function blockedImplementation(executor: ScriptedExecutor): ScriptedExecutor {
 }
 
 async function run(executor: ScriptedExecutor, input: unknown) {
-  const repository = await makeTempDir("autoimplement-plan-discovery-repository");
   return await new WorkflowEngine({
     executor,
     outputRoot: await makeTempDir("autoimplement-plan-discovery"),
   }).run(autoimplementWorkflow, {
     repository,
+    preparedWorkspace: prepared,
     ...(input as Record<string, unknown>),
   });
 }
@@ -106,12 +152,25 @@ describe("autoimplement existing-plan startup", () => {
             files: ["docs/spec.md", "docs/plans/plan.md"],
             summary: "Recorded the selected plan.",
           },
-        })
-        .respond("documentation/verifyDocumentation", {
-          output: { passed: true, commands: [], failures: [] },
         }),
     );
-    const { state } = await run(executor, { task: "implement existing plan" });
+    const { state } = await run(executor, {
+      task: "implement existing plan",
+      verificationChecks: [
+        {
+          id: "docs",
+          command: "npm",
+          args: ["run", "check"],
+          cwd: repository,
+          timeoutMs: 10_000,
+          maxOutputChars: 100_000,
+          readOnly: true,
+          baseEligible: false,
+          changedFileScope: false,
+          findingFormat: "text" as const,
+        },
+      ],
+    });
     const steps = state.steps.map((step) => step.nodeId);
     expect(steps).toContain("documentation/updateDocumentation");
     expect(steps.some((step) => step.startsWith("redesign/"))).toBe(false);
@@ -218,6 +277,9 @@ describe("autoimplement existing-plan startup", () => {
         },
         { output: { route: "blocked", summary: "done", evidence: "done" } },
       )
+      .respond("redesign/design/captureIntent", {
+        output: { originalUserInstructions: "Revise the existing plan in scope." },
+      })
       .respond("redesign/design/frame", {
         output: {
           problem: "API mismatch",
@@ -228,13 +290,13 @@ describe("autoimplement existing-plan startup", () => {
           controlBoundary: "repository",
         },
       })
-      .respond("redesign/design/propose", {
+      .respond("redesign/design/solutions", {
         output: { solution: "revised", rationale: "in scope", parts: ["code"], tradeoffs: [] },
       })
-      .respond("redesign/design/ideal", {
+      .respond("redesign/design/holyGrail", {
         output: { ideal: "revised", outsideDependencies: [], additionalValue: [] },
       })
-      .respond("redesign/design/choose", {
+      .respond("redesign/design/select", {
         output: {
           status: "ready",
           selected: "revised",
@@ -260,13 +322,42 @@ describe("autoimplement existing-plan startup", () => {
           summary: "Recorded the revised plan.",
         },
       })
-      .respond("redesign/documentation/verifyDocumentation", {
-        output: { passed: true, commands: [], failures: [] },
+      .respond("redesign/documentation/verification/planChecks", {
+        output: {
+          checks: [
+            {
+              id: "docs",
+              command: "npm",
+              args: ["run", "check"],
+              cwd: repository,
+              timeoutMs: 10_000,
+              maxOutputChars: 100_000,
+              readOnly: true,
+              baseEligible: false,
+              changedFileScope: false,
+              findingFormat: "text",
+            },
+          ],
+        },
       });
     const oldPlan = { summary: "old", steps: ["old"] };
     const { state } = await run(executor, {
       task: "implement and redesign",
       ...documentedPlan(oldPlan),
+      verificationChecks: [
+        {
+          id: "docs",
+          command: "npm",
+          args: ["run", "check"],
+          cwd: repository,
+          timeoutMs: 10_000,
+          maxOutputChars: 100_000,
+          readOnly: true,
+          baseEligible: false,
+          changedFileScope: false,
+          findingFormat: "text" as const,
+        },
+      ],
     });
     const steps = state.steps.map((step) => step.nodeId);
     const redesigned = steps.indexOf("redesign/design/plan");

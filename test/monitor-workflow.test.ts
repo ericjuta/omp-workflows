@@ -35,11 +35,100 @@ function input(overrides: Record<string, unknown> = {}) {
 function check(overrides: Record<string, unknown> = {}) {
   return {
     route: "stop",
+    goalState: "complete",
+    workState: "stopped",
     observation: "Pull request 123 is merged.",
     report: "PR 123 is merged.",
+    targetStateId: "pr-123:merged",
+    authorizedActions: [] as string[],
     reason: "The stop condition is true.",
     ...overrides,
   };
+}
+
+function actionRequest(
+  kind: "advance" | "recover" | "repair" = "advance",
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    kind,
+    incomplete: "One requested unit remains.",
+    evidence: { completed: 4, total: 5 },
+    nextAction: kind === "recover" ? "Resume the saved unit." : "Start the missing unit.",
+    authority: {
+      status: "authorized",
+      basis: "The task explicitly authorizes finishing the remaining unit.",
+      allowedMutations: ["the saved unit and its launch process"],
+      forbiddenMutations: ["provider changes"],
+      costLimit: "No paid resources",
+      providerRuntime: "Keep the current runtime",
+      requiredChecks: ["confirm the worker is active"],
+      stopConditions: ["stop on a protected contract change"],
+      allowedRecoveryActions: ["resume saved work"],
+      merge: false,
+      repairApproval: { mode: "skip" },
+    },
+    cost: {
+      paidAction: false,
+      status: "not-applicable",
+      evidence: "The action uses local resources.",
+    },
+    defect: {
+      sharedCodeOrDataDefect: false,
+      paidWorkers: "not-applicable",
+      evidence: "No shared defect is present.",
+    },
+    verification: "Confirm that the worker is active.",
+    failureId: "unit-5-idle",
+    targetStateId: "units:4-of-5:idle",
+    ...overrides,
+  };
+}
+
+function actCheck(
+  kind: "advance" | "recover" | "repair" = "advance",
+  overrides: Record<string, unknown> = {},
+) {
+  return check({
+    route: "act",
+    goalState: "incomplete",
+    workState: kind === "recover" ? "stopped" : "idle",
+    observation: "Four of five units are complete and no worker is active.",
+    report: "The target is idle with one unit missing.",
+    targetStateId: "units:4-of-5:idle",
+    authorizedActions: ["start the missing unit"],
+    reason: "One safe authorized action is available.",
+    action: actionRequest(kind),
+    ...overrides,
+  });
+}
+
+function actionResult(
+  status: "succeeded" | "failed" | "blocked" = "succeeded",
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    status,
+    summary: status === "succeeded" ? "Started the missing unit." : "The start command failed.",
+    evidence: { process: status === "succeeded" ? "active" : "not-found" },
+    verification: "Checked the real worker process.",
+    failureId: "unit-5-idle",
+    targetStateId: "units:4-of-5:idle",
+    ...overrides,
+  };
+}
+
+function waitCheck(overrides: Record<string, unknown> = {}) {
+  return check({
+    route: "wait",
+    goalState: "incomplete",
+    workState: "running",
+    observation: "PR 123 remains open.",
+    report: "PR 123 remains open.",
+    targetStateId: "pr-123:open",
+    reason: "It is not merged.",
+    ...overrides,
+  });
 }
 function monitorWithFastTimeoutRetry() {
   const checkNode = monitor.nodes.check;
@@ -113,7 +202,9 @@ describe("built-in monitor workflow", () => {
     const result = await engine.run(monitor, input());
 
     expect(result.state.status).toBe("completed");
-    expect(notifications.map((item) => item.content)).toEqual(["PR 123 is merged."]);
+    expect(notifications[0]?.content).toContain("PR 123 is merged.");
+    expect(notifications[0]?.content).toContain("Goal: complete");
+    expect(notifications[0]?.content).toContain("Work: stopped");
     expect(result.state.steps.map((step) => step.nodeId)).toEqual([
       "prepare",
       "check",
@@ -123,20 +214,17 @@ describe("built-in monitor workflow", () => {
       "decide",
       "finish",
     ]);
-    expect(result.state.finalOutput).toMatchObject({ reported: true, checks: 1 });
+    expect(result.state.finalOutput).toMatchObject({
+      reported: true,
+      checks: 1,
+      goalState: "complete",
+    });
   });
 
-  it("reports a continue check and then stops at the disclosed safety limit", async () => {
+  it("reports a wait check and then stops at the disclosed safety limit", async () => {
     const notifications: WorkflowNotificationRequest[] = [];
     const engine = new WorkflowEngine({
-      executor: scriptedExecutor([
-        check({
-          route: "continue",
-          observation: "PR 123 remains open.",
-          report: "PR 123 remains open.",
-          reason: "It is not merged.",
-        }),
-      ]),
+      executor: scriptedExecutor([waitCheck()]),
       store: new WorkflowRunStore(await makeTempDir("monitor-limit")),
       notificationSink: {
         notify(request) {
@@ -156,6 +244,63 @@ describe("built-in monitor workflow", () => {
       reported: true,
     });
     expect(result.state.steps.some((step) => step.nodeId === "sleep")).toBe(false);
+  });
+
+  it("lets an authorized act finish a goal without sleeping", async () => {
+    const notifications: WorkflowNotificationRequest[] = [];
+    const engine = new WorkflowEngine({
+      executor: scriptedExecutor([actCheck("advance"), actionResult(), check()]),
+      store: new WorkflowRunStore(await makeTempDir("monitor-act-finish")),
+      notificationSink: {
+        notify(request) {
+          notifications.push(request);
+          return { notificationId: `n${notifications.length}`, targetSessionId: "s1" };
+        },
+      },
+    });
+
+    const result = await engine.run(monitor, input());
+    const steps = result.state.steps.map((step) => step.nodeId);
+    const actIndex = steps.indexOf("act");
+
+    expect(result.state.status).toBe("completed");
+    expect(actIndex).toBeGreaterThan(-1);
+    expect(steps[actIndex + 1]).toBe("check");
+    expect(steps).not.toContain("schedule");
+    expect(steps).not.toContain("sleep");
+    expect(result.state.finalOutput).toMatchObject({ goalState: "complete" });
+    expect(notifications[0]?.content).toContain("Next action: Start the missing unit.");
+    expect(notifications[1]?.content).toContain("Goal: complete");
+  });
+
+  it("stops without mutating when the next act is unauthorized", async () => {
+    const engine = new WorkflowEngine({
+      executor: scriptedExecutor([
+        check({
+          goalState: "blocked",
+          workState: "idle",
+          observation: "The required repository mutation is not authorized.",
+          report: "The next action is outside recorded authority.",
+          targetStateId: "blocked:unauthorized",
+          reason: "The required repository mutation is not authorized.",
+        }),
+      ]),
+      store: new WorkflowRunStore(await makeTempDir("monitor-unauthorized-stop")),
+      notificationSink: {
+        notify() {
+          return { notificationId: "n1", targetSessionId: "s1" };
+        },
+      },
+    });
+
+    const result = await engine.run(monitor, input());
+
+    expect(result.state.status).toBe("completed");
+    expect(result.state.steps.some((step) => step.nodeId === "act")).toBe(false);
+    expect(result.state.finalOutput).toMatchObject({
+      goalState: "blocked",
+      reason: "The required repository mutation is not authorized.",
+    });
   });
 
   it("retries timed-out checks through schedule and sleep, then stops truthfully", async () => {
@@ -292,6 +437,7 @@ describe("built-in monitor workflow", () => {
     expect(result.state.updates?.[0]).toMatchObject({ type: "progress", key: "checks" });
     expect(notifications[0]?.content).toContain("Progress: Checks  8/10 checks");
     expect(notifications[0]?.content).toContain("ETA unavailable (needs another progress sample)");
+    expect(notifications[0]?.content).toContain("Goal: complete");
   });
 
   it("paces large progress batches below the engine update limit", async () => {
@@ -340,39 +486,58 @@ describe("built-in monitor workflow", () => {
     expect(prompt).toContain("publish them with workflow action update");
     expect(prompt).toContain("Do not require the monitored target to implement a Pi-specific");
     expect(prompt).toContain("This check itself is observation-only");
-    expect(prompt).toContain("Route repair and repair details are forbidden");
+    expect(prompt).toContain("action.kind repair is forbidden");
+    expect(prompt).toContain("Choose route wait, act, or stop");
     expect(executor).toBeDefined();
   });
 
-  it("requires explicit authorization and details for repair routes", () => {
-    const repairDetails = {
-      problem: "Fix the defect",
-      evidence: { failingTest: "test-a" },
-      issueFingerprint: "issue-a-state-1",
-    };
-    const repair = check({
-      route: "repair",
+  it("requires explicit authorization and details for repair actions", () => {
+    const repair = actCheck("repair", {
+      workState: "failed",
       observation: "A fixable defect is present.",
       report: "A fixable defect is present.",
-      repair: repairDetails,
+      action: actionRequest("repair", {
+        incomplete: "Fix the defect",
+        nextAction: "Fix the deterministic test failure",
+        failureId: "issue-a",
+        targetStateId: "units:4-of-5:idle",
+      }),
     });
     expect(() => validateMonitorCheck(repair)).toThrow("authorization");
     expect(validateMonitorCheck(repair, true)).toMatchObject({
-      route: "repair",
-      repair: { issueFingerprint: "issue-a-state-1" },
+      route: "act",
+      action: { kind: "repair", failureId: "issue-a" },
     });
-    expect(() => validateMonitorCheck({ ...repair, repair: undefined }, true)).toThrow(
-      "requires repair details",
-    );
-    expect(() => validateMonitorCheck(check({ route: "continue", repair: repairDetails }))).toThrow(
-      "authorization",
+    expect(() => validateMonitorCheck({ ...repair, action: undefined }, true)).toThrow(
+      "requires action details",
     );
     expect(() =>
-      validateMonitorCheck(check({ route: "continue", repair: repairDetails }), true),
-    ).toThrow("require route repair");
+      validateMonitorCheck(
+        waitCheck({
+          targetStateId: "units:4-of-5:idle",
+          action: actionRequest("repair"),
+        }),
+      ),
+    ).toThrow("only valid for route act");
+    expect(() =>
+      validateMonitorCheck(
+        actCheck("advance", {
+          action: actionRequest("advance", {
+            authority: {
+              ...(actionRequest().authority as Record<string, unknown>),
+              status: "outside",
+            },
+          }),
+        }),
+      ),
+    ).toThrow("unauthorized act cannot mutate");
+    expect(() => validateMonitorCheck(check({ goalState: "complete", route: "wait" }))).toThrow(
+      "goalState complete requires route stop",
+    );
   });
 
   it("rejects quiet routes, missing reports, duplicate tracks, and unknown fields", () => {
+    expect(() => validateMonitorCheck(check({ route: "continue" }))).toThrow("route");
     expect(() => validateMonitorCheck(check({ route: "stop_quiet" }))).toThrow("route");
     const { report: _report, ...withoutReport } = check();
     expect(() => validateMonitorCheck(withoutReport)).toThrow("report");
@@ -469,6 +634,8 @@ describe("built-in monitor workflow", () => {
     expect(monitor.nodes.report_continue).toBeUndefined();
     expect(monitor.nodes.report_stop).toBeUndefined();
     expect(JSON.stringify(monitor.edges)).not.toContain("quiet");
+    expect(JSON.stringify(monitor.edges)).toContain('"wait":"schedule"');
+    expect(JSON.stringify(monitor.edges)).toContain('"advance":"act"');
   });
 
   it("waits for the next check in-process without a child or node timeout", async () => {

@@ -2,7 +2,7 @@
 
 This specification defines the built-in `monitor` workflow and its use of [workflow updates](WORKFLOW_UPDATES.md).
 
-The monitor checks a target, sends one status notification after every accepted check, publishes optional progress tracks, waits, and repeats until its stop rule or safety limit is reached.
+The monitor finishes an authorized goal. It observes the real target, waits while useful work is moving, performs a safe authorized action when work is incomplete and idle, and repeats until the goal is complete or cannot continue safely. Every accepted check sends one status notification and may publish progress tracks.
 
 ## Minimal input
 
@@ -36,7 +36,7 @@ The monitor checks a target, sends one status notification after every accepted 
 
 `checkTimeoutMinutes` is from 5 through 1,440. When omitted, the workflow uses the larger of 60 minutes and `everyMinutes`. The node timeout includes the existing two-minute runtime margin.
 
-`repair` must set `authorized: true` and name the target with an absolute `repository` path. It can constrain scope, base branch, merge behavior, and other implementation constraints. Omitted `merge` means the repair can prepare but cannot merge a pull request; merging requires explicit `merge: true`. Without this object the monitor is observation-only. Repair authority does not permit a protected model, benchmark, credential, hardware, spending, or scope change.
+`repair` must set `authorized: true` and name the target with an absolute `repository` path. It can constrain scope, base branch, merge behavior, and other implementation constraints. Omitted `merge` means the repair can prepare but cannot merge a pull request; merging requires explicit `merge: true`. Without this object, automatic repair is disabled. Authorized `advance` and `recover` actions can still run when the task already grants that mutation. Repair authority does not permit a protected model, benchmark, credential, hardware, spending, or scope change.
 
 `repair.approval` uses `auto`, `required`, or `skip` mode. When omitted, Monitor uses `auto` with audience `operator`, a 10-minute timeout, and three allowed replans. Auto mode asks and then continues with the exact plan if no answer is accepted by the deadline. Required mode waits for an explicit human answer. Skip mode asks nothing. Continue starts implementation, stop ends the repair truthfully, and replan preserves exact operator text before the shared plan-change workflow runs again. The model-facing workflow tool cannot approve the gate.
 
@@ -48,9 +48,13 @@ The check agent submits:
 
 ```json
 {
-  "route": "continue",
+  "route": "wait",
+  "goalState": "incomplete",
+  "workState": "running",
   "observation": "The pull request is open and 8 of 10 checks passed.",
   "report": "PR 123 remains open. Eight of ten checks passed; two are running.",
+  "targetStateId": "pr-123:open",
+  "authorizedActions": [],
   "progress": {
     "tracks": [
       {
@@ -72,20 +76,24 @@ The check agent submits:
 
 Fields:
 
-| Field         | Required   | Type   | Meaning                                     |
-| ------------- | ---------- | ------ | ------------------------------------------- |
-| `route`       | Yes        | string | `continue`, authorized `repair`, or `stop`. |
-| `observation` | Yes        | string | Current factual state.                      |
-| `report`      | Yes        | string | Concise user-facing update.                 |
-| `progress`    | No         | object | Current progress tracks.                    |
-| `repair`      | For repair | object | Problem, evidence, and stable fingerprint.  |
-| `reason`      | Yes        | string | Reason for the selected route.              |
+| Field               | Required | Type   | Meaning                                                          |
+| ------------------- | -------- | ------ | ---------------------------------------------------------------- |
+| `route`             | Yes      | string | `wait`, `act`, or `stop`.                                        |
+| `goalState`         | Yes      | string | `complete`, `incomplete`, or `blocked`.                          |
+| `workState`         | Yes      | string | `running`, `waiting`, `idle`, `failed`, `stopped`, or `unknown`. |
+| `observation`       | Yes      | string | Current factual state.                                           |
+| `report`            | Yes      | string | Concise user-facing update.                                      |
+| `targetStateId`     | Yes      | string | Stable observed target-state ID.                                 |
+| `authorizedActions` | Yes      | array  | Safe actions already authorized by the user.                     |
+| `progress`          | No       | object | Current progress tracks.                                         |
+| `action`            | For act  | object | One exact `advance`, `recover`, or authorized `repair`.          |
+| `reason`            | Yes      | string | Reason for the selected route.                                   |
 
 `observation` is at most 8,000 characters. `report` is at most 4,000 characters. `reason` is at most 2,000 characters. All three must be non-empty after trimming.
 
 `progress.tracks` contains from 1 through 256 entries. Each entry has a unique `key` and one valid `pi-workflows.progress.v1` data object. The progress update rules, reserved `overall` key, and validation behavior come from [WORKFLOW_UPDATES.md](WORKFLOW_UPDATES.md).
 
-Unknown check fields are validation errors. A missing report is a validation error for every route. A repair route without input authorization or repair details is also invalid.
+Unknown check fields are validation errors. A missing report is a validation error for every route. `goalState: "complete"` requires `route: "stop"`. Route `act` requires action details and authorized authority. `action.kind: "repair"` without the explicit input `repair` object is invalid. Unauthorized act cannot mutate.
 
 ## Graph
 
@@ -99,7 +107,8 @@ prepare
   → report
   → decide
       ├─ stop → finish
-      ├─ continue → schedule → sleep → check
+      ├─ wait → schedule → sleep → check
+      ├─ advance|recover → act → check
       └─ repair → repairGuard
            ├─ blocked → repairBlocked → repairReport → finish
            └─ planChange
@@ -115,6 +124,7 @@ prepare
 - `publish_progress` is a function `action` that publishes each validated observed track.
 - `report` is a `notify` node that queues exactly one report.
 - `decide` is a `compute` node that applies the route and check safety limit.
+- `act` is a mutation-capable `agent` node for authorized `advance` and `recover`. It returns to `check` immediately. Authorized `repair` still uses the composed plan-change and Autoimplement path. Unauthorized act cannot mutate.
 - `repairGuard` stops a repeated issue when a completed repair did not change its fingerprint or observed target state.
 - `planChange` and `implementation` are included workflows. Plan change owns Autoplan, Autodoc, approval policy, and exact-text replanning. Autoimplement receives the selected plan without another decision and enters its own plan-change mount only when later evidence requires a changed plan.
 - `repairBlocked` and `repairReport` preserve a truthful blocked result and user notification.
@@ -228,7 +238,9 @@ A check that times out or fails before producing accepted output is not an accep
 
 `route: "stop"` queues the report and then completes the workflow.
 
-`route: "continue"` queues the report and then checks the safety limit. If the limit remains available, the workflow schedules and waits for the next check. If the accepted check reaches `maxChecks`, the workflow finishes after that check's report and records `Reached the <n>-check safety limit.`
+`route: "wait"` queues the report and then checks the safety limit. If the limit remains available, the workflow schedules and waits for the next check. If the accepted check reaches `maxChecks`, the workflow finishes after that check's report and records `Reached the <n>-check safety limit.`
+
+`route: "act"` queues the report and then performs one authorized action. `advance` and `recover` use the direct `act` node. `repair` uses the existing plan-change and Autoimplement composition when the input `repair` object is present. The next check runs immediately after the action; the timer belongs only on `wait`. Unauthorized act cannot mutate. `goalState: "complete"` requires `route: "stop"` and finishes the goal.
 
 A user cancellation stops the active check or wait immediately. It does not queue another report. The existing workflow lifecycle notification reports cancellation.
 
@@ -286,27 +298,4 @@ A monitoring request does not create spending approval or a default spending cei
 
 ## Validation and acceptance
 
-The implementation must test:
-
-- input defaults and bounds
-- removal of `reportWhen`
-- rejection of old quiet routes
-- required reports on every route
-- repair rejection without explicit authorization
-- outer design, autodoc, optional approval, nested redesign, and post-repair checking
-- continue, stop, and exact-text replan approval routes
-- repeated no-progress repair detection
-- exactly one notification per accepted check
-- no assistant turn from a notification
-- progress omission and multiple tracks
-- invalid and duplicate track keys
-- progress resets and stale samples
-- measured, source, unavailable, paused, and expired ETA display
-- schedule timestamps and countdown rendering
-- final report before stop
-- safety-limit report before completion
-- immediate cancellation during a check or wait
-- resume after host interruption
-- widget behavior with zero, one, and many tracks
-
-The real-Pi end-to-end test must start a short monitor, observe its custom notification without a new assistant turn, inspect the widget, and stop the run without mutating an external target.
+[Showing lines 1-300 of 325. Use :301 to continue]

@@ -4,26 +4,31 @@
     "schema": "pi-workflows.definition-snapshot.v1",
     "name": "autoplan",
     "contractId": "pi-workflows.autoplan.v1",
-    "startAt": "frame",
+    "startAt": "captureIntent",
     "nodes": {
+      "captureIntent": {
+        "nodeType": "agent",
+        "statusDetail": "capturing original user instructions",
+        "expectedOutput": "{ \"originalUserInstructions\": \"all relevant user instructions in one text string\" }"
+      },
       "frame": {
         "nodeType": "agent",
         "statusDetail": "framing the problem",
         "expectedOutput": "{ \"problem\": \"concise statement\", \"success\": [\"criterion\"], \"inScope\": [\"change\"], \"outOfScope\": [\"change\"], \"constraints\": [\"constraint\"], \"controlBoundary\": \"what can change\" }"
       },
-      "propose": {
+      "solutions": {
         "nodeType": "agent",
-        "statusDetail": "devising a solution",
+        "statusDetail": "devising long-term solutions",
         "expectedOutput": "{ \"solution\": \"proposal\", \"rationale\": \"why\", \"parts\": [\"part\"], \"tradeoffs\": [\"trade-off\"] }"
       },
-      "ideal": {
+      "holyGrail": {
         "nodeType": "agent",
-        "statusDetail": "describing the ideal end state",
-        "expectedOutput": "{ \"ideal\": \"ideal end state\", \"outsideDependencies\": [\"dependency\"], \"additionalValue\": [\"benefit\"] }"
+        "statusDetail": "describing the Holy grail",
+        "expectedOutput": "{ \"ideal\": \"Holy grail end state\", \"outsideDependencies\": [\"dependency\"], \"additionalValue\": [\"benefit\"] }"
       },
-      "choose": {
+      "select": {
         "nodeType": "agent",
-        "statusDetail": "choosing the practical solution",
+        "statusDetail": "selecting the solution",
         "expectedOutput": "{ \"status\": \"ready\" | \"blocked\", \"selected\": \"solution\", \"why\": \"reason\", \"relationshipToIdeal\": \"relationship\", \"excluded\": [\"excluded work\"], \"compromises\": [\"compromise\"], \"blocker\": \"required only when blocked\" }"
       },
       "plan": {
@@ -41,19 +46,23 @@
     },
     "edges": [
       {
+        "from": "captureIntent",
+        "to": "frame"
+      },
+      {
         "from": "frame",
-        "to": "propose"
+        "to": "solutions"
       },
       {
-        "from": "propose",
-        "to": "ideal"
+        "from": "solutions",
+        "to": "holyGrail"
       },
       {
-        "from": "ideal",
-        "to": "choose"
+        "from": "holyGrail",
+        "to": "select"
       },
       {
-        "from": "choose",
+        "from": "select",
         "switch": {
           "on": "$.status",
           "cases": {
@@ -76,25 +85,31 @@
       [
         {
           "kind": "node",
+          "nodeId": "captureIntent"
+        }
+      ],
+      [
+        {
+          "kind": "node",
           "nodeId": "frame"
         }
       ],
       [
         {
           "kind": "node",
-          "nodeId": "propose"
+          "nodeId": "solutions"
         }
       ],
       [
         {
           "kind": "node",
-          "nodeId": "ideal"
+          "nodeId": "holyGrail"
         }
       ],
       [
         {
           "kind": "node",
-          "nodeId": "choose"
+          "nodeId": "select"
         }
       ],
       [
@@ -104,7 +119,7 @@
         },
         {
           "kind": "virtual",
-          "edgeId": "choose->blocked#3.1"
+          "edgeId": "select->blocked#4.1"
         }
       ],
       [
@@ -120,39 +135,45 @@
     ],
     "edges": [
       {
-        "edgeId": "frame->propose#0.0",
+        "edgeId": "captureIntent->frame#0.0",
+        "from": "captureIntent",
+        "to": "frame",
+        "isBackEdge": false
+      },
+      {
+        "edgeId": "frame->solutions#1.0",
         "from": "frame",
-        "to": "propose",
+        "to": "solutions",
         "isBackEdge": false
       },
       {
-        "edgeId": "propose->ideal#1.0",
-        "from": "propose",
-        "to": "ideal",
+        "edgeId": "solutions->holyGrail#2.0",
+        "from": "solutions",
+        "to": "holyGrail",
         "isBackEdge": false
       },
       {
-        "edgeId": "ideal->choose#2.0",
-        "from": "ideal",
-        "to": "choose",
+        "edgeId": "holyGrail->select#3.0",
+        "from": "holyGrail",
+        "to": "select",
         "isBackEdge": false
       },
       {
-        "edgeId": "choose->plan#3.0",
-        "from": "choose",
+        "edgeId": "select->plan#4.0",
+        "from": "select",
         "to": "plan",
         "label": "ready",
         "isBackEdge": false
       },
       {
-        "edgeId": "choose->blocked#3.1",
-        "from": "choose",
+        "edgeId": "select->blocked#4.1",
+        "from": "select",
         "to": "blocked",
         "label": "blocked",
         "isBackEdge": false
       },
       {
-        "edgeId": "plan->finalize#4.0",
+        "edgeId": "plan->finalize#5.0",
         "from": "plan",
         "to": "finalize",
         "isBackEdge": false
@@ -160,58 +181,65 @@
     ],
     "segments": [
       {
-        "edgeId": "frame->propose#0.0",
+        "edgeId": "captureIntent->frame#0.0",
         "rank": 0,
         "fromCell": 0,
         "toCell": 0
       },
       {
-        "edgeId": "propose->ideal#1.0",
+        "edgeId": "frame->solutions#1.0",
         "rank": 1,
         "fromCell": 0,
         "toCell": 0
       },
       {
-        "edgeId": "ideal->choose#2.0",
+        "edgeId": "solutions->holyGrail#2.0",
         "rank": 2,
         "fromCell": 0,
         "toCell": 0
       },
       {
-        "edgeId": "choose->plan#3.0",
+        "edgeId": "holyGrail->select#3.0",
         "rank": 3,
+        "fromCell": 0,
+        "toCell": 0
+      },
+      {
+        "edgeId": "select->plan#4.0",
+        "rank": 4,
         "fromCell": 0,
         "toCell": 0,
         "label": "ready"
       },
       {
-        "edgeId": "choose->blocked#3.1",
-        "rank": 3,
+        "edgeId": "select->blocked#4.1",
+        "rank": 4,
         "fromCell": 0,
         "toCell": 1,
         "label": "blocked"
       },
       {
-        "edgeId": "choose->blocked#3.1",
-        "rank": 4,
+        "edgeId": "select->blocked#4.1",
+        "rank": 5,
         "fromCell": 1,
         "toCell": 1
       },
       {
-        "edgeId": "plan->finalize#4.0",
-        "rank": 4,
+        "edgeId": "plan->finalize#5.0",
+        "rank": 5,
         "fromCell": 0,
         "toCell": 0
       }
     ],
     "rankOfNode": {
-      "frame": 0,
-      "propose": 1,
-      "ideal": 2,
-      "choose": 3,
-      "plan": 4,
-      "blocked": 5,
-      "finalize": 5
+      "captureIntent": 0,
+      "frame": 1,
+      "solutions": 2,
+      "holyGrail": 3,
+      "select": 4,
+      "plan": 5,
+      "blocked": 6,
+      "finalize": 6
     }
   },
   "state": {
@@ -232,16 +260,19 @@
       "stepIndex": -1,
       "nodeStyle": "line",
       "lines": [
-        "                     ▶ · frame [agent] not visited",
+        "                 ▶ · captureIntent [agent] not visited",
         "                                    │",
         "                                    ▼",
-        "                      · propose [agent] not visited",
+        "                       · frame [agent] not visited",
         "                                    │",
         "                                    ▼",
-        "                       · ideal [agent] not visited",
+        "                     · solutions [agent] not visited",
         "                                    │",
         "                                    ▼",
-        "                      · choose [agent] not visited",
+        "                     · holyGrail [agent] not visited",
+        "                                    │",
+        "                                    ▼",
+        "                      · select [agent] not visited",
         "                                  │ └─── blocked ───┐",
         "                                  │ ready           │",
         "                                  │                 │",
@@ -258,7 +289,18 @@
       "nodeStyle": "box",
       "lines": [
         "                     ┌──────────────────────────────┐",
-        "                   ▶ │            frame             │",
+        "                   ▶ │        captureIntent         │",
+        "                     ├──────────────────────────────┤",
+        "                     │ ● agent             · queued │",
+        "                     │ ↻ 0                      ◷ — │",
+        "                     │                              │",
+        "                     │                              │",
+        "                     │ … capturing original user i… │",
+        "                     └──────────────────────────────┘",
+        "                                     │",
+        "                                     ▼",
+        "                     ┌──────────────────────────────┐",
+        "                     │            frame             │",
         "                     ├──────────────────────────────┤",
         "                     │ ● agent             · queued │",
         "                     │ ↻ 0                      ◷ — │",
@@ -269,35 +311,35 @@
         "                                     │",
         "                                     ▼",
         "                     ┌──────────────────────────────┐",
-        "                     │           propose            │",
+        "                     │          solutions           │",
         "                     ├──────────────────────────────┤",
         "                     │ ● agent             · queued │",
         "                     │ ↻ 0                      ◷ — │",
         "                     │                              │",
         "                     │                              │",
-        "                     │ … devising a solution        │",
+        "                     │ … devising long-term soluti… │",
         "                     └──────────────────────────────┘",
         "                                     │",
         "                                     ▼",
         "                     ┌──────────────────────────────┐",
-        "                     │            ideal             │",
+        "                     │          holyGrail           │",
         "                     ├──────────────────────────────┤",
         "                     │ ● agent             · queued │",
         "                     │ ↻ 0                      ◷ — │",
         "                     │                              │",
         "                     │                              │",
-        "                     │ … describing the ideal end … │",
+        "                     │ … describing the Holy grail  │",
         "                     └──────────────────────────────┘",
         "                                     │",
         "                                     ▼",
         "                     ┌──────────────────────────────┐",
-        "                     │            choose            │",
+        "                     │            select            │",
         "                     ├──────────────────────────────┤",
         "                     │ ● agent             · queued │",
         "                     │ ↻ 0                      ◷ — │",
         "                     │ ◇ ready                      │",
         "                     │ ◇ blocked                    │",
-        "                     │ … choosing the practical so… │",
+        "                     │ … selecting the solution     │",
         "                     └──────────────────────────────┘",
         "                                 ┌─┘ └──── blocked ────┐",
         "                                 │ ready               │",

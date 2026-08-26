@@ -3,8 +3,14 @@ import autoplanWorkflow from "../src/builtins/autoplan.workflow.js";
 import { WorkflowEngine } from "../src/workflows/engine.js";
 import { makeTempDir, ScriptedExecutor } from "./helpers.js";
 
+const ORIGINAL_USER_INSTRUCTIONS =
+  "  Solve the complete demo request.\n\nKeep the queued requirement exactly.  ";
+
 function commonExecutor(selection: Record<string, unknown>) {
   return new ScriptedExecutor()
+    .respond("captureIntent", {
+      output: { originalUserInstructions: ORIGINAL_USER_INSTRUCTIONS },
+    })
     .respond("frame", {
       output: {
         problem: "demo",
@@ -15,7 +21,7 @@ function commonExecutor(selection: Record<string, unknown>) {
         controlBoundary: "current repository",
       },
     })
-    .respond("propose", {
+    .respond("solutions", {
       output: {
         solution: "use the public extension point",
         rationale: "owned and maintainable",
@@ -23,14 +29,14 @@ function commonExecutor(selection: Record<string, unknown>) {
         tradeoffs: ["one local layer"],
       },
     })
-    .respond("ideal", {
+    .respond("holyGrail", {
       output: {
         ideal: "upstream supports it directly",
         outsideDependencies: ["upstream release"],
         additionalValue: ["less local code"],
       },
     })
-    .respond("choose", { output: selection });
+    .respond("select", { output: selection });
 }
 
 describe("built-in autoplan", () => {
@@ -67,6 +73,7 @@ describe("built-in autoplan", () => {
     expect(state.status).toBe("completed");
     expect(state.finalOutput).toMatchObject({
       status: "ready",
+      originalUserInstructions: ORIGINAL_USER_INSTRUCTIONS,
       changed: true,
       planDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       previousPlanDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
@@ -74,11 +81,25 @@ describe("built-in autoplan", () => {
     const prompts = Object.fromEntries(
       executor.requests.map((request) => [request.contract.nodeId, request.prompt]),
     );
+    expect(executor.requests[0]?.contract.nodeId).toBe("captureIntent");
+    expect(prompts.captureIntent).toContain(
+      "Include everything that the user has instructed for the intended purpose in the given context.",
+    );
+    expect(prompts.captureIntent).toContain(
+      "Do not summarize, rewrite, explain, label, omit, or add instructions.",
+    );
+    expect(prompts.captureIntent).toContain("Do not return an array or message objects.");
     expect(prompts.frame).toContain("State the goal and describe what success looks like");
-    expect(prompts.propose).toContain("Design the best practical solution");
-    expect(prompts.ideal).toContain("Describe the best possible end state");
-    expect(prompts.choose).toContain("Select the right solution yourself");
+    expect(prompts.solutions).toContain("Design the best practical solution");
+    expect(prompts.solutions).toContain("Long term elegant and production ready");
+    expect(prompts.holyGrail).toContain("Describe the Holy grail");
+    expect(prompts.holyGrail).toContain("Is this the Holy grail");
+    expect(prompts.select).toContain("Select the right solution yourself");
+    expect(prompts.select).toContain("Holy grail");
     expect(prompts.plan).toContain("name the change, its location, and the evidence");
+    for (const nodeId of ["frame", "solutions", "holyGrail", "select", "plan"]) {
+      expect(prompts[nodeId]).toContain(ORIGINAL_USER_INSTRUCTIONS);
+    }
   });
 
   it("blocks only when no in-scope solution exists", async () => {
@@ -101,9 +122,23 @@ describe("built-in autoplan", () => {
     expect(state.status).toBe("completed");
     expect(state.finalOutput).toMatchObject({
       status: "blocked",
+      originalUserInstructions: ORIGINAL_USER_INSTRUCTIONS,
       reason: "No public interface can meet the success criteria.",
     });
     expect(state.steps.some((step) => step.nodeId === "plan")).toBe(false);
+  });
+
+  it("rejects empty original user instructions", async () => {
+    const executor = new ScriptedExecutor().respond("captureIntent", {
+      output: { originalUserInstructions: " \n\t " },
+    });
+    const engine = new WorkflowEngine({
+      executor,
+      outputRoot: await makeTempDir("pi-workflows-autoplan-empty-intent"),
+    });
+
+    const { state } = await engine.run(autoplanWorkflow, { problem: "demo" });
+    expect(state.error).toMatch(/originalUserInstructions must be a non-empty string/);
   });
 
   it("projects the complete selected plan into the final presentation", async () => {
@@ -123,6 +158,7 @@ describe("built-in autoplan", () => {
     });
 
     expect(prompt).toContain(finalDetail);
+    expect(prompt).toContain("holy grail");
     expect(prompt).toContain("Do not impose a character or sentence limit");
     expect(prompt?.length).toBeGreaterThan(50_000);
   });

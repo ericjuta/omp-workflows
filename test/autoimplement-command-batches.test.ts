@@ -308,8 +308,9 @@ describe("autoimplement command batch contracts", () => {
 
   it("derives stable repository ids and reviewer commands from publication", async () => {
     const repository = await makeTempDir("published-repository");
-    const reviewerExecutable = path.join(repository, "omp-reviewer");
-    await fs.writeFile(reviewerExecutable, "#!/bin/sh\n", { mode: 0o755 });
+    const reviewerPath = path.join(repository, "omp-reviewer");
+    await fs.writeFile(reviewerPath, "#!/bin/sh\n", { mode: 0o755 });
+    const reviewerExecutable = await fs.realpath(reviewerPath);
     const reviewer = attestReviewerExecutable(reviewerExecutable);
     if (reviewer === undefined) throw new Error("reviewer fixture was not executable");
     const parsed = parsePublishedRepositories({
@@ -416,7 +417,7 @@ describe("autoimplement command batch contracts", () => {
     await fs.writeFile(path.join(pathBin, "omp-reviewer"), "#!/bin/sh\n", { mode: 0o755 });
     expect(reviewerExecutableExists({ HOME: "", PATH: pathBin })).toBe(true);
     const resolved = resolveReviewerExecutable({ HOME: "", PATH: pathBin });
-    expect(resolved).toBe(path.join(pathBin, "omp-reviewer"));
+    expect(resolved).toBe(await fs.realpath(path.join(pathBin, "omp-reviewer")));
     if (resolved === undefined) throw new Error("reviewer fixture did not resolve");
     const attestation = attestReviewerExecutable(resolved);
     if (attestation === undefined) throw new Error("reviewer fixture was not attested");
@@ -452,13 +453,13 @@ describe("autoimplement command batch contracts", () => {
     const runtime = attestReviewerRuntime({ HOME: "", PATH: bin });
     expect(runtime.failure).toBeUndefined();
     expect(runtime).toMatchObject({
-      reviewer: { executable: reviewer },
-      git: { executable: git },
-      omp: { executable: omp },
-      shebangLauncher: { executable: launcher },
-      interpreter: { executable: launcher },
+      reviewer: { executable: await fs.realpath(reviewer) },
+      git: { executable: await fs.realpath(git) },
+      omp: { executable: await fs.realpath(omp) },
+      shebangLauncher: { executable: await fs.realpath(launcher) },
+      interpreter: { executable: await fs.realpath(launcher) },
       reviewerEnvironment: {
-        env: { PATH: bin, OMP_REVIEWER_OMP: omp },
+        env: { PATH: await fs.realpath(bin), OMP_REVIEWER_OMP: await fs.realpath(omp) },
         envUnset: ["GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_CLOUD_LOCATION"],
       },
     });
@@ -548,7 +549,7 @@ describe("autoimplement command batch contracts", () => {
 
     await fs.writeFile(reviewer, `#!${env} -S sh\n`, { mode: 0o755 });
     expect(attestReviewerRuntime({ HOME: "", PATH: bin })).toMatchObject({
-      interpreter: { executable: interpreter },
+      interpreter: { executable: await fs.realpath(interpreter) },
       interpreterCommand: "sh",
     });
 

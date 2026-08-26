@@ -8,6 +8,9 @@ import { makeTempDir, ScriptedExecutor } from "./helpers.js";
 
 function planningExecutor(plan: unknown): ScriptedExecutor {
   return new ScriptedExecutor()
+    .respond("design/captureIntent", {
+      output: { originalUserInstructions: "change the implementation" },
+    })
     .respond("design/frame", {
       output: {
         problem: "change the implementation",
@@ -18,7 +21,7 @@ function planningExecutor(plan: unknown): ScriptedExecutor {
         controlBoundary: "repository",
       },
     })
-    .respond("design/propose", {
+    .respond("design/solutions", {
       output: {
         solution: "use the selected plan",
         rationale: "it is in scope",
@@ -26,10 +29,10 @@ function planningExecutor(plan: unknown): ScriptedExecutor {
         tradeoffs: [],
       },
     })
-    .respond("design/ideal", {
+    .respond("design/holyGrail", {
       output: { ideal: "complete", outsideDependencies: [], additionalValue: [] },
     })
-    .respond("design/choose", {
+    .respond("design/select", {
       output: {
         status: "ready",
         selected: "use the selected plan",

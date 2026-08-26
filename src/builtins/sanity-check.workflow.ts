@@ -147,11 +147,18 @@ export async function collectContributionEvidence(
   const baseRef = config.baseRef ?? resolveDefaultBase(setup.items, headRevision);
   const range = `${baseRef}...HEAD`;
   const items = [
-    command("committed-stat", "git", ["diff", "--stat", range, "--"], repository, 20_000, 4_000),
+    command(
+      "committed-stat",
+      "git",
+      ["diff", "--no-ext-diff", "--stat", range, "--"],
+      repository,
+      20_000,
+      4_000,
+    ),
     command(
       "committed-files",
       "git",
-      ["diff", "--name-status", range, "--"],
+      ["diff", "--no-ext-diff", "--name-status", range, "--"],
       repository,
       20_000,
       6_000,
@@ -159,17 +166,24 @@ export async function collectContributionEvidence(
     command(
       "committed-diff",
       "git",
-      ["diff", "--unified=20", range, "--"],
+      ["diff", "--no-ext-diff", "--unified=20", range, "--"],
       repository,
       30_000,
       12_000,
     ),
     command("working-status", "git", ["status", "--short"], repository, 10_000, 6_000),
-    command("working-stat", "git", ["diff", "--stat", "HEAD", "--"], repository, 20_000, 4_000),
+    command(
+      "working-stat",
+      "git",
+      ["diff", "--no-ext-diff", "--stat", "HEAD", "--"],
+      repository,
+      20_000,
+      4_000,
+    ),
     command(
       "working-files",
       "git",
-      ["diff", "--name-status", "HEAD", "--"],
+      ["diff", "--no-ext-diff", "--name-status", "HEAD", "--"],
       repository,
       20_000,
       6_000,
@@ -177,7 +191,7 @@ export async function collectContributionEvidence(
     command(
       "working-diff",
       "git",
-      ["diff", "--unified=20", "HEAD", "--"],
+      ["diff", "--no-ext-diff", "--unified=20", "HEAD", "--"],
       repository,
       30_000,
       8_000,

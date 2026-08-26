@@ -5,10 +5,9 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { repositoryId } from "../src/builtins/autoimplement-command-batches.js";
-import { builtinWorkflowCatalog } from "../src/builtins/catalog.js";
+import monitor from "../src/builtins/monitor.workflow.js";
 import { WorkflowEngine } from "../src/workflows/engine.js";
 import { HumanDecisionStore } from "../src/workflows/human-decision.js";
-import { resolveWorkflowRef } from "../src/workflows/loader.js";
 import { WorkflowRunStore } from "../src/workflows/store.js";
 import type { HumanDecisionRequest, HumanDecisionResponse } from "../src/workflows/types.js";
 import { makeTempDir, ScriptedExecutor } from "./helpers.js";
@@ -21,14 +20,47 @@ let headRevision = "";
 
 function repairCheck() {
   return {
-    route: "repair",
+    route: "act",
+    goalState: "incomplete",
+    workState: "failed",
     observation: "A deterministic test fails.",
     report: "A repair is available.",
+    targetStateId: "test-a:one",
+    authorizedActions: ["repair test-a in the current repository"],
     reason: "Repair is authorized.",
-    repair: {
-      problem: "Fix the deterministic test",
+    action: {
+      kind: "repair",
+      incomplete: "test-a must pass",
       evidence: { test: "test-a" },
-      issueFingerprint: "test-a:one",
+      nextAction: "Fix the deterministic test",
+      authority: {
+        status: "authorized",
+        basis: "The task authorizes repair in the current repository.",
+        allowedMutations: ["source and tests in the current repository"],
+        forbiddenMutations: ["unrelated repositories"],
+        costLimit: "No paid resources",
+        providerRuntime: "Keep the current runtime",
+        requiredChecks: ["run test-a"],
+        stopConditions: ["stop if the defect requires a protected contract change"],
+        allowedRecoveryActions: ["repair this deterministic defect"],
+        repository,
+        baseBranch: "main",
+        merge: true,
+        repairApproval: { mode: "required" },
+      },
+      cost: {
+        paidAction: false,
+        status: "not-applicable",
+        evidence: "The repair uses local resources.",
+      },
+      defect: {
+        sharedCodeOrDataDefect: true,
+        paidWorkers: "stopped",
+        evidence: "No affected paid worker is active.",
+      },
+      verification: "Run test-a and confirm it passes.",
+      failureId: "test-a",
+      targetStateId: "test-a:one",
     },
   };
 }
@@ -36,8 +68,12 @@ function repairCheck() {
 function stopCheck() {
   return {
     route: "stop",
+    goalState: "complete",
+    workState: "stopped",
     observation: "The test passes.",
     report: "The repair is verified.",
+    targetStateId: "test-a:two",
+    authorizedActions: [],
     reason: "Complete.",
   };
 }
@@ -46,6 +82,10 @@ function designResponses(executor: ScriptedExecutor, rounds: number): ScriptedEx
   const repeated = <T>(value: T): Array<{ output: T }> =>
     Array.from({ length: rounds }, () => ({ output: structuredClone(value) }));
   return executor
+    .respond(
+      "planChange/design/captureIntent",
+      ...repeated({ originalUserInstructions: "Fix the deterministic test." }),
+    )
     .respond(
       "planChange/design/frame",
       ...repeated({
@@ -58,15 +98,15 @@ function designResponses(executor: ScriptedExecutor, rounds: number): ScriptedEx
       }),
     )
     .respond(
-      "planChange/design/propose",
+      "planChange/design/solutions",
       ...repeated({ solution: "fix", rationale: "owned", parts: ["code"], tradeoffs: [] }),
     )
     .respond(
-      "planChange/design/ideal",
+      "planChange/design/holyGrail",
       ...repeated({ ideal: "correct", outsideDependencies: [], additionalValue: [] }),
     )
     .respond(
-      "planChange/design/choose",
+      "planChange/design/select",
       ...repeated({
         status: "ready",
         selected: "fix",
@@ -133,12 +173,6 @@ function completedRepairExecutor(rounds = 1): ScriptedExecutor {
         ],
         untested: [],
       },
-    })
-    .respond("implementation/verify", {
-      output: { passed: true, commands: [], failures: [], untested: [] },
-    })
-    .respond("implementation/classifyVerification", {
-      output: { route: "publish", summary: "passed", evidence: "test" },
     })
     .respond("implementation/publish", {
       output: {
@@ -213,7 +247,6 @@ function makeEngine(executor: ScriptedExecutor, store: WorkflowRunStore): Workfl
 async function answer(
   store: WorkflowRunStore,
   executor: ScriptedExecutor,
-  definition: Awaited<ReturnType<typeof resolveWorkflowRef>>["definition"],
   parentRunId: string,
   response: HumanDecisionResponse,
 ) {
@@ -233,7 +266,7 @@ async function answer(
     idempotencyKey: `event-${parentRunId}`,
   });
   return await makeEngine(executor, store).continueRun(
-    definition,
+    monitor,
     parentRunId,
     {},
     { humanDecision: accepted.decision },
@@ -242,7 +275,7 @@ async function answer(
 
 beforeEach(async () => {
   originalPath = process.env.PATH ?? "";
-  repository = await makeTempDir("monitor-approval-repository");
+  repository = await fs.realpath(await makeTempDir("monitor-approval-repository"));
   await execFileAsync("git", ["init", "-q", "-b", "main"], { cwd: repository });
   await execFileAsync("git", ["config", "user.name", "Test User"], { cwd: repository });
   await execFileAsync("git", ["config", "user.email", "test@example.com"], {
@@ -250,7 +283,19 @@ beforeEach(async () => {
   });
   const trackedFile = path.join(repository, "tracked.txt");
   await fs.writeFile(trackedFile, "base\n");
-  await execFileAsync("git", ["add", "tracked.txt"], { cwd: repository });
+  await fs.writeFile(
+    path.join(repository, "package.json"),
+    `${JSON.stringify(
+      {
+        name: "monitor-approval-fixture",
+        private: true,
+        scripts: { test: "true", check: "true" },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await execFileAsync("git", ["add", "tracked.txt", "package.json"], { cwd: repository });
   await execFileAsync("git", ["commit", "-q", "-m", "base"], { cwd: repository });
   baseRevision = (
     await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repository })
@@ -280,12 +325,7 @@ describe("monitor human repair approval", () => {
   it("continues only after the verified human continue answer", async () => {
     const executor = completedRepairExecutor();
     const store = new WorkflowRunStore(await makeTempDir("monitor-approval-runs"));
-    const resolved = await resolveWorkflowRef(
-      "monitor",
-      { cwd: repository, homeDir: await makeTempDir("monitor-approval-home") },
-      builtinWorkflowCatalog,
-    );
-    const first = await makeEngine(executor, store).run(resolved.definition, {
+    const first = await makeEngine(executor, store).run(monitor, {
       task: "Monitor and repair",
       stopWhen: "test passes",
       maxChecks: 3,
@@ -305,7 +345,7 @@ describe("monitor human repair approval", () => {
     expect(first.state.steps.some((step) => step.nodeId === "implementation/implement")).toBe(
       false,
     );
-    const continued = await answer(store, executor, resolved.definition, first.state.runId, {
+    const continued = await answer(store, executor, first.state.runId, {
       choice: "continue",
     });
     expect(continued.state.status).toBe("completed");
@@ -326,12 +366,7 @@ describe("monitor human repair approval", () => {
   it("stops truthfully when the operator rejects the repair", async () => {
     const executor = completedRepairExecutor();
     const store = new WorkflowRunStore(await makeTempDir("monitor-stop-runs"));
-    const resolved = await resolveWorkflowRef(
-      "monitor",
-      { cwd: repository, homeDir: await makeTempDir("monitor-stop-home") },
-      builtinWorkflowCatalog,
-    );
-    const first = await makeEngine(executor, store).run(resolved.definition, {
+    const first = await makeEngine(executor, store).run(monitor, {
       task: "Monitor and repair",
       stopWhen: "test passes",
       maxChecks: 3,
@@ -341,7 +376,7 @@ describe("monitor human repair approval", () => {
         approval: { mode: "required", audience: "operator", maxReplans: 3 },
       },
     });
-    const stopped = await answer(store, executor, resolved.definition, first.state.runId, {
+    const stopped = await answer(store, executor, first.state.runId, {
       choice: "stop",
     });
     expect(stopped.state.status).toBe("completed");
@@ -356,12 +391,7 @@ describe("monitor human repair approval", () => {
   it("feeds exact replan text to autoplan, documents the revision, and asks again", async () => {
     const executor = completedRepairExecutor(2);
     const store = new WorkflowRunStore(await makeTempDir("monitor-replan-runs"));
-    const resolved = await resolveWorkflowRef(
-      "monitor",
-      { cwd: repository, homeDir: await makeTempDir("monitor-replan-home") },
-      builtinWorkflowCatalog,
-    );
-    const first = await makeEngine(executor, store).run(resolved.definition, {
+    const first = await makeEngine(executor, store).run(monitor, {
       task: "Monitor and repair",
       stopWhen: "test passes",
       maxChecks: 3,
@@ -375,7 +405,7 @@ describe("monitor human repair approval", () => {
     const firstDigest = (first.state.finalOutput as { subject?: { planDigest?: string } }).subject
       ?.planDigest;
     const exact = "  use the smaller repair\nkeep this exact  ";
-    const replanned = await answer(store, executor, resolved.definition, first.state.runId, {
+    const replanned = await answer(store, executor, first.state.runId, {
       choice: "replan",
       input: { instructions: exact },
     });
@@ -389,7 +419,7 @@ describe("monitor human repair approval", () => {
     );
     expect(frameRequests).toHaveLength(2);
     expect(frameRequests[1]?.prompt).toContain(JSON.stringify(exact).slice(1, -1));
-    const completed = await answer(store, executor, resolved.definition, replanned.state.runId, {
+    const completed = await answer(store, executor, replanned.state.runId, {
       choice: "continue",
     });
     expect(completed.state.status).toBe("completed");

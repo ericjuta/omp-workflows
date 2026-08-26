@@ -1,6 +1,6 @@
 ---
 name: monitor
-description: Use when the user asks to monitor, watch, track, or periodically check a running command, remote Job, CI run, deployment, publication, or other long-running objective. Starts the built-in OMP monitor workflow immediately in the current session and drives the objective autonomously, including routine recovery, until verified completion or a material blocker.
+description: Use when the user asks to monitor, watch, track, or periodically check a running command, remote Job, CI run, deployment, publication, or other long-running objective. Starts the built-in OMP monitor workflow immediately in the current session and finishes the authorized goal through wait, act, or stop until verified completion or a material blocker.
 compatibility: Requires omp-workflows and the built-in monitor workflow.
 ---
 
@@ -67,7 +67,7 @@ When the conversation gives no clear finish criterion, set `stopWhen` to `Stop o
 
 Do not invent a finite check count. Omit `maxChecks` unless the user explicitly requests one. The workflow host can apply its own safety upper bound. Disclose that bound if it appears.
 
-When repair is authorized, route a concrete code or design defect through the monitor's shared plan-change path. Supply the problem, observed evidence, and a stable fingerprint of the issue plus target state. The path runs Autoplan, Autodoc, the configured plan decision, and Autoimplement, then checks the target again. Autoimplement does not ask again for the plan selected by Monitor. It uses the same shared path if later evidence requires another plan. Do not copy their prompts into the monitor task.
+When repair is authorized, request `route: "act"` with `action.kind: "repair"`. Supply the exact next action, observed evidence, and stable failure and target-state IDs. The path runs Autoplan, Autodoc, the configured plan decision, and Autoimplement, then checks the target again. Autoimplement does not ask again for the plan selected by Monitor. It uses the same shared path if later evidence requires another plan. Do not copy their prompts into the monitor task. Use `advance` or `recover` for a normal start, resume, or restart; do not send those through repair.
 
 ### Repair plan decisions
 
@@ -135,9 +135,9 @@ For each check:
 1. Query the target's authoritative status.
 2. Query durable progress and final-output surfaces. Run independent reads in parallel when useful.
 3. Compare the current values with the previous accepted observation.
-4. If operation is not nominal, preserve evidence, diagnose the issue, apply the smallest authorized repair, and verify that durable progress resumes. Fix issues and restart Jobs or processes when that is necessary to keep the same objective moving.
+4. If operation is not nominal, preserve evidence, diagnose the issue, and request `act` with one exact authorized action. Do not apply a repair or other mutation during this observation-only check. Use `advance` or `recover` for a restart or resume; request `repair` only when the input `repair` object is present.
 5. Include a concise report for every accepted check. Report absolute totals and meaningful deltas when counters matter.
-6. Select `continue` or `stop` as required by the step contract.
+6. Select `wait`, `act`, or `stop` as required by the step contract. Record `goalState` as `complete`, `incomplete`, or `blocked`.
 7. Call `workflow` with `action: "submit"` exactly once, using the supplied step and attempt IDs and the required output shape.
 
 The workflow sends each report as a notification. Notifications do not start a new assistant turn. Do not add a separate assistant reply to a workflow notification.
@@ -167,17 +167,23 @@ Before proposing a new progress API, transport, schema, or persistence layer, pr
 
 ## Apply finish rules
 
+Keep Monitor state, goal state, and target work state separate. Never report the target as running only because Monitor is active.
+
 ### Still active
 
-Continue. Keep reports short unless the state changed materially.
+Choose `wait` when useful target work is moving or an external event must finish. Keep reports short unless the state changed materially.
+
+### Idle, failed, or stopped with remaining work
+
+Choose `act` when the goal is incomplete and one safe authorized action is available. Use `advance` for normal next work and `recover` for an operational restart or resume. Unauthorized act cannot mutate.
 
 ### Completed
 
-Stop only after the inferred finish criterion is true. Verify required final artifacts, checksums, receipts, publication state, or downstream health before selecting `stop`.
+Choose `stop` with `goalState: "complete"` only after the inferred finish criterion is true. Verify required final artifacts, checksums, receipts, publication state, or downstream health before selecting `stop`. Goal complete requires route stop.
 
 ### Failed, stopped, or blocked
 
-Do not disarm the monitor for a superficial reason. One failed physical Job, command, CI run, deployment attempt, upload, or status read is not the end of the objective. Treat it as an operational event, preserve evidence and durable state, diagnose it, apply the smallest safe repair, restart or resume the same immutable contract, restore nominal operation, and keep monitoring.
+Do not disarm the monitor for a superficial reason. One failed physical Job, command, CI run, deployment attempt, upload, or status read is not the end of the objective. Treat it as an operational event, preserve evidence and durable state, diagnose it, and request `act` to restart or resume the same immutable contract. Do not apply a repair during the observation-only check.
 
 Examples of recoverable conditions include transient provider or network errors, platform eviction, rate limits, expired physical attempts, safe checkpoint reconciliation, exact path or configuration mistakes, bounded storage failures, and a stalled deployment that has a documented recovery action.
 

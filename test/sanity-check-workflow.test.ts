@@ -264,7 +264,7 @@ describe("sanity-check workflow", () => {
         dir,
         new AbortController().signal,
       );
-      expect(result.repository).toBe(dir);
+      expect(result.repository).toBe(await fs.realpath(dir));
       expect(result.baseRef).toBe(stdout.trim());
       expect(result.committed.diff.text).toBe("");
       expect(result.workingTree.diff.text).toContain("+working");

@@ -33,8 +33,18 @@ import {
   type ReviewerRuntimeAttestation,
   type VerificationCommandPlan,
 } from "./autoimplement-command-batches.js";
+import changeVerificationWorkflow, {
+  type ChangeVerificationInput,
+  type VerificationCheck,
+} from "./change-verification.workflow.js";
 import { parsePlanApprovalPolicy, type PlanApprovalPolicy } from "./plan-approval.workflow.js";
 import planChangeWorkflow, { type NormalizedPlanChangeInput } from "./plan-change.workflow.js";
+import workspacePreparationWorkflow, {
+  parsePreparedWorkspace,
+  type PreparedWorkspace,
+  type WorkspaceMode,
+  type WorkspacePreparationInput,
+} from "./workspace-preparation.workflow.js";
 
 export type AutoimplementInput = {
   task: string;
@@ -52,6 +62,10 @@ export type AutoimplementInput = {
   };
   approval?: PlanApprovalPolicy;
   concurrency?: Partial<AutoimplementConcurrency>;
+  workspaceMode?: WorkspaceMode;
+  directDefaultBranchAuthorized?: boolean;
+  preparedWorkspace?: PreparedWorkspace;
+  verificationChecks?: VerificationCheck[];
 };
 
 export type ExistingPlanDiscovery = {
@@ -119,7 +133,8 @@ type BlockerOrigin =
   | "reviewer"
   | "comments"
   | "ci"
-  | "delivery";
+  | "delivery"
+  | "defaultBranch";
 
 type BlockerRecovery =
   | "redesign"
@@ -129,7 +144,8 @@ type BlockerRecovery =
   | "selectReviewCommands"
   | "inspectComments"
   | "inspectCi"
-  | "opportunisticTest";
+  | "opportunisticTest"
+  | "finalizeDefaultBranch";
 
 type BlockerChallenge = {
   route: "continue" | "blocked";
@@ -151,6 +167,7 @@ const BLOCKER_RECOVERIES: Record<BlockerOrigin, readonly BlockerRecovery[]> = {
   comments: ["inspectComments", "fix"],
   ci: ["inspectCi", "opportunisticTest"],
   delivery: ["inspectComments", "inspectCi"],
+  defaultBranch: ["finalizeDefaultBranch"],
 };
 
 const MAX_BLOCKER_CHALLENGES = 3;
@@ -161,7 +178,6 @@ const MAX_TIMEOUT_FALLBACK_EVIDENCE = 8;
 const TIMEOUT_FALLBACK_SOURCES = [
   "implement",
   "planVerification",
-  "verify",
   "fix",
   "publish",
   "addressP2",
@@ -169,6 +185,7 @@ const TIMEOUT_FALLBACK_SOURCES = [
   "inspectComments",
   "inspectCi",
   "opportunisticTest",
+  "finalizeDefaultBranch",
   "finalizeDelivery",
 ] as const;
 
@@ -180,7 +197,6 @@ type TimeoutFallbackRoute = "retry" | "verify" | "review" | "ci" | "deliver" | "
 const TIMEOUT_FALLBACK_ROUTES: Record<TimeoutFallbackSource, readonly TimeoutFallbackRoute[]> = {
   implement: ["retry", "replan", "blocked"],
   planVerification: ["retry", "verify", "replan", "blocked"],
-  verify: ["retry", "verify", "replan", "blocked"],
   fix: ["retry", "replan", "blocked"],
   publish: ["retry", "replan", "blocked"],
   addressP2: ["retry", "replan", "blocked"],
@@ -188,6 +204,7 @@ const TIMEOUT_FALLBACK_ROUTES: Record<TimeoutFallbackSource, readonly TimeoutFal
   inspectComments: ["retry", "review", "ci", "replan", "blocked"],
   inspectCi: ["retry", "ci", "deliver", "replan", "blocked"],
   opportunisticTest: ["retry", "ci", "deliver", "replan", "blocked"],
+  finalizeDefaultBranch: ["retry", "replan", "blocked"],
   finalizeDelivery: ["retry", "deliver", "replan", "blocked"],
 };
 
@@ -556,7 +573,7 @@ function timeoutFallbackTarget(context: WorkflowNodeContext): { route: string } 
   const fallback = context.outputs.timeoutFallback as TimeoutFallbackResult;
   if (fallback.route !== "retry") {
     const routes: Record<Exclude<TimeoutFallbackRoute, "retry">, string> = {
-      verify: "planVerification",
+      verify: "selectVerificationPath",
       review: "selectReviewCommands",
       ci: "inspectCi",
       deliver: "finalizeDelivery",
@@ -737,6 +754,30 @@ function parseInput(value: unknown): AutoimplementInput {
   const repository = requireAbsolutePath(input.repository, "repository");
   const concurrency = parseAutoimplementConcurrency(input.concurrency);
   const approval = parsePlanApprovalPolicy(input.approval);
+  let workspaceMode: WorkspaceMode | undefined;
+  if (input.workspaceMode !== undefined) {
+    if (
+      input.workspaceMode !== "auto" &&
+      input.workspaceMode !== "branch" &&
+      input.workspaceMode !== "worktree" &&
+      input.workspaceMode !== "defaultBranch"
+    ) {
+      throw new Error(
+        "autoimplement workspaceMode must be auto, branch, worktree, or defaultBranch",
+      );
+    }
+    workspaceMode = input.workspaceMode;
+  }
+  const parsedPreparedWorkspace =
+    input.preparedWorkspace === undefined
+      ? undefined
+      : parsePreparedWorkspace(input.preparedWorkspace);
+  if (input.verificationChecks !== undefined && !Array.isArray(input.verificationChecks)) {
+    throw new Error("autoimplement verificationChecks must be an array");
+  }
+  if (Array.isArray(input.verificationChecks) && input.verificationChecks.length === 0) {
+    throw new Error("autoimplement verificationChecks must be non-empty when supplied");
+  }
   return {
     task: requireString(input.task, "autoimplement task"),
     ...(input.plan !== undefined ? { plan: input.plan } : {}),
@@ -751,6 +792,16 @@ function parseInput(value: unknown): AutoimplementInput {
     ...(documentation !== undefined ? { documentation } : {}),
     approval,
     concurrency,
+    ...(workspaceMode === undefined ? {} : { workspaceMode }),
+    ...(input.directDefaultBranchAuthorized === undefined
+      ? {}
+      : { directDefaultBranchAuthorized: input.directDefaultBranchAuthorized === true }),
+    ...(parsedPreparedWorkspace === undefined
+      ? {}
+      : { preparedWorkspace: parsedPreparedWorkspace }),
+    ...(input.verificationChecks === undefined
+      ? {}
+      : { verificationChecks: input.verificationChecks as VerificationCheck[] }),
   };
 }
 
@@ -905,11 +956,17 @@ function currentPlan(context: WorkflowNodeContext): unknown {
   if (discovered?.route === "found" && discovered.plan !== undefined) return discovered.plan;
   return (context.input as AutoimplementInput).plan;
 }
+function preparedWorkspace(context: WorkflowNodeContext): PreparedWorkspace {
+  const request = context.input as AutoimplementInput;
+  if (request.preparedWorkspace !== undefined) return request.preparedWorkspace;
+  const result = includedResult(workspacePreparationWorkflow, context.outputs.workspace);
+  if (result.exit !== "ready") throw new Error("autoimplement workspace is not ready");
+  return result.output;
+}
+
 function preparedRepository(context: WorkflowNodeContext): string {
-  return requireAbsolutePath(
-    (context.input as AutoimplementInput).repository,
-    "prepared repository",
-  );
+  const workspace = preparedWorkspace(context);
+  return workspace.worktreePath ?? workspace.repository;
 }
 function preparedRepositoryRules(context: WorkflowNodeContext): string[] {
   const repository = preparedRepository(context);
@@ -986,7 +1043,8 @@ function currentDocumentationReceipt(
 }
 const BLOCKER_ORIGINS_BY_NODE: Readonly<Record<string, BlockerOrigin>> = {
   classifyImplementation: "implementation",
-  classifyVerification: "verification",
+  selectVerificationPath: "verification",
+  localVerification: "verification",
   runReview: "reviewer",
   repairReviewCommand: "reviewer",
   routeReviewAssessment: "reviewer",
@@ -996,11 +1054,21 @@ const BLOCKER_ORIGINS_BY_NODE: Readonly<Record<string, BlockerOrigin>> = {
   assessTrackedCi: "ci",
   classifyCi: "ci",
   routeFinalizeDeliveryResult: "delivery",
+  routeFinalizeDefaultBranchResult: "defaultBranch",
 };
+
+function blockerOriginNodeId(nodeId: string): string {
+  const slash = nodeId.indexOf("/");
+  return slash === -1 ? nodeId : nodeId.slice(0, slash);
+}
 
 function blockerOrigin(context: WorkflowNodeContext): BlockerOrigin {
   const previous = context.state.steps.at(-1);
-  const origin = previous === undefined ? undefined : BLOCKER_ORIGINS_BY_NODE[previous.nodeId];
+  const nodeId = previous?.nodeId;
+  const origin =
+    nodeId === undefined
+      ? undefined
+      : (BLOCKER_ORIGINS_BY_NODE[nodeId] ?? BLOCKER_ORIGINS_BY_NODE[blockerOriginNodeId(nodeId)]);
   if (origin === undefined) {
     throw new Error(
       `No safe blocker recovery exists for ${previous?.nodeId ?? "the workflow start"}`,
@@ -1020,7 +1088,7 @@ function latestBlockerClaim(context: WorkflowNodeContext): unknown {
     "classifyImplementation",
     "runReview",
     "routeReviewAssessment",
-    "classifyVerification",
+    "localVerification",
     "repairReviewCommand",
     "routeInspectCommentsResult",
     "routeInspectCiResult",
@@ -1028,6 +1096,7 @@ function latestBlockerClaim(context: WorkflowNodeContext): unknown {
     "assessTrackedCi",
     "classifyCi",
     "routeFinalizeDeliveryResult",
+    "routeFinalizeDefaultBranchResult",
   ];
   for (let index = context.state.steps.length - 1; index >= 0; index -= 1) {
     const step = context.state.steps[index];
@@ -1053,7 +1122,7 @@ function latestIssue(context: WorkflowNodeContext): unknown {
   const ids = [
     "challengeBlocker",
     "classifyImplementation",
-    "classifyVerification",
+    "localVerification",
     "triageReview",
     "inspectComments",
     "classifyCi",
@@ -1652,12 +1721,13 @@ function latestBlockedReason(context: WorkflowNodeContext): { reason: string; ev
     "classifyCi",
     "inspectComments",
     "classifyImplementation",
-    "classifyVerification",
+    "localVerification",
     "triageReview",
     "redesign",
     "adoptPlan",
     "findPlan",
     "documentation",
+    "workspace",
     "prepare",
   ];
   for (let index = context.state.steps.length - 1; index >= 0; index -= 1) {
@@ -1684,6 +1754,23 @@ export const autoimplementWorkflow = defineWorkflow({
   startAt: "prepare",
   maxSteps: 240,
   includes: {
+    workspace: includeWorkflow(workspacePreparationWorkflow, {
+      input: (context): WorkspacePreparationInput => {
+        const request = context.input as AutoimplementInput;
+        return {
+          repository: request.repository,
+          ...(request.baseBranch === undefined ? {} : { baseBranch: request.baseBranch }),
+          ...(request.scope === undefined ? {} : { scope: request.scope }),
+          ...(request.workspaceMode === undefined ? {} : { workspaceMode: request.workspaceMode }),
+          ...(request.directDefaultBranchAuthorized === undefined
+            ? {}
+            : { directDefaultBranchAuthorized: request.directDefaultBranchAuthorized }),
+          ...(request.preparedWorkspace === undefined
+            ? {}
+            : { preparedWorkspace: request.preparedWorkspace }),
+        };
+      },
+    }),
     documentation: includeWorkflow(autodocWorkflow, {
       input: (context): AutodocInput => {
         const request = context.input as AutoimplementInput;
@@ -1694,11 +1781,51 @@ export const autoimplementWorkflow = defineWorkflow({
         return {
           task: request.task,
           plan,
-          repository: preparedRepository(context),
+          repository: request.repository,
+          ...(request.baseBranch !== undefined ? { baseBranch: request.baseBranch } : {}),
+          ...(request.scope !== undefined ? { scope: request.scope } : {}),
+          ...(request.workspaceMode !== undefined ? { workspaceMode: request.workspaceMode } : {}),
+          ...(request.directDefaultBranchAuthorized === undefined
+            ? {}
+            : { directDefaultBranchAuthorized: request.directDefaultBranchAuthorized }),
+          preparedWorkspace: preparedWorkspace(context),
+          ...(request.verificationChecks === undefined
+            ? {}
+            : { verificationChecks: request.verificationChecks }),
           ...(documentation !== undefined ? { documentation } : {}),
           documents:
             request.documents ?? request.documentation?.documents ?? discovery?.documents ?? [],
           evidence: latestIssue(context),
+        } as AutodocInput;
+      },
+    }),
+    localVerification: includeWorkflow(changeVerificationWorkflow, {
+      input: (context): ChangeVerificationInput => {
+        const request = context.input as AutoimplementInput;
+        const plan =
+          request.verificationChecks === undefined
+            ? latestOutput<VerificationCommandPlan>(context, ["planVerification"])
+            : { commands: [], untested: [] };
+        const implementation = latestOutput<Record<string, unknown>>(context, ["implement"]);
+        return {
+          originatingWorkflow: "autoimplement",
+          qualifiedNode: "autoimplement/localVerification",
+          workspace: preparedWorkspace(context),
+          checks:
+            request.verificationChecks ??
+            plan.commands.map((command) => ({
+              ...command,
+              readOnly: true,
+              baseEligible: true,
+              changedFileScope: false,
+              findingFormat: "text" as const,
+            })),
+          changedFiles: Array.isArray(implementation.files)
+            ? implementation.files.filter((file): file is string => typeof file === "string")
+            : [],
+          untested: plan.untested,
+          plan: currentPlan(context),
+          maxConcurrency: concurrency(context).verification,
         };
       },
     }),
@@ -1752,12 +1879,7 @@ export const autoimplementWorkflow = defineWorkflow({
         }
         return {
           reviewerRuntime,
-          route:
-            request.plan === undefined
-              ? "find"
-              : request.documentation?.status === "current"
-                ? "ready"
-                : "document",
+          route: request.plan === undefined ? "find" : "workspace",
         };
       },
     }),
@@ -1788,8 +1910,9 @@ export const autoimplementWorkflow = defineWorkflow({
           return { route: "blocked", reason: discovered.reason, evidence: discovered.evidence };
         }
         return {
-          route: discovered.documentation === "current" ? "ready" : "document",
+          route: "workspace",
           plan: discovered.plan,
+          documentation: discovered.documentation,
           reason: discovered.reason,
           evidence: discovered.evidence,
         };
@@ -1806,6 +1929,60 @@ export const autoimplementWorkflow = defineWorkflow({
           approval: result.output.approval,
           reason: "The changed plan was documented and passed its approval policy.",
         };
+      },
+    }),
+    routeWorkspace: compute({
+      run: (context) => {
+        const request = context.input as AutoimplementInput;
+        const discovered = context.outputs.findPlan as ExistingPlanDiscovery | undefined;
+        return {
+          route:
+            request.documentation?.status === "current" || discovered?.documentation === "current"
+              ? "implement"
+              : "document",
+          workspace: preparedWorkspace(context),
+        };
+      },
+    }),
+    selectVerificationPath: compute({
+      run: ({ input }) => ({
+        route: (input as AutoimplementInput).verificationChecks === undefined ? "plan" : "verify",
+      }),
+    }),
+    routeVerifiedWorkspace: compute({
+      run: (context) => ({
+        route:
+          preparedWorkspace(context).mode === "defaultBranch" ? "defaultBranch" : "pullRequest",
+      }),
+    }),
+    routeFinalizeDefaultBranchResult: compute({
+      run: ({ outputs }) => outputs.finalizeDefaultBranch,
+    }),
+    finalizeDefaultBranch: agent({
+      timeoutMs: 30 * 60_000,
+      statusDetail: "finalizing default-branch work",
+      prompt: (context) => {
+        const request = context.input as AutoimplementInput;
+        return [
+          "Finalize verified work in the explicitly authorized default-branch workspace.",
+          ...preparedRepositoryRules(context),
+          "Never open a pull request from the default branch to itself.",
+          "Commit and push only when the authorized scope explicitly allows each action. Otherwise leave the verified local change and report it.",
+          "Do not merge, release, or deploy.",
+          `Prepared workspace: ${projectBoundedJson(preparedWorkspace(context))}`,
+          `Authorized scope: ${boundPromptText(request.scope ?? request.repository ?? "the current repository and task", MAX_PROMPT_CHARS_SCOPE)}`,
+        ].join("\n");
+      },
+      expectedOutput: `{ "status": "completed" | "blocked", "committed": true | false, "pushed": true | false, "merged": false, "pr": "none", "reportComment": "summary", "reason": "result" }`,
+      validate: (value) => {
+        const result = requireRecord(value, "default-branch delivery");
+        if (result.status !== "completed" && result.status !== "blocked") {
+          throw new Error("default-branch delivery status must be completed or blocked");
+        }
+        if (result.merged !== false || result.pr !== "none") {
+          throw new Error("default-branch delivery cannot merge or open a pull request to itself");
+        }
+        return result;
       },
     }),
     timeoutFallbackGuard: compute({
@@ -1976,60 +2153,10 @@ export const autoimplementWorkflow = defineWorkflow({
           "Use exact executables and argument arrays without shell wrappers, environment overrides, stdin, Git or GitHub mutations, package publication, deployment, merge, or release commands.",
           "Use the prepared absolute repository path, explicit timeouts no longer than 2700000ms, and maxOutputChars no larger than 1000000.",
           "List checks that cannot run locally under untested.",
+          `Prepared workspace: ${projectBoundedJson(preparedWorkspace(context))}`,
         ].join("\n"),
       expectedOutput: `{ "commands": [{ "id": "stable-id", "command": "npm", "args": ["run", "check"], "cwd": "/absolute/repository", "timeoutMs": 2700000, "maxOutputChars": 1000000 }], "untested": ["remaining check"] }`,
       validate: parseVerificationForContext,
-    }),
-    runVerification: action({
-      timeoutMs: (context) => {
-        const plan = latestOutput<VerificationCommandPlan>(context, ["planVerification"]);
-        return commandBatchTimeoutMs(plan.commands, concurrency(context).verification);
-      },
-      statusDetail: "running independent verification commands",
-      run: async (context) => {
-        const plan = latestOutput<VerificationCommandPlan>(context, ["planVerification"]);
-        return await runAutoimplementBatch(
-          context,
-          "verification",
-          plan.commands,
-          concurrency(context).verification,
-        );
-      },
-    }),
-    verify: agent({
-      timeoutMs: 20 * 60_000,
-      toolPolicy: "observation-only",
-      statusDetail: "assessing verification",
-      prompt: (context) =>
-        [
-          "Assess the completed local verification commands.",
-          "Set passed true only when every required command succeeded without truncated output.",
-          "Report exact command outcomes, failures, and checks that still need remote verification.",
-          `Command plan: ${projectBoundedJson(latestOutput(context, ["planVerification"]))}`,
-          `Command results: ${projectBoundedJson(latestOutput(context, ["runVerification"]))}`,
-        ].join("\n"),
-      expectedOutput: `{ "passed": true | false, "commands": [{ "command": "exact command", "outcome": "result" }], "failures": ["failure"], "untested": ["remaining check"] }`,
-      validate: (value) => requireRecord(value, "verification result"),
-    }),
-    classifyVerification: agent({
-      statusDetail: "classifying verification",
-      toolPolicy: "observation-only",
-      prompt: ({ outputs }) =>
-        [
-          "Classify the verification result.",
-          "Choose publish when required local checks passed.",
-          "Choose redesign for evidence that invalidates the plan.",
-          "Choose fix for a local implementation or test issue.",
-          "Choose blocked only when the work cannot continue in scope.",
-          `Verification: ${projectBoundedJson(outputs.verify)}`,
-        ].join("\n"),
-      expectedOutput: `{ "route": "publish" | "redesign" | "fix" | "blocked", "summary": "reason", "evidence": "evidence" }`,
-      validate: (value) =>
-        parseRoute(
-          value,
-          ["publish", "redesign", "fix", "blocked"] as const,
-          "verification assessment",
-        ),
     }),
     fix: agent({
       timeoutMs: 45 * 60_000,
@@ -2378,10 +2505,23 @@ export const autoimplementWorkflow = defineWorkflow({
           task: request.task,
           plan: currentPlan(context),
           implementation: latestOutput(context, ["implement"]),
-          verification: latestOutput(context, ["verifyP2", "verify"]),
-          reviewRounds: reviewRoundsForOutput(context),
-          ci: ciForOutput(context),
-          delivery: latestOutput(context, ["finalizeDelivery"]),
+          verification:
+            context.outputs.localVerification === undefined
+              ? latestOutput(context, ["verifyP2"])
+              : includedResult(changeVerificationWorkflow, context.outputs.localVerification)
+                  .output,
+          reviewRounds:
+            context.outputs.finalizeDefaultBranch === undefined
+              ? reviewRoundsForOutput(context)
+              : [],
+          ci:
+            context.outputs.finalizeDefaultBranch === undefined
+              ? ciForOutput(context)
+              : {
+                  route: "notApplicable",
+                  reason: "Direct default-branch work has no pull request.",
+                },
+          delivery: latestOutput(context, ["finalizeDefaultBranch", "finalizeDelivery"]),
         } satisfies AutoimplementCompleted;
       },
     }),
@@ -2393,8 +2533,7 @@ export const autoimplementWorkflow = defineWorkflow({
         on: "$.route",
         cases: {
           find: "findPlan",
-          document: "documentation",
-          ready: "implement",
+          workspace: "workspace",
           blocked: "blocked",
         },
       },
@@ -2407,12 +2546,18 @@ export const autoimplementWorkflow = defineWorkflow({
       from: "routeFoundPlan",
       switch: {
         on: "$.route",
-        cases: { ready: "implement", document: "documentation", blocked: "blocked" },
+        cases: { workspace: "workspace", blocked: "blocked" },
       },
     },
     { from: "redesign.ready", to: "adoptPlan" },
     { from: "redesign.blocked", to: "blocked" },
     { from: "adoptPlan", to: "implement" },
+    { from: "workspace.ready", to: "routeWorkspace" },
+    { from: "workspace.blocked", to: "blocked" },
+    {
+      from: "routeWorkspace",
+      switch: { on: "$.route", cases: { implement: "implement", document: "documentation" } },
+    },
     { from: "documentation.ready", to: "implement" },
     { from: "documentation.blocked", to: "blocked" },
     {
@@ -2428,7 +2573,7 @@ export const autoimplementWorkflow = defineWorkflow({
         cases: {
           implement: "implement",
           planVerification: "planVerification",
-          verify: "verify",
+          selectVerificationPath: "selectVerificationPath",
           fix: "fix",
           publish: "publish",
           addressP2: "addressP2",
@@ -2436,6 +2581,7 @@ export const autoimplementWorkflow = defineWorkflow({
           inspectComments: "inspectComments",
           inspectCi: "inspectCi",
           opportunisticTest: "opportunisticTest",
+          finalizeDefaultBranch: "finalizeDefaultBranch",
           finalizeDelivery: "finalizeDelivery",
           selectReviewCommands: "selectReviewCommands",
           redesign: "redesign",
@@ -2459,7 +2605,7 @@ export const autoimplementWorkflow = defineWorkflow({
       switch: {
         on: "$.route",
         cases: {
-          verify: "planVerification",
+          verify: "selectVerificationPath",
           redesign: "redesign",
           fix: "fix",
           blocked: "challengeBlockerGuard",
@@ -2487,42 +2633,50 @@ export const autoimplementWorkflow = defineWorkflow({
           inspectComments: "inspectComments",
           inspectCi: "inspectCi",
           opportunisticTest: "opportunisticTest",
+          finalizeDefaultBranch: "finalizeDefaultBranch",
         },
       },
+    },
+    {
+      from: "selectVerificationPath",
+      switch: { on: "$.route", cases: { plan: "planVerification", verify: "localVerification" } },
     },
     {
       from: "planVerification",
       switch: {
         on: "$result.outcome",
         cases: {
-          ok: "runVerification",
+          ok: "localVerification",
           timed_out: "timeoutFallbackGuard",
           failed: "propagateSupportedFailure",
         },
       },
     },
-    { from: "runVerification", to: "verify" },
+    { from: "localVerification.ready", to: "routeVerifiedWorkspace" },
+    { from: "localVerification.blocked", to: "challengeBlockerGuard" },
     {
-      from: "verify",
+      from: "routeVerifiedWorkspace",
+      switch: {
+        on: "$.route",
+        cases: { pullRequest: "publish", defaultBranch: "finalizeDefaultBranch" },
+      },
+    },
+    {
+      from: "finalizeDefaultBranch",
       switch: {
         on: "$result.outcome",
         cases: {
-          ok: "classifyVerification",
+          ok: "routeFinalizeDefaultBranchResult",
           timed_out: "timeoutFallbackGuard",
           failed: "propagateSupportedFailure",
         },
       },
     },
     {
-      from: "classifyVerification",
+      from: "routeFinalizeDefaultBranchResult",
       switch: {
-        on: "$.route",
-        cases: {
-          publish: "publish",
-          redesign: "redesign",
-          fix: "fix",
-          blocked: "challengeBlockerGuard",
-        },
+        on: "$.status",
+        cases: { completed: "finalize", blocked: "challengeBlockerGuard" },
       },
     },
     {
@@ -2530,7 +2684,7 @@ export const autoimplementWorkflow = defineWorkflow({
       switch: {
         on: "$result.outcome",
         cases: {
-          ok: "planVerification",
+          ok: "selectVerificationPath",
           timed_out: "timeoutFallbackGuard",
           failed: "propagateSupportedFailure",
         },

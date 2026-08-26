@@ -591,6 +591,8 @@ describe.sequential("pi-workflows end to end", () => {
               attempt: monitorStepMatch?.[1] ?? "",
               output: {
                 route: "stop",
+                goalState: "complete",
+                workState: "running",
                 observation: "The fixture check completed at 1 of 2 items.",
                 report: "The fixture check completed.",
                 progress: {
@@ -609,6 +611,8 @@ describe.sequential("pi-workflows end to end", () => {
                     },
                   ],
                 },
+                targetStateId: "fixture:1-of-2",
+                authorizedActions: [],
                 reason: "The requested first check is complete.",
               },
             },
@@ -1593,7 +1597,7 @@ describe.sequential("pi-workflows end to end", () => {
 
     expect(state.status, state.error).toBe("completed");
     expect(state.workflowName).toBe("monitor");
-    expect(state.workflowSource).toEqual({ kind: "builtin", id: "monitor", revision: "11" });
+    expect(state.workflowSource).toEqual({ kind: "builtin", id: "monitor", revision: "12" });
     expect(state.workflowPath).toBeUndefined();
     expect(state.workflowHash).toBeUndefined();
     expect(state.finalOutput).toMatchObject({

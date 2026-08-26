@@ -9,20 +9,20 @@ import sanityCheckWorkflow from "./sanity-check.workflow.js";
 export const builtinWorkflowCatalog = new BuiltinWorkflowCatalog([
   {
     id: "autoplan",
-    revision: "1",
-    definitionDigest: "sha256:c25be200e438e09f7c5a52fb01dc0f325323193715272c5a63daeb3fc8c804f9",
+    revision: "2",
+    definitionDigest: "sha256:d24a183306754a6dd83e71b56976e9cbed13b19a919c3ae8fa43e010bf6aac11",
     definition: autoplanWorkflow,
   },
   {
     id: "autodoc",
-    revision: "3",
-    definitionDigest: "sha256:6f85f8e57cd2205cb9402a4281e9b2fb9a0a9ffcad942805246bda1ea19dec93",
+    revision: "4",
+    definitionDigest: "sha256:ed630127a5fe44f054111aa3b3c75c40c722e99160e681b7ce7030d76884b058",
     definition: autodocWorkflow,
   },
   {
     id: "autoimplement",
-    revision: "15",
-    definitionDigest: "sha256:9dc2dd030c0c161688828492af2951c35ed48b45b876959cd9e6d64a668355e2",
+    revision: "16",
+    definitionDigest: "sha256:051abf4bf638e1f1984c19a6656da8057f64c0571c604e98eac500ede733385d",
     definition: autoimplementWorkflow,
   },
   {
@@ -39,8 +39,8 @@ export const builtinWorkflowCatalog = new BuiltinWorkflowCatalog([
   },
   {
     id: "monitor",
-    revision: "11",
-    definitionDigest: "sha256:68e760f74bbe7c40f83b6f8440c41c776d0dcc5f1953007e0263c7501a331b65",
+    revision: "12",
+    definitionDigest: "sha256:375fb95c240443dd580bc5ea9da02b39678b8162296fa6bec51b526c25321bb7",
     definition: monitorWorkflow,
     legacySources: [
       {

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { watch } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -545,16 +546,40 @@ describe("runCommandBatch", () => {
       "setTimeout(() => {}, 5_000);",
     ].join("\n");
     const controller = new AbortController();
-    setTimeout(() => controller.abort(), 80);
-    const result = await runCommandBatch(
-      {
-        items: [item("one", cwd, script, 10_000), item("two", cwd, script, 10_000)],
-        maxConcurrency: 1,
-      },
-      { signal: controller.signal },
-    );
-    const starts = (await fs.readFile(log, "utf8")).trim().split("\n");
-    expect(starts).toHaveLength(1);
-    expect(result.items.map((entry) => entry.outcome)).toEqual(["cancelled", "cancelled"]);
+    let resolveStarted = () => {};
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    const watcher = watch(cwd, (_event, filename) => {
+      if (filename === "started.log") resolveStarted();
+    });
+    try {
+      const running = runCommandBatch(
+        {
+          items: [item("one", cwd, script, 10_000), item("two", cwd, script, 10_000)],
+          maxConcurrency: 1,
+        },
+        { signal: controller.signal },
+      );
+      try {
+        await fs.access(log);
+        resolveStarted();
+      } catch {
+        // Watcher resolves when the first command creates the log.
+      }
+      await Promise.race([
+        started,
+        running.then((batch) => {
+          throw new Error(`first command did not start: ${JSON.stringify(batch.items)}`);
+        }),
+      ]);
+      controller.abort();
+      const result = await running;
+      const starts = (await fs.readFile(log, "utf8")).trim().split("\n");
+      expect(starts).toHaveLength(1);
+      expect(result.items.map((entry) => entry.outcome)).toEqual(["cancelled", "cancelled"]);
+    } finally {
+      watcher.close();
+    }
   });
 });

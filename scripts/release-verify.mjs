@@ -7,7 +7,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const RELEASE_VERSION = "0.14.7";
+export const RELEASE_VERSION = "0.14.8";
 export const RELEASE_TAG = `v${RELEASE_VERSION}`;
 export const RELEASE_MANIFEST_SCHEMA = "omp-workflows.release-manifest.v1";
 

@@ -1,1 +1,1 @@
-export const OMP_WORKFLOWS_VERSION = "0.14.7" as const;
+export const OMP_WORKFLOWS_VERSION = "0.14.8" as const;
